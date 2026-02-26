@@ -42,7 +42,7 @@ def _build_item_payload(item: dict, safe_mode: bool = False) -> dict:
     base_fields = [
         "title", "category_id", "price", "currency_id",
         "available_quantity", "buying_mode", "listing_type_id",
-        "condition",
+        "condition", "family_name",
     ]
     if not safe_mode:
         base_fields.append("video_id")
