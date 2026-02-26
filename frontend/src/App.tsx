@@ -3,8 +3,9 @@ import { useAuth } from './hooks/useAuth';
 import Login from './pages/Login';
 import CopyPage from './pages/CopyPage';
 import Admin from './pages/Admin';
+import CompatPage from './pages/CompatPage';
 
-type View = 'copy' | 'admin';
+type View = 'copy' | 'admin' | 'compat';
 
 export default function App() {
   const auth = useAuth();
@@ -54,6 +55,9 @@ export default function App() {
             <ViewTab active={view === 'admin'} onClick={() => setView('admin')}>
               Sellers
             </ViewTab>
+            <ViewTab active={view === 'compat'} onClick={() => setView('compat')}>
+              Compat
+            </ViewTab>
           </nav>
         </div>
 
@@ -80,6 +84,9 @@ export default function App() {
             loadSellers={auth.loadSellers}
             disconnectSeller={auth.disconnectSeller}
           />
+        )}
+        {view === 'compat' && (
+          <CompatPage sellers={auth.sellers} headers={auth.headers} />
         )}
       </div>
     </div>
