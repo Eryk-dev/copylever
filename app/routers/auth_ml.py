@@ -19,6 +19,7 @@ router = APIRouter(tags=["ml"])
 
 
 @router.get("/api/ml/install")
+@router.get("/ml/install")
 async def install():
     """Redirect to ML OAuth for seller authorization."""
     params = urlencode({
@@ -31,6 +32,7 @@ async def install():
 
 
 @router.get("/api/ml/callback")
+@router.get("/ml/callback")
 async def callback(code: str, state: str = ""):
     """Callback from ML OAuth. Exchange code for tokens, save to copy_sellers."""
     if not state:
