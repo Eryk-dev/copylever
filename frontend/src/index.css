@@ -1,0 +1,124 @@
+:root {
+  /* Primitives - Same palette as lever money dashboard */
+  --ink: #1a1a1a;
+  --ink-muted: #6b6b6b;
+  --ink-faint: #9a9a9a;
+  --paper: #ffffff;
+  --paper-subtle: #fafafa;
+  --line: rgba(0, 0, 0, 0.06);
+
+  /* Semantic */
+  --positive: #23D8D3;
+  --positive-bg: rgba(35, 216, 211, 0.08);
+  --attention: #d97706;
+  --attention-bg: rgba(217, 119, 6, 0.08);
+
+  /* Status */
+  --success: #10b981;
+  --danger: #ef4444;
+  --warning: #f59e0b;
+  --surface: #f5f5f5;
+
+  /* Spacing - 4px base */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Typography */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', monospace;
+
+  --text-xs: 11px;
+  --text-sm: 13px;
+  --text-base: 15px;
+  --text-lg: 17px;
+  --text-xl: 20px;
+  --text-2xl: 28px;
+
+  --leading-tight: 1.2;
+  --leading-normal: 1.5;
+  --tracking-tight: -0.02em;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #f2f2f2;
+    --ink-muted: #b3b3b3;
+    --ink-faint: #8a8a8a;
+    --paper: #0f0f0f;
+    --paper-subtle: #141414;
+    --line: rgba(255, 255, 255, 0.08);
+    --surface: #161616;
+    --positive-bg: rgba(35, 216, 211, 0.12);
+    --attention-bg: rgba(217, 119, 6, 0.18);
+  }
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  color: var(--ink);
+  background: var(--paper);
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-faint);
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  font-family: inherit;
+}
+
+input, textarea, select {
+  font-family: inherit;
+}
+
+a {
+  color: var(--positive);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}

@@ -1,0 +1,68 @@
+"""
+Copy Anuncios ML — Backend FastAPI
+Copia anuncios do Mercado Livre entre contas internas.
+"""
+import logging
+from pathlib import Path
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from app.config import settings
+from app.routers import auth, auth_ml, copy
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
+
+app = FastAPI(
+    title="Copy Anuncios ML",
+    description="Copia anuncios do Mercado Livre entre contas",
+    version="1.0.0",
+)
+
+# CORS
+origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Routers
+app.include_router(auth.router)
+app.include_router(auth_ml.router)
+app.include_router(copy.router)
+
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
+
+
+# Serve frontend SPA (built React app)
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+API_PREFIXES = ("api",)
+
+if FRONTEND_DIR.is_dir():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIR / "assets"), name="frontend-assets")
+
+    @app.get("/{path:path}")
+    async def serve_frontend(request: Request, path: str):
+        first_segment = path.split("/")[0] if path else ""
+        if first_segment in API_PREFIXES:
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+
+        file = FRONTEND_DIR / path
+        if file.is_file():
+            return FileResponse(file)
+        return FileResponse(FRONTEND_DIR / "index.html")
