@@ -42,11 +42,21 @@ async def callback(code: str, state: str = ""):
         logger.error(f"OAuth exchange failed: {e}")
         raise HTTPException(status_code=502, detail=f"ML OAuth failed: {e}")
 
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=token_data["expires_in"])
+    logger.info(f"OAuth token_data keys: {list(token_data.keys())}")
+
+    access_token = token_data.get("access_token")
+    refresh_token = token_data.get("refresh_token")
+    expires_in = token_data.get("expires_in", 21600)
+    ml_user_id_from_token = token_data.get("user_id")
+
+    if not access_token:
+        raise HTTPException(status_code=502, detail=f"ML OAuth returned no access_token. Keys: {list(token_data.keys())}")
+
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
 
     # Fetch ML user info
     try:
-        user_info = await fetch_user_info(token_data["access_token"])
+        user_info = await fetch_user_info(access_token)
     except Exception as e:
         logger.error(f"Failed to fetch ML user info: {e}")
         raise HTTPException(status_code=502, detail=f"Failed to fetch ML user info: {e}")
@@ -63,14 +73,18 @@ async def callback(code: str, state: str = ""):
             f"ml_user_id.eq.{ml_user_id},slug.eq.{slug}"
         ).execute()
 
+        seller_data = {
+            "ml_user_id": ml_user_id,
+            "ml_access_token": access_token,
+            "ml_refresh_token": refresh_token,
+            "ml_token_expires_at": expires_at.isoformat(),
+            "active": True,
+        }
+
         if existing.data:
-            db.table("copy_sellers").update({
-                "ml_user_id": ml_user_id,
-                "ml_access_token": token_data["access_token"],
-                "ml_refresh_token": token_data["refresh_token"],
-                "ml_token_expires_at": expires_at.isoformat(),
-                "active": True,
-            }).eq("slug", existing.data[0]["slug"]).execute()
+            db.table("copy_sellers").update(seller_data).eq(
+                "slug", existing.data[0]["slug"]
+            ).execute()
             logger.info(f"OAuth: updated tokens for existing copy_seller {existing.data[0]['slug']}")
             return _success_page(existing.data[0]["slug"], already_exists=True)
 
@@ -78,11 +92,7 @@ async def callback(code: str, state: str = ""):
         db.table("copy_sellers").insert({
             "slug": slug,
             "name": nickname,
-            "ml_user_id": ml_user_id,
-            "ml_access_token": token_data["access_token"],
-            "ml_refresh_token": token_data["refresh_token"],
-            "ml_token_expires_at": expires_at.isoformat(),
-            "active": True,
+            **seller_data,
         }).execute()
 
         logger.info(f"OAuth: new copy_seller created — slug={slug}, ml_user_id={ml_user_id}")
