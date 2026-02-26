@@ -1,3 +1,24 @@
 # Ralph Progress Log
 Started: Thu Feb 26 16:00:37 -03 2026
 ---
+
+## Codebase Patterns
+- Use `get_db()` from `app/db/supabase.py` to access Supabase client
+- Use `_get_token(seller_slug)` from `app/services/ml_api.py` for ML API auth
+- `copy_sellers` table stores seller info: slug, name, ml_user_id, ml_access_token, ml_refresh_token, etc.
+- Python backend uses `httpx.AsyncClient` for all HTTP calls with explicit timeouts
+- TypeScript typecheck: `npx tsc --noEmit` from `frontend/` directory
+- Migrations go in `app/db/migrations/` — use `IF NOT EXISTS` for safety
+- Router pattern: `APIRouter(prefix="/api/...", tags=[...])` registered in `app/main.py`
+
+---
+
+## 2026-02-26 - US-001
+- Created `app/db/migrations/001_compat_logs.sql` with compat_logs table
+- Files changed: `app/db/migrations/001_compat_logs.sql` (new)
+- **Learnings for future iterations:**
+  - No existing migrations directory — created `app/db/migrations/`
+  - Python uses `python3` not `python` on this machine
+  - TypeScript typecheck passes cleanly with `npx tsc --noEmit`
+  - Git repo was initialized fresh (no remote) for this project
+---
