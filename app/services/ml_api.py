@@ -166,6 +166,25 @@ async def set_item_compatibilities(seller_slug: str, item_id: str, compat_data: 
         return resp.json()
 
 
+async def search_items_by_sku(seller_slug: str, sku: str) -> list[str]:
+    """GET /users/{user_id}/items/search?seller_sku={sku} — find items by seller SKU."""
+    db = get_db()
+    seller = db.table("copy_sellers").select("ml_user_id").eq("slug", seller_slug).single().execute()
+    user_id = seller.data["ml_user_id"]
+
+    token = await _get_token(seller_slug)
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"{ML_API}/users/{user_id}/items/search",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"seller_sku": sku},
+        )
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        return resp.json().get("results", [])
+
+
 async def copy_item_compatibilities(seller_slug: str, new_item_id: str, source_item_id: str) -> dict:
     """POST /items/{new_item_id}/compatibilities — copy from source item (ML native)."""
     token = await _get_token(seller_slug)

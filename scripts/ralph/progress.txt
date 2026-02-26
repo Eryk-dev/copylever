@@ -10,6 +10,8 @@ Started: Thu Feb 26 16:00:37 -03 2026
 - TypeScript typecheck: `npx tsc --noEmit` from `frontend/` directory
 - Migrations go in `app/db/migrations/` — use `IF NOT EXISTS` for safety
 - Router pattern: `APIRouter(prefix="/api/...", tags=[...])` registered in `app/main.py`
+- `copy_sellers` table has `ml_user_id` field needed for ML API user-scoped endpoints
+- ML items/search endpoint: GET /users/{user_id}/items/search?seller_sku={sku} returns { results: [item_ids] }
 
 ---
 
@@ -21,4 +23,15 @@ Started: Thu Feb 26 16:00:37 -03 2026
   - Python uses `python3` not `python` on this machine
   - TypeScript typecheck passes cleanly with `npx tsc --noEmit`
   - Git repo was initialized fresh (no remote) for this project
+---
+
+## 2026-02-26 - US-002
+- Added `search_items_by_sku(seller_slug, sku) -> list[str]` to `app/services/ml_api.py`
+- Function queries `copy_sellers` for `ml_user_id`, then calls ML search endpoint with seller_sku param
+- Returns empty list on 404, otherwise returns `results` array from response
+- Files changed: `app/services/ml_api.py` (modified)
+- **Learnings for future iterations:**
+  - `copy_sellers` table has `ml_user_id` needed for user-scoped ML API endpoints like items/search
+  - ML search API returns `{ results: [item_ids], paging: {...} }` — use `.get("results", [])` for safety
+  - All existing functions follow same pattern: get token, create httpx client, make request, handle 404 gracefully
 ---

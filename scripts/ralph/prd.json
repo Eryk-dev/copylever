@@ -31,7 +31,7 @@
         "Typecheck passes"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": "ML API endpoint: GET https://api.mercadolibre.com/users/{user_id}/items/search?seller_sku={sku} — returns { results: [item_ids], paging: {...} }. The ml_user_id is stored in the copy_sellers table."
     },
     {
