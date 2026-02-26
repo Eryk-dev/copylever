@@ -52,6 +52,10 @@ async def callback(code: str, state: str = ""):
     if not access_token:
         raise HTTPException(status_code=502, detail=f"ML OAuth returned no access_token. Keys: {list(token_data.keys())}")
 
+    if not refresh_token:
+        logger.error(f"ML OAuth returned no refresh_token. Keys: {list(token_data.keys())}")
+        raise HTTPException(status_code=502, detail="ML OAuth returned no refresh_token. Cannot maintain session.")
+
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
 
     # Fetch ML user info

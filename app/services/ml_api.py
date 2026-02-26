@@ -36,21 +36,26 @@ async def _get_token(seller_slug: str) -> str:
         return s["ml_access_token"]
 
     # Refresh token
+    old_refresh = s["ml_refresh_token"]
+    if not old_refresh:
+        raise RuntimeError(f"Seller '{seller_slug}' has no refresh_token. Reconnect via /api/ml/install")
+
     app_id, secret = _get_seller_credentials(s)
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(f"{MP_API}/oauth/token", json={
             "grant_type": "refresh_token",
             "client_id": app_id,
             "client_secret": secret,
-            "refresh_token": s["ml_refresh_token"],
+            "refresh_token": old_refresh,
         })
         resp.raise_for_status()
         data = resp.json()
 
-    new_expires = datetime.now(timezone.utc) + timedelta(seconds=data["expires_in"])
+    new_expires = datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 21600))
+    new_refresh = data.get("refresh_token") or old_refresh
     db.table("copy_sellers").update({
         "ml_access_token": data["access_token"],
-        "ml_refresh_token": data["refresh_token"],
+        "ml_refresh_token": new_refresh,
         "ml_token_expires_at": new_expires.isoformat(),
     }).eq("slug", seller_slug).execute()
 
