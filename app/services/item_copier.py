@@ -40,7 +40,40 @@ BRACKET_FIELDS_RE = re.compile(r"\[([^\]]+)\]")
 
 
 def _clean_text(value: Any) -> str:
-    return value.strip() if isinstance(value, str) else ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, (int, float)):
+        return str(value).strip()
+    return ""
+
+
+def _extract_value_pair(entry: dict[str, Any]) -> tuple[str, str]:
+    """Extract ML value_id/value_name from direct or nested structures."""
+    value_id = _clean_text(entry.get("value_id"))
+    value_name = _clean_text(entry.get("value_name"))
+    if value_id or value_name:
+        return value_id, value_name
+
+    values = entry.get("values")
+    if isinstance(values, list):
+        for raw in values:
+            if not isinstance(raw, dict):
+                continue
+            nested_id = _clean_text(raw.get("id"))
+            nested_name = _clean_text(raw.get("name"))
+            if nested_id or nested_name:
+                return nested_id, nested_name
+
+    value_struct = entry.get("value_struct")
+    if isinstance(value_struct, dict):
+        number = _clean_text(value_struct.get("number"))
+        unit = _clean_text(value_struct.get("unit"))
+        if number:
+            return "", f"{number} {unit}".strip()
+
+    return "", ""
 
 
 def _extract_seller_sku_from_attributes(attributes: Any) -> str:
@@ -51,7 +84,8 @@ def _extract_seller_sku_from_attributes(attributes: Any) -> str:
             continue
         if attr.get("id") != "SELLER_SKU":
             continue
-        value = _clean_text(attr.get("value_name")) or _clean_text(attr.get("value_id"))
+        value_id, value_name = _extract_value_pair(attr)
+        value = value_name or value_id
         if value:
             return value
     return ""
@@ -278,8 +312,7 @@ def _build_item_payload(item: dict, safe_mode: bool = False) -> dict:
             if attr_id in EXCLUDED_ATTRIBUTES:
                 continue
             # Keep only id and value_name (or value_id if structured)
-            value_id = attr.get("value_id")
-            value_name = attr.get("value_name")
+            value_id, value_name = _extract_value_pair(attr)
             if not value_id and not value_name:
                 continue
             clean = {"id": attr_id}
@@ -296,8 +329,7 @@ def _build_item_payload(item: dict, safe_mode: bool = False) -> dict:
         terms = []
         for term in item["sale_terms"]:
             term_id = term.get("id")
-            value_id = term.get("value_id")
-            value_name = term.get("value_name")
+            value_id, value_name = _extract_value_pair(term)
             if not term_id or (not value_id and not value_name):
                 continue
             clean = {"id": term_id}
@@ -360,8 +392,7 @@ def _build_item_payload(item: dict, safe_mode: bool = False) -> dict:
                 attrs = []
                 for a in var["attributes"]:
                     attr_id = a.get("id")
-                    value_id = a.get("value_id")
-                    value_name = a.get("value_name")
+                    value_id, value_name = _extract_value_pair(a)
                     if not attr_id:
                         continue
                     if safe_mode and attr_id != "SELLER_SKU":
