@@ -13,6 +13,7 @@ export default function CopyPage({ sellers, headers }: Props) {
   const [copying, setCopying] = useState(false);
   const [logs, setLogs] = useState<CopyLog[]>([]);
   const [logsLoaded, setLogsLoaded] = useState(false);
+  const [logsOpen, setLogsOpen] = useState(true);
   const [preview, setPreview] = useState<ItemPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState('');
@@ -67,58 +68,88 @@ export default function CopyPage({ sellers, headers }: Props) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
       <CopyForm sellers={sellers} onCopy={handleCopy} onPreview={handlePreview} copying={copying} />
 
-      {previewLoading && <Card title="Preview"><p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-sm)' }}>Carregando...</p></Card>}
-      {previewError && <Card title="Preview"><p style={{ color: 'var(--danger)', fontSize: 'var(--text-sm)' }}>{previewError}</p></Card>}
-      {preview && <PreviewCard preview={preview} />}
+      {previewLoading && (
+        <Card title="Preview">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', color: 'var(--ink-faint)', fontSize: 'var(--text-sm)' }}>
+            <span className="spinner spinner-sm" />
+            Carregando preview...
+          </div>
+        </Card>
+      )}
+      {previewError && (
+        <Card title="Preview">
+          <p style={{ color: 'var(--danger)', fontSize: 'var(--text-sm)' }}>{previewError}</p>
+        </Card>
+      )}
+      {preview && <PreviewCard preview={preview} onClose={() => setPreview(null)} />}
       {results && <CopyProgress results={results} />}
 
       {/* Logs */}
       {logs.length > 0 && (
-        <Card title="Historico">
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-sm)' }}>
-              <thead>
-                <tr>
-                  {['Data', 'Origem', 'Destino(s)', 'Item', 'Status', 'Novos IDs'].map(h => (
-                    <th key={h} style={{
-                      textAlign: 'left',
-                      padding: 'var(--space-2) var(--space-3)',
-                      color: 'var(--ink-faint)',
-                      fontWeight: 500,
-                      fontSize: 'var(--text-xs)',
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.05em',
-                      borderBottom: '1px solid var(--line)',
-                    }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {logs.map(log => (
-                  <tr key={log.id} style={{ borderBottom: '1px solid var(--line)' }}>
-                    <td style={td}>{new Date(log.created_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</td>
-                    <td style={td}>{log.source_seller}</td>
-                    <td style={td}>{log.dest_sellers?.join(', ')}</td>
-                    <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}>{log.source_item_id}</td>
-                    <td style={td}><StatusBadge status={log.status} /></td>
-                    <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}>
-                      {log.dest_item_ids ? Object.entries(log.dest_item_ids).map(([s, id]) => <div key={s}>{s}: {id}</div>) : '-'}
-                    </td>
+        <Card
+          title={`Historico (${logs.length})`}
+          collapsible
+          open={logsOpen}
+          onToggle={() => setLogsOpen(!logsOpen)}
+        >
+          {logsOpen && (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-sm)' }}>
+                <thead>
+                  <tr>
+                    {['Data', 'Origem', 'Destino(s)', 'Item', 'Status', 'Novos IDs'].map(h => (
+                      <th key={h} style={{
+                        textAlign: 'left',
+                        padding: 'var(--space-2) var(--space-3)',
+                        color: 'var(--ink-faint)',
+                        fontWeight: 500,
+                        fontSize: 'var(--text-xs)',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.05em',
+                        borderBottom: '1px solid var(--line)',
+                        whiteSpace: 'nowrap',
+                      }}>{h}</th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {logs.map(log => (
+                    <tr key={log.id} style={{ borderBottom: '1px solid var(--line)' }}>
+                      <td style={{ ...td, whiteSpace: 'nowrap' }}>{new Date(log.created_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</td>
+                      <td style={td}>{log.source_seller}</td>
+                      <td style={td}>{log.dest_sellers?.join(', ')}</td>
+                      <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}>{log.source_item_id}</td>
+                      <td style={td}><StatusBadge status={log.status} /></td>
+                      <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}>
+                        {log.dest_item_ids ? Object.entries(log.dest_item_ids).map(([s, id]) => <div key={s}>{s}: {id}</div>) : '-'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </Card>
       )}
     </div>
   );
 }
 
-function PreviewCard({ preview }: { preview: ItemPreview }) {
+function PreviewCard({ preview, onClose }: { preview: ItemPreview; onClose: () => void }) {
   return (
-    <Card title="Preview">
-      <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+    <Card title="Preview" action={
+      <button onClick={onClose} style={{
+        background: 'none',
+        color: 'var(--ink-faint)',
+        fontSize: 'var(--text-sm)',
+        padding: '2px 6px',
+        borderRadius: 4,
+        lineHeight: 1,
+      }}>
+        {'\u2715'}
+      </button>
+    }>
+      <div className="animate-in" style={{ display: 'flex', gap: 'var(--space-3)' }}>
         {preview.thumbnail && (
           <img src={preview.thumbnail} alt="" style={{ width: 72, height: 72, borderRadius: 6, objectFit: 'cover', background: 'var(--surface)' }} />
         )}
@@ -153,20 +184,50 @@ function PreviewCard({ preview }: { preview: ItemPreview }) {
   );
 }
 
-export function Card({ title, children }: { title: string; children: React.ReactNode }) {
+export function Card({ title, action, collapsible, open, onToggle, children }: {
+  title: string;
+  action?: React.ReactNode;
+  collapsible?: boolean;
+  open?: boolean;
+  onToggle?: () => void;
+  children: React.ReactNode;
+}) {
   return (
-    <div style={{
+    <div className="card" style={{
       background: 'var(--surface)',
       borderRadius: 8,
       padding: 'var(--space-5)',
     }}>
-      <h3 style={{
-        fontSize: 'var(--text-sm)',
-        fontWeight: 600,
-        color: 'var(--ink)',
-        marginBottom: 'var(--space-3)',
-        letterSpacing: 'var(--tracking-tight)',
-      }}>{title}</h3>
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: (collapsible && !open) ? 0 : 'var(--space-3)',
+      }}>
+        {collapsible ? (
+          <h3
+            className="collapsible-trigger"
+            onClick={onToggle}
+            style={{
+              fontSize: 'var(--text-sm)',
+              fontWeight: 600,
+              color: 'var(--ink)',
+              letterSpacing: 'var(--tracking-tight)',
+            }}
+          >
+            <span className={`collapsible-arrow${open ? ' open' : ''}`}>{'\u25B6'}</span>
+            {title}
+          </h3>
+        ) : (
+          <h3 style={{
+            fontSize: 'var(--text-sm)',
+            fontWeight: 600,
+            color: 'var(--ink)',
+            letterSpacing: 'var(--tracking-tight)',
+          }}>{title}</h3>
+        )}
+        {action}
+      </div>
       {children}
     </div>
   );
@@ -174,7 +235,20 @@ export function Card({ title, children }: { title: string; children: React.React
 
 function StatusBadge({ status }: { status: string }) {
   const c: Record<string, string> = { success: 'var(--success)', error: 'var(--danger)', partial: 'var(--warning)', pending: 'var(--ink-faint)' };
-  return <span style={{ color: c[status] || 'var(--ink-faint)', fontWeight: 600, fontSize: 'var(--text-xs)', textTransform: 'uppercase' }}>{status}</span>;
+  const bg: Record<string, string> = { success: 'rgba(16, 185, 129, 0.08)', error: 'rgba(239, 68, 68, 0.08)', partial: 'rgba(245, 158, 11, 0.08)' };
+  return (
+    <span style={{
+      color: c[status] || 'var(--ink-faint)',
+      fontWeight: 600,
+      fontSize: 'var(--text-xs)',
+      textTransform: 'uppercase',
+      background: bg[status] || 'transparent',
+      padding: '2px 8px',
+      borderRadius: 4,
+    }}>
+      {status}
+    </span>
+  );
 }
 
 const td: React.CSSProperties = { padding: 'var(--space-2) var(--space-3)', color: 'var(--ink)' };

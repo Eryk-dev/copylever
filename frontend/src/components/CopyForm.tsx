@@ -13,25 +13,45 @@ export default function CopyForm({ sellers, onCopy, onPreview, copying }: Props)
   const [source, setSource] = useState('');
   const [destinations, setDestinations] = useState<string[]>([]);
   const [itemIdsText, setItemIdsText] = useState('');
+  const [confirming, setConfirming] = useState(false);
 
   const validSellers = sellers.filter(s => s.token_valid);
   const availableDestinations = validSellers.filter(s => s.slug !== source);
 
   const itemIds = itemIdsText.split(/[\n,]+/).map(id => id.trim()).filter(id => id.length > 0);
   const canCopy = source && destinations.length > 0 && itemIds.length > 0 && !copying;
+  const totalOps = itemIds.length * destinations.length;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canCopy) return;
+    if (!confirming) {
+      setConfirming(true);
+      return;
+    }
+    setConfirming(false);
     await onCopy(source, destinations, itemIds);
   };
 
   const toggleDest = (slug: string) => {
     setDestinations(prev => prev.includes(slug) ? prev.filter(s => s !== slug) : [...prev, slug]);
+    setConfirming(false);
   };
 
+  const selectAllDests = () => {
+    const allSlugs = availableDestinations.map(s => s.slug);
+    const allSelected = allSlugs.every(s => destinations.includes(s));
+    setDestinations(allSelected ? [] : allSlugs);
+    setConfirming(false);
+  };
+
+  // Step completion
+  const step1Done = !!source;
+  const step2Done = destinations.length > 0;
+  const step3Done = itemIds.length > 0;
+
   return (
-    <form onSubmit={handleSubmit} style={{
+    <form onSubmit={handleSubmit} className="card" style={{
       background: 'var(--surface)',
       borderRadius: 8,
       padding: 'var(--space-5)',
@@ -43,26 +63,28 @@ export default function CopyForm({ sellers, onCopy, onPreview, copying }: Props)
         Copiar Anuncios
       </h3>
 
-      {/* Source */}
-      <Field label="Seller de Origem">
+      {/* Step 1: Source */}
+      <Field label="Seller de Origem" step={1} done={step1Done}>
         <SellerSelect
           sellers={validSellers}
           value={source}
-          onChange={val => { setSource(val); setDestinations(prev => prev.filter(d => d !== val)); }}
+          onChange={val => { setSource(val); setDestinations(prev => prev.filter(d => d !== val)); setConfirming(false); }}
           placeholder="Selecione o seller de origem"
         />
       </Field>
 
-      {/* Destinations */}
+      {/* Step 2: Destinations */}
       <Field
         label="Sellers de Destino"
+        step={2}
+        done={step2Done}
         action={availableDestinations.length > 0 && source ? (
           <button
             type="button"
-            onClick={() => setDestinations(availableDestinations.map(s => s.slug))}
+            onClick={selectAllDests}
             style={{ background: 'none', color: 'var(--positive)', fontSize: 'var(--text-xs)', fontWeight: 500, padding: 0 }}
           >
-            Selecionar todos
+            {availableDestinations.every(s => destinations.includes(s.slug)) ? 'Desmarcar todos' : 'Selecionar todos'}
           </button>
         ) : undefined}
       >
@@ -72,16 +94,18 @@ export default function CopyForm({ sellers, onCopy, onPreview, copying }: Props)
               availableDestinations.map(seller => {
                 const on = destinations.includes(seller.slug);
                 return (
-                  <button key={seller.slug} type="button" onClick={() => toggleDest(seller.slug)} style={{
+                  <button key={seller.slug} type="button" onClick={() => toggleDest(seller.slug)} className="chip-toggle" style={{
                     padding: '6px 12px',
-                    borderRadius: 6,
                     fontSize: 'var(--text-xs)',
                     fontWeight: on ? 600 : 400,
                     background: on ? 'var(--ink)' : 'var(--paper)',
                     color: on ? 'var(--paper)' : 'var(--ink-muted)',
                     border: `1px solid ${on ? 'var(--ink)' : 'var(--line)'}`,
-                    transition: 'all 0.15s',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
                   }}>
+                    {on && <span style={{ fontSize: 10 }}>{'\u2713'}</span>}
                     {seller.name || seller.slug}
                   </button>
                 );
@@ -95,13 +119,14 @@ export default function CopyForm({ sellers, onCopy, onPreview, copying }: Props)
         </div>
       </Field>
 
-      {/* Item IDs */}
-      <Field label="IDs dos Anuncios (MLB...)">
+      {/* Step 3: Item IDs */}
+      <Field label="IDs dos Anuncios (MLB...)" step={3} done={step3Done}>
         <textarea
           value={itemIdsText}
-          onChange={e => setItemIdsText(e.target.value)}
+          onChange={e => { setItemIdsText(e.target.value); setConfirming(false); }}
           placeholder={"MLB1234567890\nMLB9876543210"}
           rows={4}
+          className="input-base"
           style={{
             width: '100%',
             padding: 'var(--space-3) var(--space-4)',
@@ -112,42 +137,59 @@ export default function CopyForm({ sellers, onCopy, onPreview, copying }: Props)
             resize: 'vertical',
             fontFamily: 'var(--font-mono)',
             fontSize: 'var(--text-sm)',
-            outline: 'none',
             lineHeight: 'var(--leading-normal)',
           }}
         />
         {itemIds.length > 0 && (
           <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-1)' }}>
-            {itemIds.length} anuncio(s)
+            {itemIds.length} anuncio(s) {destinations.length > 0 && <>x {destinations.length} destino(s) = <b style={{ color: 'var(--ink)' }}>{totalOps} copia(s)</b></>}
           </p>
         )}
       </Field>
 
+      {/* Confirmation bar */}
+      {confirming && (
+        <div className="confirm-bar">
+          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--ink)', flex: 1 }}>
+            Confirma copiar <b>{totalOps}</b> anuncio(s)?
+          </span>
+          <button
+            type="button"
+            onClick={() => setConfirming(false)}
+            className="btn-ghost"
+            style={{ padding: '6px 12px', fontSize: 'var(--text-xs)' }}
+          >
+            Cancelar
+          </button>
+          <button
+            type="submit"
+            className="btn-primary"
+            style={{ padding: '6px 16px', fontSize: 'var(--text-xs)' }}
+          >
+            Confirmar
+          </button>
+        </div>
+      )}
+
       {/* Actions */}
       <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-        <button type="submit" disabled={!canCopy} style={{
+        <button type="submit" disabled={!canCopy} className="btn-primary" style={{
           flex: 1,
           padding: 'var(--space-3) var(--space-6)',
-          background: 'var(--ink)',
-          color: 'var(--paper)',
-          borderRadius: 6,
           fontSize: 'var(--text-sm)',
-          fontWeight: 600,
-          opacity: canCopy ? 1 : 0.3,
-          transition: 'opacity 0.15s',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 'var(--space-2)',
         }}>
-          {copying ? 'Copiando...' : `Copiar${itemIds.length > 0 ? ` (${itemIds.length} x ${destinations.length || 0})` : ''}`}
+          {copying && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--paper)' }} />}
+          {copying ? 'Copiando...' : confirming ? 'Confirmar' : `Copiar${itemIds.length > 0 ? ` (${totalOps})` : ''}`}
         </button>
 
         {itemIds.length > 0 && source && (
-          <button type="button" onClick={() => onPreview(itemIds[0], source)} style={{
+          <button type="button" onClick={() => onPreview(itemIds[0], source)} className="btn-ghost" style={{
             padding: 'var(--space-3) var(--space-4)',
-            background: 'var(--paper)',
-            color: 'var(--ink-muted)',
-            borderRadius: 6,
             fontSize: 'var(--text-xs)',
-            fontWeight: 500,
-            border: '1px solid var(--line)',
           }}>
             Preview
           </button>
@@ -157,11 +199,44 @@ export default function CopyForm({ sellers, onCopy, onPreview, copying }: Props)
   );
 }
 
-function Field({ label, action, children }: { label: string; action?: React.ReactNode; children: React.ReactNode }) {
+function Field({ label, step, done, action, children }: {
+  label: string;
+  step?: number;
+  done?: boolean;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-2)' }}>
-        <label style={{ fontSize: 'var(--text-xs)', fontWeight: 500, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        <label style={{
+          fontSize: 'var(--text-xs)',
+          fontWeight: 500,
+          color: 'var(--ink-muted)',
+          textTransform: 'uppercase',
+          letterSpacing: '0.05em',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 'var(--space-2)',
+        }}>
+          {step !== undefined && (
+            <span style={{
+              width: 18,
+              height: 18,
+              borderRadius: '50%',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: 10,
+              fontWeight: 700,
+              background: done ? 'var(--ink)' : 'var(--line)',
+              color: done ? 'var(--paper)' : 'var(--ink-faint)',
+              transition: 'background 0.2s, color 0.2s',
+              flexShrink: 0,
+            }}>
+              {done ? '\u2713' : step}
+            </span>
+          )}
           {label}
         </label>
         {action}

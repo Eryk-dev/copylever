@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import type { Seller } from '../lib/api';
 import { Card } from './CopyPage';
+import { useToast } from '../components/Toast';
 
 interface Props {
   sellers: Seller[];
@@ -9,10 +11,28 @@ interface Props {
 
 export default function Admin({ sellers, loadSellers, disconnectSeller }: Props) {
   const installUrl = `${window.location.origin}/api/ml/install`;
+  const { toast } = useToast();
+  const [refreshing, setRefreshing] = useState(false);
+  const [disconnecting, setDisconnecting] = useState<string | null>(null);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(installUrl);
+    toast('Link copiado!');
+  };
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await loadSellers();
+    setRefreshing(false);
+    toast('Lista atualizada');
+  };
 
   const handleDisconnect = async (slug: string) => {
     if (!confirm(`Desconectar seller "${slug}"? Os tokens serao removidos.`)) return;
+    setDisconnecting(slug);
     await disconnectSeller(slug);
+    setDisconnecting(null);
+    toast('Seller desconectado');
   };
 
   return (
@@ -33,18 +53,17 @@ export default function Admin({ sellers, loadSellers, disconnectSeller }: Props)
             fontFamily: 'var(--font-mono)',
             color: 'var(--positive)',
             wordBreak: 'break-all',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
           }}>
             {installUrl}
           </code>
           <button
-            onClick={() => navigator.clipboard.writeText(installUrl)}
+            onClick={handleCopy}
+            className="btn-primary"
             style={{
-              background: 'var(--ink)',
-              color: 'var(--paper)',
               padding: 'var(--space-3) var(--space-4)',
-              borderRadius: 6,
               fontSize: 'var(--text-xs)',
-              fontWeight: 600,
               whiteSpace: 'nowrap',
             }}
           >
@@ -54,16 +73,12 @@ export default function Admin({ sellers, loadSellers, disconnectSeller }: Props)
             href={installUrl}
             target="_blank"
             rel="noopener noreferrer"
+            className="btn-ghost"
             style={{
               display: 'inline-flex',
               alignItems: 'center',
-              background: 'var(--paper)',
-              color: 'var(--ink-muted)',
               padding: 'var(--space-3) var(--space-4)',
-              borderRadius: 6,
               fontSize: 'var(--text-xs)',
-              fontWeight: 500,
-              border: '1px solid var(--line)',
               textDecoration: 'none',
               whiteSpace: 'nowrap',
             }}
@@ -77,30 +92,41 @@ export default function Admin({ sellers, loadSellers, disconnectSeller }: Props)
       <Card title={`Sellers conectados (${sellers.length})`}>
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 'var(--space-3)' }}>
           <button
-            onClick={() => loadSellers()}
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="btn-ghost"
             style={{
-              background: 'var(--paper)',
-              color: 'var(--ink-muted)',
               padding: '6px 12px',
-              borderRadius: 6,
               fontSize: 'var(--text-xs)',
-              fontWeight: 500,
-              border: '1px solid var(--line)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-2)',
             }}
           >
-            Atualizar
+            {refreshing && <span className="spinner spinner-sm" />}
+            {refreshing ? 'Atualizando...' : 'Atualizar'}
           </button>
         </div>
 
         {sellers.length === 0 ? (
-          <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-sm)' }}>
-            Nenhum seller conectado. Use o link acima para autorizar uma conta ML.
-          </p>
+          <div style={{
+            textAlign: 'center',
+            padding: 'var(--space-8) var(--space-4)',
+            color: 'var(--ink-faint)',
+            fontSize: 'var(--text-sm)',
+          }}>
+            <div style={{ fontSize: 'var(--text-2xl)', marginBottom: 'var(--space-2)', opacity: 0.4 }}>
+              {'\u2194'}
+            </div>
+            Nenhum seller conectado.<br />
+            Use o link acima para autorizar uma conta ML.
+          </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
             {sellers.map(seller => (
               <div
                 key={seller.slug}
+                className="animate-in"
                 style={{
                   background: 'var(--paper)',
                   borderRadius: 6,
@@ -109,15 +135,18 @@ export default function Admin({ sellers, loadSellers, disconnectSeller }: Props)
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
+                  gap: 'var(--space-3)',
+                  transition: 'border-color 0.15s',
                 }}
               >
-                <div>
+                <div style={{ minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
                     <span style={{
                       width: 8, height: 8,
                       borderRadius: '50%',
                       background: seller.token_valid ? 'var(--success)' : 'var(--danger)',
                       display: 'inline-block',
+                      flexShrink: 0,
                     }} />
                     <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 'var(--text-sm)' }}>
                       {seller.name || seller.slug}
@@ -135,17 +164,20 @@ export default function Admin({ sellers, loadSellers, disconnectSeller }: Props)
                 </div>
                 <button
                   onClick={() => handleDisconnect(seller.slug)}
+                  disabled={disconnecting === seller.slug}
+                  className="btn-danger-ghost"
                   style={{
-                    background: 'transparent',
-                    color: 'var(--danger)',
                     padding: '6px 12px',
-                    borderRadius: 6,
                     fontSize: 'var(--text-xs)',
-                    fontWeight: 500,
-                    border: '1px solid var(--danger)',
+                    flexShrink: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 'var(--space-1)',
+                    opacity: disconnecting === seller.slug ? 0.5 : 1,
                   }}
                 >
-                  Desconectar
+                  {disconnecting === seller.slug && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--danger)' }} />}
+                  {disconnecting === seller.slug ? 'Removendo...' : 'Desconectar'}
                 </button>
               </div>
             ))}

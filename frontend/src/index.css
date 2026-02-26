@@ -122,3 +122,231 @@ a {
 a:hover {
   text-decoration: underline;
 }
+
+/* === Interactive States === */
+
+/* Primary button (dark bg) */
+.btn-primary {
+  background: var(--ink);
+  color: var(--paper);
+  border: 1px solid var(--ink);
+  border-radius: 6px;
+  font-weight: 600;
+  transition: opacity 0.15s, transform 0.1s, box-shadow 0.15s;
+}
+.btn-primary:hover:not(:disabled) {
+  opacity: 0.85;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+.btn-primary:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.btn-primary:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* Ghost button (transparent bg) */
+.btn-ghost {
+  background: var(--paper);
+  color: var(--ink-muted);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-weight: 500;
+  transition: border-color 0.15s, color 0.15s, background 0.15s, transform 0.1s;
+}
+.btn-ghost:hover {
+  border-color: var(--ink-faint);
+  color: var(--ink);
+  background: var(--paper-subtle);
+}
+.btn-ghost:active {
+  transform: scale(0.97);
+}
+
+/* Danger ghost */
+.btn-danger-ghost {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  font-weight: 500;
+  transition: background 0.15s, transform 0.1s;
+}
+.btn-danger-ghost:hover {
+  background: rgba(239, 68, 68, 0.06);
+}
+.btn-danger-ghost:active {
+  transform: scale(0.97);
+}
+
+/* Toggle chip (destination buttons) */
+.chip-toggle {
+  border-radius: 6px;
+  transition: all 0.15s, transform 0.1s;
+}
+.chip-toggle:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+.chip-toggle:active {
+  transform: translateY(0) scale(0.97);
+}
+
+/* Input/Select styles */
+.input-base {
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.input-base:hover {
+  border-color: var(--ink-faint);
+}
+.input-base:focus {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px rgba(26, 26, 26, 0.06);
+  outline: none;
+}
+@media (prefers-color-scheme: dark) {
+  .input-base:focus {
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+  }
+}
+
+/* Select with custom arrow */
+.select-with-arrow {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b6b6b' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 36px !important;
+}
+
+/* Card hover */
+.card {
+  transition: box-shadow 0.2s;
+}
+.card:hover {
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+}
+
+/* === Animations === */
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(16px) scale(0.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes toastOut {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(-8px) scale(0.95); }
+}
+
+.animate-in {
+  animation: fadeIn 0.25s ease-out;
+}
+
+.animate-slide-up {
+  animation: slideUp 0.3s ease-out;
+}
+
+/* Spinner */
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--line);
+  border-top-color: var(--ink);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+.spinner-sm {
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+}
+
+/* Toast container */
+.toast-container {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  animation: toastIn 0.25s ease-out;
+  white-space: nowrap;
+}
+.toast.toast-out {
+  animation: toastOut 0.2s ease-in forwards;
+}
+.toast-success {
+  background: var(--ink);
+  color: var(--paper);
+}
+.toast-error {
+  background: var(--danger);
+  color: white;
+}
+
+/* Collapsible section */
+.collapsible-trigger {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.collapsible-trigger:hover {
+  opacity: 0.7;
+}
+.collapsible-arrow {
+  display: inline-block;
+  transition: transform 0.2s;
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+.collapsible-arrow.open {
+  transform: rotate(90deg);
+}
+
+/* Confirmation overlay */
+.confirm-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: rgba(239, 68, 68, 0.04);
+  border: 1px solid rgba(239, 68, 68, 0.15);
+  border-radius: 8px;
+  animation: fadeIn 0.2s ease-out;
+}
+@media (prefers-color-scheme: dark) {
+  .confirm-bar {
+    background: rgba(239, 68, 68, 0.08);
+    border-color: rgba(239, 68, 68, 0.2);
+  }
+}

@@ -12,6 +12,7 @@ export default function SellerSelect({ sellers, value, onChange, placeholder }: 
     <select
       value={value}
       onChange={e => onChange(e.target.value)}
+      className="input-base select-with-arrow"
       style={{
         width: '100%',
         padding: 'var(--space-3) var(--space-4)',
@@ -21,7 +22,6 @@ export default function SellerSelect({ sellers, value, onChange, placeholder }: 
         color: value ? 'var(--ink)' : 'var(--ink-faint)',
         fontSize: 'var(--text-sm)',
         fontFamily: 'var(--font-sans)',
-        outline: 'none',
         appearance: 'none',
         cursor: 'pointer',
       }}

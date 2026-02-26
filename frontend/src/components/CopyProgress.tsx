@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { CopyResponse } from '../lib/api';
 
 interface Props {
@@ -6,7 +7,7 @@ interface Props {
 
 export default function CopyProgress({ results }: Props) {
   return (
-    <div style={{
+    <div className="card animate-slide-up" style={{
       background: 'var(--surface)',
       borderRadius: 8,
       padding: 'var(--space-5)',
@@ -39,56 +40,86 @@ export default function CopyProgress({ results }: Props) {
       {/* Individual results */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
         {results.results.map((r, i) => (
-          <div
-            key={i}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 'var(--space-2)',
-              padding: 'var(--space-2) var(--space-3)',
-              background: 'var(--paper)',
-              borderRadius: 6,
-              fontSize: 'var(--text-sm)',
-              border: '1px solid var(--line)',
-            }}
-          >
-            <span style={{
-              width: 8, height: 8,
-              borderRadius: '50%',
-              background: r.status === 'success' ? 'var(--success)' : 'var(--danger)',
-              flexShrink: 0,
-            }} />
-            <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink-muted)', fontSize: 'var(--text-xs)' }}>
-              {r.source_item_id}
-            </span>
-            <span style={{ color: 'var(--ink-faint)' }}>&rarr;</span>
-            <span style={{ color: 'var(--ink)' }}>{r.dest_seller}</span>
-
-            {r.status === 'success' && r.dest_item_id && (
-              <>
-                <span style={{ color: 'var(--ink-faint)' }}>=</span>
-                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--success)', fontSize: 'var(--text-xs)' }}>
-                  {r.dest_item_id}
-                </span>
-              </>
-            )}
-
-            {r.status === 'error' && r.error && (
-              <span style={{
-                color: 'var(--danger)',
-                fontSize: 'var(--text-xs)',
-                marginLeft: 'auto',
-                maxWidth: 200,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }} title={r.error}>
-                {r.error}
-              </span>
-            )}
-          </div>
+          <ResultRow key={i} result={r} />
         ))}
       </div>
+    </div>
+  );
+}
+
+function ResultRow({ result: r }: { result: CopyResponse['results'][number] }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasError = r.status === 'error' && r.error;
+
+  return (
+    <div style={{ borderRadius: 6, border: '1px solid var(--line)', overflow: 'hidden' }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 'var(--space-2)',
+          padding: 'var(--space-2) var(--space-3)',
+          background: 'var(--paper)',
+          fontSize: 'var(--text-sm)',
+          cursor: hasError ? 'pointer' : 'default',
+        }}
+        onClick={() => hasError && setExpanded(!expanded)}
+      >
+        <span style={{
+          width: 8, height: 8,
+          borderRadius: '50%',
+          background: r.status === 'success' ? 'var(--success)' : 'var(--danger)',
+          flexShrink: 0,
+        }} />
+        <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink-muted)', fontSize: 'var(--text-xs)' }}>
+          {r.source_item_id}
+        </span>
+        <span style={{ color: 'var(--ink-faint)' }}>&rarr;</span>
+        <span style={{ color: 'var(--ink)' }}>{r.dest_seller}</span>
+
+        {r.status === 'success' && r.dest_item_id && (
+          <>
+            <span style={{ color: 'var(--ink-faint)' }}>=</span>
+            <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--success)', fontSize: 'var(--text-xs)' }}>
+              {r.dest_item_id}
+            </span>
+          </>
+        )}
+
+        {hasError && (
+          <span style={{
+            color: 'var(--danger)',
+            fontSize: 'var(--text-xs)',
+            marginLeft: 'auto',
+            maxWidth: expanded ? 'none' : 200,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: expanded ? 'normal' : 'nowrap',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+          }}>
+            <span className={`collapsible-arrow${expanded ? ' open' : ''}`}>{'\u25B6'}</span>
+            {!expanded && r.error}
+          </span>
+        )}
+      </div>
+
+      {/* Expanded error details */}
+      {expanded && hasError && (
+        <div style={{
+          padding: 'var(--space-2) var(--space-3)',
+          background: 'rgba(239, 68, 68, 0.04)',
+          borderTop: '1px solid var(--line)',
+          fontSize: 'var(--text-xs)',
+          color: 'var(--danger)',
+          fontFamily: 'var(--font-mono)',
+          wordBreak: 'break-word',
+          lineHeight: 'var(--leading-normal)',
+        }}>
+          {r.error}
+        </div>
+      )}
     </div>
   );
 }

@@ -41,7 +41,13 @@ export default function App() {
           }}>
             Copy Anuncios
           </h1>
-          <nav style={{ display: 'flex', gap: 'var(--space-2)' }}>
+          <nav style={{
+            display: 'flex',
+            gap: 2,
+            background: 'var(--surface)',
+            borderRadius: 8,
+            padding: 2,
+          }}>
             <ViewTab active={view === 'copy'} onClick={() => setView('copy')}>
               Copiar
             </ViewTab>
@@ -53,18 +59,10 @@ export default function App() {
 
         <button
           onClick={auth.logout}
+          className="btn-ghost"
           style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
             padding: '6px 12px',
-            background: 'none',
-            border: '1px solid var(--line)',
-            borderRadius: 6,
-            color: 'var(--ink-muted)',
             fontSize: 'var(--text-xs)',
-            fontWeight: 500,
-            transition: 'border-color 0.15s, color 0.15s',
           }}
         >
           Sair
@@ -72,16 +70,18 @@ export default function App() {
       </header>
 
       {/* Content */}
-      {view === 'copy' && (
-        <CopyPage sellers={auth.sellers} headers={auth.headers} />
-      )}
-      {view === 'admin' && (
-        <Admin
-          sellers={auth.sellers}
-          loadSellers={auth.loadSellers}
-          disconnectSeller={auth.disconnectSeller}
-        />
-      )}
+      <div className="animate-in">
+        {view === 'copy' && (
+          <CopyPage sellers={auth.sellers} headers={auth.headers} />
+        )}
+        {view === 'admin' && (
+          <Admin
+            sellers={auth.sellers}
+            loadSellers={auth.loadSellers}
+            disconnectSeller={auth.disconnectSeller}
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -105,7 +105,7 @@ function ViewTab({
         fontWeight: active ? 600 : 400,
         background: active ? 'var(--ink)' : 'transparent',
         color: active ? 'var(--paper)' : 'var(--ink-muted)',
-        border: active ? '1px solid var(--ink)' : '1px solid transparent',
+        border: 'none',
         transition: 'all 0.15s',
       }}
     >
