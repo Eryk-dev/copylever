@@ -67,7 +67,7 @@
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": "Follow exact same patterns as app/routers/copy.py. Import require_admin from app.routers.auth. Use Pydantic BaseModel for request bodies. For preview, the seller parameter is a query param used to authenticate the ML API call — the frontend will pass any connected seller slug."
     },
     {

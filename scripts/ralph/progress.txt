@@ -47,3 +47,15 @@ Started: Thu Feb 26 16:00:37 -03 2026
   - `copy_item_compatibilities` signature is (seller_slug, new_item_id, source_item_id) — target first, source second
   - asyncio.create_task works well for parallel API calls; await tasks individually after creation
 ---
+
+## 2026-02-26 - US-004
+- Created `app/routers/compat.py` with 4 endpoints: preview, search-sku, copy, logs
+- Registered compat router in `app/main.py`
+- Files changed: `app/routers/compat.py` (new), `app/main.py` (modified)
+- **Learnings for future iterations:**
+  - Follow same router pattern: `APIRouter(prefix="/api/...", tags=[...], dependencies=[Depends(require_admin)])`
+  - For optional seller param, query first seller from copy_sellers as fallback
+  - get_item_compatibilities returns dict with `products` key for the list of compatibilities
+  - Pydantic BaseModel for request bodies, Query() for query params — same as copy.py
+  - Python syntax check: `python3 -m py_compile <file>` is a quick validation
+---

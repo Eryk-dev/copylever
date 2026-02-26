@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
-from app.routers import auth, auth_ml, copy
+from app.routers import auth, auth_ml, compat, copy
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,6 +41,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(auth_ml.router)
 app.include_router(copy.router)
+app.include_router(compat.router)
 
 
 @app.get("/api/health")
