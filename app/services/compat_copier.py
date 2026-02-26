@@ -1,0 +1,114 @@
+"""
+Orchestration service for copying vehicle compatibilities
+from a source item to multiple target items across all sellers.
+"""
+import asyncio
+import logging
+from typing import Any
+
+from app.db.supabase import get_db
+from app.services.ml_api import (
+    copy_item_compatibilities,
+    get_item,
+    search_items_by_sku,
+)
+
+logger = logging.getLogger(__name__)
+
+
+async def search_sku_all_sellers(skus: list[str]) -> list[dict[str, Any]]:
+    """Search for items matching the given SKUs across all connected sellers.
+
+    Returns a list of dicts with: seller_slug, seller_name, item_id, sku, title.
+    """
+    db = get_db()
+    sellers_resp = db.table("copy_sellers").select("slug, name, ml_user_id").execute()
+    sellers = sellers_resp.data or []
+
+    # Build tasks: one per seller+SKU combination
+    tasks: list[tuple[dict[str, Any], str, asyncio.Task[list[str]]]] = []
+    for seller in sellers:
+        for sku in skus:
+            task = asyncio.create_task(search_items_by_sku(seller["slug"], sku))
+            tasks.append((seller, sku, task))
+
+    # Await all search tasks in parallel
+    results: list[dict[str, Any]] = []
+    item_info_tasks: list[tuple[dict[str, Any], str, str, asyncio.Task[dict[str, Any]]]] = []
+
+    for seller, sku, task in tasks:
+        item_ids = await task
+        for item_id in item_ids:
+            info_task = asyncio.create_task(get_item(seller["slug"], item_id))
+            item_info_tasks.append((seller, sku, item_id, info_task))
+
+    for seller, sku, item_id, info_task in item_info_tasks:
+        try:
+            item_data = await info_task
+            title = item_data.get("title", "")
+        except Exception:
+            logger.warning("Failed to fetch item info for %s", item_id)
+            title = ""
+        results.append({
+            "seller_slug": seller["slug"],
+            "seller_name": seller["name"],
+            "item_id": item_id,
+            "sku": sku,
+            "title": title,
+        })
+
+    return results
+
+
+async def copy_compat_to_targets(
+    source_item_id: str, targets: list[dict[str, str]]
+) -> list[dict[str, Any]]:
+    """Copy compatibilities from source item to each target item.
+
+    Each target dict must have: seller_slug, item_id.
+    Returns per-target results with status/error.
+    Logs the operation to compat_logs after completion.
+    """
+    results: list[dict[str, Any]] = []
+    success_count = 0
+    error_count = 0
+
+    for target in targets:
+        try:
+            await copy_item_compatibilities(
+                target["seller_slug"], target["item_id"], source_item_id
+            )
+            results.append({
+                "seller_slug": target["seller_slug"],
+                "item_id": target["item_id"],
+                "status": "ok",
+                "error": None,
+            })
+            success_count += 1
+        except Exception as exc:
+            logger.error(
+                "Failed to copy compat to %s: %s", target["item_id"], exc
+            )
+            results.append({
+                "seller_slug": target["seller_slug"],
+                "item_id": target["item_id"],
+                "status": "error",
+                "error": str(exc),
+            })
+            error_count += 1
+
+    # Collect SKUs from targets for logging
+    skus = list({t.get("sku", "") for t in targets if t.get("sku")})
+
+    # Log to compat_logs
+    db = get_db()
+    db.table("compat_logs").insert({
+        "source_item_id": source_item_id,
+        "skus": skus,
+        "targets": results,
+        "total_targets": len(targets),
+        "success_count": success_count,
+        "error_count": error_count,
+    }).execute()
+
+    return results

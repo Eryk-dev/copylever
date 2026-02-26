@@ -35,3 +35,15 @@ Started: Thu Feb 26 16:00:37 -03 2026
   - ML search API returns `{ results: [item_ids], paging: {...} }` — use `.get("results", [])` for safety
   - All existing functions follow same pattern: get token, create httpx client, make request, handle 404 gracefully
 ---
+
+## 2026-02-26 - US-003
+- Created `app/services/compat_copier.py` with two orchestration functions
+- `search_sku_all_sellers(skus)`: queries all sellers from copy_sellers, searches each seller+SKU combo in parallel via asyncio.create_task, fetches item titles via get_item()
+- `copy_compat_to_targets(source_item_id, targets)`: copies compatibilities to each target sequentially (error-resilient), logs operation to compat_logs table
+- Files changed: `app/services/compat_copier.py` (new)
+- **Learnings for future iterations:**
+  - Supabase python client insert for array columns (TEXT[]) accepts Python lists directly
+  - Supabase python client insert for JSONB columns accepts Python dicts/lists directly
+  - `copy_item_compatibilities` signature is (seller_slug, new_item_id, source_item_id) — target first, source second
+  - asyncio.create_task works well for parallel API calls; await tasks individually after creation
+---
