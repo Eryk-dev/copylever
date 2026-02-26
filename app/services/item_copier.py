@@ -43,6 +43,51 @@ def _clean_text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _extract_seller_sku_from_attributes(attributes: Any) -> str:
+    if not isinstance(attributes, list):
+        return ""
+    for attr in attributes:
+        if not isinstance(attr, dict):
+            continue
+        if attr.get("id") != "SELLER_SKU":
+            continue
+        value = _clean_text(attr.get("value_name")) or _clean_text(attr.get("value_id"))
+        if value:
+            return value
+    return ""
+
+
+def _get_item_seller_custom_field(item: dict) -> str:
+    direct = _clean_text(item.get("seller_custom_field"))
+    if direct:
+        return direct
+
+    top_attr = _extract_seller_sku_from_attributes(item.get("attributes"))
+    if top_attr:
+        return top_attr
+
+    variations = item.get("variations")
+    if not isinstance(variations, list):
+        return ""
+    for var in variations:
+        if not isinstance(var, dict):
+            continue
+        direct_var = _clean_text(var.get("seller_custom_field"))
+        if direct_var:
+            return direct_var
+        var_attr = _extract_seller_sku_from_attributes(var.get("attributes"))
+        if var_attr:
+            return var_attr
+    return ""
+
+
+def _get_variation_seller_custom_field(variation: dict) -> str:
+    direct = _clean_text(variation.get("seller_custom_field"))
+    if direct:
+        return direct
+    return _extract_seller_sku_from_attributes(variation.get("attributes"))
+
+
 def _get_family_name(item: dict) -> str:
     family_name = _clean_text(item.get("family_name"))
     if family_name:
@@ -131,6 +176,7 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
         "video_id",
         "sale_terms",
         "attributes",
+        "seller_custom_field",
     }
     for field in removable_top_fields:
         if field in invalid_top and field in adjusted:
@@ -174,6 +220,12 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
         adjusted["condition"] = item["condition"]
         actions.append("added required condition")
 
+    if "seller_custom_field" in required_top and not adjusted.get("seller_custom_field"):
+        sku = _get_item_seller_custom_field(item)
+        if sku:
+            adjusted["seller_custom_field"] = sku
+            actions.append("added required seller_custom_field")
+
     if "variations" not in adjusted:
         _ensure_top_level_stock(adjusted, item)
 
@@ -200,6 +252,10 @@ def _build_item_payload(item: dict, safe_mode: bool = False) -> dict:
     for field in base_fields:
         if field in item and item[field] is not None:
             payload[field] = item[field]
+
+    seller_custom_field = _get_item_seller_custom_field(item)
+    if seller_custom_field:
+        payload["seller_custom_field"] = seller_custom_field
 
     if is_user_product:
         family_name = _get_family_name(item)
@@ -274,6 +330,9 @@ def _build_item_payload(item: dict, safe_mode: bool = False) -> dict:
                 v["available_quantity"] = var["available_quantity"]
             if var.get("price") is not None:
                 v["price"] = var["price"]
+            var_sku = _get_variation_seller_custom_field(var)
+            if var_sku:
+                v["seller_custom_field"] = var_sku
 
             # Variation pictures
             # Do not reuse source picture_ids: they frequently fail on create.

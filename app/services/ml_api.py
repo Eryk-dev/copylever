@@ -257,22 +257,27 @@ async def set_item_compatibilities(seller_slug: str, item_id: str, compat_data: 
 
 
 async def search_items_by_sku(seller_slug: str, sku: str) -> list[str]:
-    """GET /users/{user_id}/items/search?seller_sku={sku} — find items by seller SKU."""
+    """GET /users/{user_id}/items/search with seller_sku and sku params."""
     db = get_db()
     seller = db.table("copy_sellers").select("ml_user_id").eq("slug", seller_slug).single().execute()
     user_id = seller.data["ml_user_id"]
 
     token = await _get_token(seller_slug)
+    item_ids: set[str] = set()
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(
-            f"{ML_API}/users/{user_id}/items/search",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"seller_sku": sku},
-        )
-        if resp.status_code == 404:
-            return []
-        _raise_for_status(resp, "Mercado Livre API")
-        return resp.json().get("results", [])
+        for params in ({"seller_sku": sku}, {"sku": sku}):
+            resp = await client.get(
+                f"{ML_API}/users/{user_id}/items/search",
+                headers={"Authorization": f"Bearer {token}"},
+                params=params,
+            )
+            if resp.status_code == 404:
+                continue
+            _raise_for_status(resp, "Mercado Livre API")
+            for item_id in resp.json().get("results", []):
+                if item_id:
+                    item_ids.add(item_id)
+    return list(item_ids)
 
 
 async def copy_item_compatibilities(seller_slug: str, new_item_id: str, source_item_id: str) -> dict:
