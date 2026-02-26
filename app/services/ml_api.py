@@ -16,6 +16,65 @@ MP_API = "https://api.mercadopago.com"
 logger = logging.getLogger(__name__)
 
 
+def _extract_api_error(resp: httpx.Response) -> str:
+    """Parse structured API errors (ML/MP) into a concise message."""
+    try:
+        payload = resp.json()
+    except ValueError:
+        text = (resp.text or "").strip()
+        if text:
+            return text[:600]
+        return f"{resp.status_code} {resp.reason_phrase}"
+
+    if isinstance(payload, dict):
+        parts: list[str] = []
+        error = payload.get("error")
+        message = (
+            payload.get("message")
+            or payload.get("error_description")
+            or payload.get("detail")
+        )
+        if error:
+            parts.append(str(error))
+        if message and str(message) not in parts:
+            parts.append(str(message))
+
+        causes = payload.get("cause")
+        if isinstance(causes, list):
+            cause_parts = []
+            for cause in causes:
+                if isinstance(cause, dict):
+                    code = cause.get("code")
+                    cause_msg = cause.get("message") or cause.get("description")
+                    if code and cause_msg:
+                        cause_parts.append(f"{code}: {cause_msg}")
+                    elif cause_msg:
+                        cause_parts.append(str(cause_msg))
+                    elif code:
+                        cause_parts.append(str(code))
+                elif cause:
+                    cause_parts.append(str(cause))
+            if cause_parts:
+                parts.append(" | ".join(cause_parts))
+
+        if parts:
+            return "; ".join(parts)
+
+    return str(payload)[:600]
+
+
+def _raise_for_status(resp: httpx.Response, service_name: str) -> None:
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        method = resp.request.method if resp.request else "?"
+        url = str(resp.request.url) if resp.request else "?"
+        detail = _extract_api_error(resp)
+        raise RuntimeError(
+            f"{service_name} {resp.status_code} {method} {url}: {detail}"
+        ) from exc
+
+
 def _get_seller_credentials(seller: dict) -> tuple[str, str]:
     from app.config import settings
     app_id = seller.get("ml_app_id") or settings.ml_app_id
@@ -48,7 +107,7 @@ async def _get_token(seller_slug: str) -> str:
             "client_secret": secret,
             "refresh_token": old_refresh,
         })
-        resp.raise_for_status()
+        _raise_for_status(resp, "Mercado Pago API")
         data = resp.json()
 
     new_expires = datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 21600))
@@ -73,7 +132,7 @@ async def exchange_code(code: str) -> dict:
             "code": code,
             "redirect_uri": settings.ml_redirect_uri,
         })
-        resp.raise_for_status()
+        _raise_for_status(resp, "Mercado Pago API")
         return resp.json()
 
 
@@ -84,7 +143,7 @@ async def fetch_user_info(access_token: str) -> dict:
             f"{ML_API}/users/me",
             headers={"Authorization": f"Bearer {access_token}"},
         )
-        resp.raise_for_status()
+        _raise_for_status(resp, "Mercado Livre API")
         return resp.json()
 
 
@@ -99,7 +158,7 @@ async def get_item(seller_slug: str, item_id: str) -> dict:
             f"{ML_API}/items/{item_id}",
             headers={"Authorization": f"Bearer {token}"},
         )
-        resp.raise_for_status()
+        _raise_for_status(resp, "Mercado Livre API")
         return resp.json()
 
 
@@ -113,7 +172,7 @@ async def get_item_description(seller_slug: str, item_id: str) -> dict:
         )
         if resp.status_code == 404:
             return {}
-        resp.raise_for_status()
+        _raise_for_status(resp, "Mercado Livre API")
         return resp.json()
 
 
@@ -128,7 +187,7 @@ async def get_item_compatibilities(seller_slug: str, item_id: str) -> dict | Non
         )
         if resp.status_code == 404:
             return None
-        resp.raise_for_status()
+        _raise_for_status(resp, "Mercado Livre API")
         return resp.json()
 
 
@@ -141,7 +200,7 @@ async def create_item(seller_slug: str, payload: dict) -> dict:
             headers={"Authorization": f"Bearer {token}"},
             json=payload,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp, "Mercado Livre API")
         return resp.json()
 
 
@@ -154,7 +213,7 @@ async def set_item_description(seller_slug: str, item_id: str, plain_text: str) 
             headers={"Authorization": f"Bearer {token}"},
             json={"plain_text": plain_text},
         )
-        resp.raise_for_status()
+        _raise_for_status(resp, "Mercado Livre API")
         return resp.json()
 
 
@@ -167,7 +226,7 @@ async def set_item_compatibilities(seller_slug: str, item_id: str, compat_data: 
             headers={"Authorization": f"Bearer {token}"},
             json=compat_data,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp, "Mercado Livre API")
         return resp.json()
 
 
@@ -186,7 +245,7 @@ async def search_items_by_sku(seller_slug: str, sku: str) -> list[str]:
         )
         if resp.status_code == 404:
             return []
-        resp.raise_for_status()
+        _raise_for_status(resp, "Mercado Livre API")
         return resp.json().get("results", [])
 
 
@@ -201,5 +260,5 @@ async def copy_item_compatibilities(seller_slug: str, new_item_id: str, source_i
         )
         if resp.status_code == 404:
             return {}
-        resp.raise_for_status()
+        _raise_for_status(resp, "Mercado Livre API")
         return resp.json()

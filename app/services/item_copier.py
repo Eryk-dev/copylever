@@ -34,16 +34,20 @@ SKIP_FIELDS = {
 }
 
 
-def _build_item_payload(item: dict) -> dict:
+def _build_item_payload(item: dict, safe_mode: bool = False) -> dict:
     """Build POST /items payload from source item data."""
     payload: dict[str, Any] = {}
 
     # Basic fields
-    for field in [
+    base_fields = [
         "title", "category_id", "price", "currency_id",
         "available_quantity", "buying_mode", "listing_type_id",
-        "condition", "video_id",
-    ]:
+        "condition",
+    ]
+    if not safe_mode:
+        base_fields.append("video_id")
+
+    for field in base_fields:
         if field in item and item[field] is not None:
             payload[field] = item[field]
 
@@ -63,11 +67,15 @@ def _build_item_payload(item: dict) -> dict:
             if attr_id in EXCLUDED_ATTRIBUTES:
                 continue
             # Keep only id and value_name (or value_id if structured)
+            value_id = attr.get("value_id")
+            value_name = attr.get("value_name")
+            if not value_id and not value_name:
+                continue
             clean = {"id": attr_id}
-            if attr.get("value_id"):
-                clean["value_id"] = attr["value_id"]
-            if attr.get("value_name"):
-                clean["value_name"] = attr["value_name"]
+            if value_id:
+                clean["value_id"] = value_id
+            else:
+                clean["value_name"] = value_name
             attrs.append(clean)
         if attrs:
             payload["attributes"] = attrs
@@ -76,11 +84,16 @@ def _build_item_payload(item: dict) -> dict:
     if item.get("sale_terms"):
         terms = []
         for term in item["sale_terms"]:
-            clean = {"id": term.get("id")}
-            if term.get("value_id"):
-                clean["value_id"] = term["value_id"]
-            if term.get("value_name"):
-                clean["value_name"] = term["value_name"]
+            term_id = term.get("id")
+            value_id = term.get("value_id")
+            value_name = term.get("value_name")
+            if not term_id or (not value_id and not value_name):
+                continue
+            clean = {"id": term_id}
+            if value_id:
+                clean["value_id"] = value_id
+            else:
+                clean["value_name"] = value_name
             terms.append(clean)
         if terms:
             payload["sale_terms"] = terms
@@ -93,7 +106,7 @@ def _build_item_payload(item: dict) -> dict:
             "local_pick_up": ship.get("local_pick_up", False),
             "free_shipping": ship.get("free_shipping", False),
         }
-        if ship.get("methods"):
+        if ship.get("methods") and not safe_mode:
             payload["shipping"]["methods"] = ship["methods"]
 
     # Variations
@@ -108,37 +121,58 @@ def _build_item_payload(item: dict) -> dict:
                 v["price"] = var["price"]
 
             # Variation pictures
-            if var.get("picture_ids"):
-                v["picture_ids"] = var["picture_ids"]
+            # Do not reuse source picture_ids: they frequently fail on create.
 
             # Variation attribute combinations
             if var.get("attribute_combinations"):
-                v["attribute_combinations"] = [
-                    {
-                        "id": ac.get("id"),
-                        **({"value_id": ac["value_id"]} if ac.get("value_id") else {}),
-                        **({"value_name": ac["value_name"]} if ac.get("value_name") else {}),
-                    }
-                    for ac in var["attribute_combinations"]
-                ]
+                combos = []
+                for ac in var["attribute_combinations"]:
+                    ac_id = ac.get("id")
+                    value_id = ac.get("value_id")
+                    value_name = ac.get("value_name")
+                    if not ac_id or (not value_id and not value_name):
+                        continue
+                    clean_ac = {"id": ac_id}
+                    if value_id:
+                        clean_ac["value_id"] = value_id
+                    else:
+                        clean_ac["value_name"] = value_name
+                    combos.append(clean_ac)
+                if combos:
+                    v["attribute_combinations"] = combos
 
             # Variation attributes (seller_custom_field, etc.)
             if var.get("attributes"):
-                v["attributes"] = [
-                    {
-                        "id": a.get("id"),
-                        **({"value_name": a["value_name"]} if a.get("value_name") else {}),
-                    }
-                    for a in var["attributes"]
-                ]
+                attrs = []
+                for a in var["attributes"]:
+                    attr_id = a.get("id")
+                    value_id = a.get("value_id")
+                    value_name = a.get("value_name")
+                    if not attr_id:
+                        continue
+                    if safe_mode and attr_id != "SELLER_SKU":
+                        continue
+                    if not value_id and not value_name:
+                        continue
+                    clean = {"id": attr_id}
+                    if value_id:
+                        clean["value_id"] = value_id
+                    else:
+                        clean["value_name"] = value_name
+                    attrs.append(clean)
+                if attrs:
+                    v["attributes"] = attrs
 
-            variations.append(v)
+            if v.get("attribute_combinations"):
+                variations.append(v)
 
         if variations:
             payload["variations"] = variations
+            # With variations, ML expects stock on each variation.
+            payload.pop("available_quantity", None)
 
     # Channels
-    if item.get("channels"):
+    if item.get("channels") and not safe_mode:
         payload["channels"] = item["channels"]
 
     return payload
@@ -182,7 +216,25 @@ async def copy_single_item(
         # 4. Build payload and POST to dest seller
         payload = _build_item_payload(item)
         logger.info(f"Creating item on {dest_seller} (title: {payload.get('title', '')[:50]})")
-        new_item = await create_item(dest_seller, payload)
+        try:
+            new_item = await create_item(dest_seller, payload)
+        except Exception as first_exc:
+            safe_payload = _build_item_payload(item, safe_mode=True)
+            if safe_payload == payload:
+                raise
+            logger.warning(
+                "Primary payload rejected for %s -> %s. Retrying with safe payload. Error: %s",
+                item_id,
+                dest_seller,
+                first_exc,
+            )
+            try:
+                new_item = await create_item(dest_seller, safe_payload)
+            except Exception as retry_exc:
+                raise RuntimeError(
+                    f"{first_exc}; safe retry failed: {retry_exc}"
+                ) from retry_exc
+
         new_item_id = new_item["id"]
         result["dest_item_id"] = new_item_id
         logger.info(f"Item created: {new_item_id} on {dest_seller}")
