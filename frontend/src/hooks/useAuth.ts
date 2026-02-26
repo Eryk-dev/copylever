@@ -5,7 +5,7 @@ const TOKEN_KEY = 'copy-admin-token';
 
 export function useAuth() {
   const [token, setToken] = useState<string | null>(() => {
-    return sessionStorage.getItem(TOKEN_KEY);
+    return localStorage.getItem(TOKEN_KEY);
   });
   const [sellers, setSellers] = useState<Seller[]>([]);
   const [loadingSellers, setLoadingSellers] = useState(false);
@@ -28,7 +28,7 @@ export function useAuth() {
       if (!res.ok) return false;
       const data = await res.json();
       setToken(data.token);
-      sessionStorage.setItem(TOKEN_KEY, data.token);
+      localStorage.setItem(TOKEN_KEY, data.token);
       return true;
     } catch {
       return false;
@@ -43,7 +43,7 @@ export function useAuth() {
       }).catch(() => {});
     }
     setToken(null);
-    sessionStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(TOKEN_KEY);
     setSellers([]);
   }, [token]);
 
