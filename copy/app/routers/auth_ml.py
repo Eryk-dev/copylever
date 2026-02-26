@@ -55,37 +55,42 @@ async def callback(code: str, state: str = ""):
     nickname = user_info.get("nickname", f"seller_{ml_user_id}")
     slug = nickname.lower().replace(" ", "-")
 
-    db = get_db()
+    try:
+        db = get_db()
 
-    # Check if seller already exists in copy_sellers
-    existing = db.table("copy_sellers").select("slug").or_(
-        f"ml_user_id.eq.{ml_user_id},slug.eq.{slug}"
-    ).execute()
+        # Check if seller already exists in copy_sellers
+        existing = db.table("copy_sellers").select("slug").or_(
+            f"ml_user_id.eq.{ml_user_id},slug.eq.{slug}"
+        ).execute()
 
-    if existing.data:
-        db.table("copy_sellers").update({
+        if existing.data:
+            db.table("copy_sellers").update({
+                "ml_user_id": ml_user_id,
+                "ml_access_token": token_data["access_token"],
+                "ml_refresh_token": token_data["refresh_token"],
+                "ml_token_expires_at": expires_at.isoformat(),
+                "active": True,
+            }).eq("slug", existing.data[0]["slug"]).execute()
+            logger.info(f"OAuth: updated tokens for existing copy_seller {existing.data[0]['slug']}")
+            return _success_page(existing.data[0]["slug"], already_exists=True)
+
+        # Create new seller
+        db.table("copy_sellers").insert({
+            "slug": slug,
+            "name": nickname,
             "ml_user_id": ml_user_id,
             "ml_access_token": token_data["access_token"],
             "ml_refresh_token": token_data["refresh_token"],
             "ml_token_expires_at": expires_at.isoformat(),
             "active": True,
-        }).eq("slug", existing.data[0]["slug"]).execute()
-        logger.info(f"OAuth: updated tokens for existing copy_seller {existing.data[0]['slug']}")
-        return _success_page(existing.data[0]["slug"], already_exists=True)
+        }).execute()
 
-    # Create new seller
-    db.table("copy_sellers").insert({
-        "slug": slug,
-        "name": nickname,
-        "ml_user_id": ml_user_id,
-        "ml_access_token": token_data["access_token"],
-        "ml_refresh_token": token_data["refresh_token"],
-        "ml_token_expires_at": expires_at.isoformat(),
-        "active": True,
-    }).execute()
+        logger.info(f"OAuth: new copy_seller created — slug={slug}, ml_user_id={ml_user_id}")
+        return _success_page(slug, already_exists=False)
 
-    logger.info(f"OAuth: new copy_seller created — slug={slug}, ml_user_id={ml_user_id}")
-    return _success_page(slug, already_exists=False)
+    except Exception as e:
+        logger.error(f"Supabase operation failed during OAuth callback: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
 
 @router.get("/api/sellers", dependencies=[Depends(require_admin)])

@@ -49,6 +49,21 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/api/debug/env")
+async def debug_env():
+    """Check which env vars are configured (values masked)."""
+    return {
+        "ml_app_id": f"...{settings.ml_app_id[-4:]}" if settings.ml_app_id else "MISSING",
+        "ml_secret_key": f"...{settings.ml_secret_key[-4:]}" if settings.ml_secret_key else "MISSING",
+        "ml_redirect_uri": settings.ml_redirect_uri or "MISSING",
+        "supabase_url": settings.supabase_url or "MISSING",
+        "supabase_service_role_key": "SET" if settings.supabase_service_role_key else "MISSING",
+        "supabase_key": "SET" if settings.supabase_key else "MISSING",
+        "base_url": settings.base_url,
+        "cors_origins": settings.cors_origins,
+    }
+
+
 # Serve frontend SPA (built React app)
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
