@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { Seller } from '../lib/api';
+import { API_BASE } from '../lib/api';
 import { Card } from './CopyPage';
 import { useToast } from '../components/Toast';
 
@@ -10,7 +11,13 @@ interface Props {
 }
 
 export default function Admin({ sellers, loadSellers, disconnectSeller }: Props) {
-  const installUrl = `${window.location.origin}/api/ml/install`;
+  const apiBase = API_BASE.trim();
+  const installBase = apiBase
+    ? (apiBase.startsWith('http://') || apiBase.startsWith('https://')
+      ? apiBase
+      : `${window.location.origin}${apiBase.startsWith('/') ? '' : '/'}${apiBase}`)
+    : window.location.origin;
+  const installUrl = `${installBase.replace(/\/+$/, '')}/api/ml/install`;
   const { toast } = useToast();
   const [refreshing, setRefreshing] = useState(false);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
