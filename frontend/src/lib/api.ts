@@ -58,3 +58,31 @@ export interface ItemPreview {
   description_length: number;
   channels: string[];
 }
+
+export interface CompatPreview {
+  id: string;
+  title: string;
+  thumbnail: string;
+  has_compatibilities: boolean;
+  compat_count: number;
+}
+
+export interface CompatSearchResult {
+  seller_slug: string;
+  seller_name: string;
+  item_id: string;
+  sku: string;
+  title: string;
+}
+
+export interface CompatCopyResult {
+  total: number;
+  success: number;
+  errors: number;
+  results: {
+    seller_slug: string;
+    item_id: string;
+    status: 'ok' | 'error';
+    error: string | null;
+  }[];
+}
