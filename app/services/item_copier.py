@@ -2,10 +2,12 @@
 Core logic for copying ML listings from one seller to another.
 """
 import logging
+import re
 from typing import Any
 
 from app.db.supabase import get_db
 from app.services.ml_api import (
+    MlApiError,
     get_item,
     get_item_description,
     get_item_compatibilities,
@@ -33,23 +35,176 @@ SKIP_FIELDS = {
     "differential_pricing", "original_price",
 }
 
+USER_PRODUCT_LISTING_TAG = "user_product_listing"
+BRACKET_FIELDS_RE = re.compile(r"\[([^\]]+)\]")
+
+
+def _clean_text(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _get_family_name(item: dict) -> str:
+    family_name = _clean_text(item.get("family_name"))
+    if family_name:
+        return family_name
+    return _clean_text(item.get("title"))
+
+
+def _is_user_product_item(item: dict) -> bool:
+    tags = item.get("tags") or []
+    if isinstance(tags, list) and USER_PRODUCT_LISTING_TAG in tags:
+        return True
+    return bool(_clean_text(item.get("family_name")))
+
+
+def _extract_fields_from_text(text: str) -> set[str]:
+    fields: set[str] = set()
+    for group in BRACKET_FIELDS_RE.findall(text or ""):
+        for raw in group.split(","):
+            field = raw.strip().strip("'\"")
+            if field:
+                fields.add(field.lower())
+    return fields
+
+
+def _extract_ml_error_fields(exc: MlApiError, marker: str) -> set[str]:
+    payload = exc.payload if isinstance(exc.payload, dict) else {}
+    texts: list[str] = [str(exc)]
+
+    for key in ("message", "error", "detail"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            texts.append(value)
+
+    causes = payload.get("cause")
+    if isinstance(causes, list):
+        for cause in causes:
+            if not isinstance(cause, dict):
+                continue
+            for key in ("code", "message", "description"):
+                value = cause.get(key)
+                if isinstance(value, str):
+                    texts.append(value)
+
+    if marker and not any(marker in text for text in texts):
+        return set()
+
+    fields: set[str] = set()
+    for text in texts:
+        fields.update(_extract_fields_from_text(text))
+    return fields
+
+
+def _ensure_top_level_stock(payload: dict, item: dict) -> None:
+    if "available_quantity" in payload:
+        return
+
+    qty = item.get("available_quantity")
+    if qty is None and isinstance(item.get("variations"), list):
+        qty = sum(
+            v.get("available_quantity", 0)
+            for v in item["variations"]
+            if isinstance(v, dict)
+        )
+    if qty is not None:
+        payload["available_quantity"] = qty
+
+
+def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> tuple[dict, list[str]]:
+    adjusted = dict(payload)
+    actions: list[str] = []
+
+    invalid_raw = _extract_ml_error_fields(exc, "invalid_fields")
+    required_raw = _extract_ml_error_fields(exc, "required_fields")
+    invalid_top = {field.split(".", 1)[0] for field in invalid_raw}
+    required_top = {field.split(".", 1)[0] for field in required_raw}
+
+    if "shipping.methods" in invalid_raw and isinstance(adjusted.get("shipping"), dict):
+        if "methods" in adjusted["shipping"]:
+            adjusted["shipping"] = {k: v for k, v in adjusted["shipping"].items() if k != "methods"}
+            actions.append("removed shipping.methods")
+
+    removable_top_fields = {
+        "title",
+        "variations",
+        "channels",
+        "video_id",
+        "sale_terms",
+        "attributes",
+    }
+    for field in removable_top_fields:
+        if field in invalid_top and field in adjusted:
+            adjusted.pop(field, None)
+            actions.append(f"removed {field}")
+
+    if "shipping" in invalid_top and "shipping.methods" not in invalid_raw and "shipping" in adjusted:
+        adjusted.pop("shipping", None)
+        actions.append("removed shipping")
+
+    if "title" in invalid_top:
+        family_name = _get_family_name(item)
+        if family_name and not adjusted.get("family_name"):
+            adjusted["family_name"] = family_name
+            actions.append("added family_name from source")
+
+    if "family_name" in required_top and not adjusted.get("family_name"):
+        family_name = _get_family_name(item)
+        if family_name:
+            adjusted["family_name"] = family_name
+            actions.append("added required family_name")
+
+    if "title" in required_top and not adjusted.get("title"):
+        title = _clean_text(item.get("title"))
+        if title:
+            adjusted["title"] = title
+            actions.append("added required title")
+
+    if "pictures" in required_top and "pictures" not in adjusted and item.get("pictures"):
+        adjusted["pictures"] = [
+            {"source": pic.get("secure_url") or pic.get("url")}
+            for pic in item["pictures"]
+            if isinstance(pic, dict) and (pic.get("secure_url") or pic.get("url"))
+        ]
+        if adjusted["pictures"]:
+            actions.append("added required pictures")
+        else:
+            adjusted.pop("pictures", None)
+
+    if "condition" in required_top and "condition" not in adjusted and item.get("condition"):
+        adjusted["condition"] = item["condition"]
+        actions.append("added required condition")
+
+    if "variations" not in adjusted:
+        _ensure_top_level_stock(adjusted, item)
+
+    return adjusted, actions
+
 
 def _build_item_payload(item: dict, safe_mode: bool = False) -> dict:
     """Build POST /items payload from source item data."""
     payload: dict[str, Any] = {}
+    is_user_product = _is_user_product_item(item)
 
     # Basic fields
     base_fields = [
-        "title", "category_id", "price", "currency_id",
+        "category_id", "price", "currency_id",
         "available_quantity", "buying_mode", "listing_type_id",
-        "condition", "family_name",
+        "condition",
     ]
+    if not is_user_product:
+        base_fields.insert(0, "title")
+
     if not safe_mode:
         base_fields.append("video_id")
 
     for field in base_fields:
         if field in item and item[field] is not None:
             payload[field] = item[field]
+
+    if is_user_product:
+        family_name = _get_family_name(item)
+        if family_name:
+            payload["family_name"] = family_name
 
     # Pictures — ML accepts source URLs
     if item.get("pictures"):
@@ -109,8 +264,8 @@ def _build_item_payload(item: dict, safe_mode: bool = False) -> dict:
         if ship.get("methods") and not safe_mode:
             payload["shipping"]["methods"] = ship["methods"]
 
-    # Variations
-    if item.get("variations"):
+    # Variations (User Products flow does not accept variations on create)
+    if item.get("variations") and not is_user_product:
         variations = []
         for var in item["variations"]:
             v: dict[str, Any] = {}
@@ -215,25 +370,49 @@ async def copy_single_item(
 
         # 4. Build payload and POST to dest seller
         payload = _build_item_payload(item)
-        logger.info(f"Creating item on {dest_seller} (title: {payload.get('title', '')[:50]})")
-        try:
-            new_item = await create_item(dest_seller, payload)
-        except Exception as first_exc:
-            safe_payload = _build_item_payload(item, safe_mode=True)
-            if safe_payload == payload:
-                raise
-            logger.warning(
-                "Primary payload rejected for %s -> %s. Retrying with safe payload. Error: %s",
-                item_id,
-                dest_seller,
-                first_exc,
-            )
+        item_label = payload.get("title") or payload.get("family_name") or ""
+        logger.info(f"Creating item on {dest_seller} (label: {item_label[:50]})")
+
+        new_item: dict | None = None
+        safe_mode_retry_used = False
+        last_exc: Exception | None = None
+
+        for _ in range(4):
             try:
-                new_item = await create_item(dest_seller, safe_payload)
-            except Exception as retry_exc:
-                raise RuntimeError(
-                    f"{first_exc}; safe retry failed: {retry_exc}"
-                ) from retry_exc
+                new_item = await create_item(dest_seller, payload)
+                break
+            except MlApiError as exc:
+                last_exc = exc
+                adjusted_payload, actions = _adjust_payload_for_ml_error(payload, item, exc)
+                if actions and adjusted_payload != payload:
+                    logger.warning(
+                        "ML rejected payload for %s -> %s. Retrying with adjustments: %s. Error: %s",
+                        item_id,
+                        dest_seller,
+                        ", ".join(actions),
+                        exc,
+                    )
+                    payload = adjusted_payload
+                    continue
+
+                if not safe_mode_retry_used:
+                    safe_payload = _build_item_payload(item, safe_mode=True)
+                    if safe_payload != payload:
+                        safe_mode_retry_used = True
+                        logger.warning(
+                            "Primary payload rejected for %s -> %s. Retrying with safe payload. Error: %s",
+                            item_id,
+                            dest_seller,
+                            exc,
+                        )
+                        payload = safe_payload
+                        continue
+                raise
+
+        if new_item is None:
+            if last_exc is not None:
+                raise last_exc
+            raise RuntimeError("Failed to create item after retries")
 
         new_item_id = new_item["id"]
         result["dest_item_id"] = new_item_id

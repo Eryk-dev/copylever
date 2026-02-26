@@ -16,15 +16,36 @@ MP_API = "https://api.mercadopago.com"
 logger = logging.getLogger(__name__)
 
 
-def _extract_api_error(resp: httpx.Response) -> str:
+class MlApiError(RuntimeError):
+    """Structured Mercado Livre/Mercado Pago HTTP error."""
+
+    def __init__(
+        self,
+        service_name: str,
+        status_code: int,
+        method: str,
+        url: str,
+        detail: str,
+        payload: Any = None,
+    ) -> None:
+        self.service_name = service_name
+        self.status_code = status_code
+        self.method = method
+        self.url = url
+        self.detail = detail
+        self.payload = payload
+        super().__init__(f"{service_name} {status_code} {method} {url}: {detail}")
+
+
+def _extract_api_error(resp: httpx.Response) -> tuple[str, Any]:
     """Parse structured API errors (ML/MP) into a concise message."""
     try:
         payload = resp.json()
     except ValueError:
         text = (resp.text or "").strip()
         if text:
-            return text[:600]
-        return f"{resp.status_code} {resp.reason_phrase}"
+            return text[:600], None
+        return f"{resp.status_code} {resp.reason_phrase}", None
 
     if isinstance(payload, dict):
         parts: list[str] = []
@@ -58,9 +79,9 @@ def _extract_api_error(resp: httpx.Response) -> str:
                 parts.append(" | ".join(cause_parts))
 
         if parts:
-            return "; ".join(parts)
+            return "; ".join(parts), payload
 
-    return str(payload)[:600]
+    return str(payload)[:600], payload
 
 
 def _raise_for_status(resp: httpx.Response, service_name: str) -> None:
@@ -69,9 +90,14 @@ def _raise_for_status(resp: httpx.Response, service_name: str) -> None:
     except httpx.HTTPStatusError as exc:
         method = resp.request.method if resp.request else "?"
         url = str(resp.request.url) if resp.request else "?"
-        detail = _extract_api_error(resp)
-        raise RuntimeError(
-            f"{service_name} {resp.status_code} {method} {url}: {detail}"
+        detail, payload = _extract_api_error(resp)
+        raise MlApiError(
+            service_name=service_name,
+            status_code=resp.status_code,
+            method=method,
+            url=url,
+            detail=detail,
+            payload=payload,
         ) from exc
 
 
