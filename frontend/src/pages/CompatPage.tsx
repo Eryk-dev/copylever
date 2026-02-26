@@ -124,6 +124,7 @@ export default function CompatPage({ sellers, headers }: Props) {
         body: JSON.stringify({
           source_item_id: preview.id,
           targets: searchResults.map(r => ({ seller_slug: r.seller_slug, item_id: r.item_id })),
+          skus: searchedSkus,
         }),
       });
       if (!res.ok) {

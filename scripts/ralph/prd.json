@@ -93,7 +93,7 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": "Use fetch() with API_BASE from lib/api.ts for all API calls, same pattern as existing pages. The sellers prop comes from useAuth hook in App.tsx. Use the first seller's slug for the preview API call. For SKU parsing, split input by commas, spaces, and newlines then trim and filter empty strings."
     },
     {
@@ -110,7 +110,7 @@
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": "Follow the exact same pattern used for CopyPage and Admin views in App.tsx. The history section should be similar to the copy logs pattern in CopyPage.tsx."
     }
   ]

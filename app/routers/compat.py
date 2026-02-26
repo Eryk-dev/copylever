@@ -76,6 +76,7 @@ class CopyTarget(BaseModel):
 class CopyRequest(BaseModel):
     source_item_id: str
     targets: list[CopyTarget]
+    skus: list[str] = []
 
 
 @router.post("/copy")
@@ -85,7 +86,7 @@ async def copy_compat(req: CopyRequest):
         raise HTTPException(status_code=400, detail="At least one target is required")
 
     targets = [{"seller_slug": t.seller_slug, "item_id": t.item_id} for t in req.targets]
-    results = await copy_compat_to_targets(req.source_item_id, targets)
+    results = await copy_compat_to_targets(req.source_item_id, targets, skus=req.skus)
 
     success_count = sum(1 for r in results if r["status"] == "ok")
     error_count = sum(1 for r in results if r["status"] == "error")

@@ -59,3 +59,29 @@ Started: Thu Feb 26 16:00:37 -03 2026
   - Pydantic BaseModel for request bodies, Query() for query params — same as copy.py
   - Python syntax check: `python3 -m py_compile <file>` is a quick validation
 ---
+
+## 2026-02-26 - US-005
+- Created `frontend/src/pages/CompatPage.tsx` with full compat copy flow
+- Added `CompatPreview`, `CompatSearchResult`, `CompatCopyResult` interfaces to `frontend/src/lib/api.ts`
+- Features: source input with MLB URL parsing, preview with compat count, SKU search textarea, results grouped by SKU, copy button with progress, results summary, history table
+- Files changed: `frontend/src/pages/CompatPage.tsx` (new), `frontend/src/lib/api.ts` (modified)
+- **Learnings for future iterations:**
+  - `Card` component is exported from `CopyPage.tsx` — reuse it for consistent UI across pages
+  - `headers` prop is a function `() => Record<string,string>`, not a plain object
+  - CopyPage uses inline styles matching CSS variables from index.css — follow same pattern
+  - For MLB URL parsing: regex `/MLB[-]?(\d+)/i` then format as `MLB{digits}`
+  - `sellers[0]?.slug` provides the first seller slug for preview API calls
+  - Logs table pattern: collapsible Card with table, same header styles as CopyPage
+---
+
+## 2026-02-26 - US-006
+- Added 'compat' to View type in App.tsx
+- Added Compat ViewTab in header navigation
+- Imported and rendered CompatPage when view === 'compat'
+- History section was already implemented in US-005 (loads on mount, refreshes after copy)
+- Files changed: `frontend/src/App.tsx` (modified)
+- **Learnings for future iterations:**
+  - CompatPage history was already built into US-005 — the Card component supports `collapsible`, `open`, `onToggle` props
+  - Adding a new view follows a simple 3-step pattern: extend View type, add ViewTab, add conditional render
+  - `headers` prop on CompatPage is `() => Record<string,string>` (function), consistent with CopyPage
+---

@@ -61,7 +61,7 @@ async def search_sku_all_sellers(skus: list[str]) -> list[dict[str, Any]]:
 
 
 async def copy_compat_to_targets(
-    source_item_id: str, targets: list[dict[str, str]]
+    source_item_id: str, targets: list[dict[str, str]], skus: list[str] | None = None
 ) -> list[dict[str, Any]]:
     """Copy compatibilities from source item to each target item.
 
@@ -97,14 +97,11 @@ async def copy_compat_to_targets(
             })
             error_count += 1
 
-    # Collect SKUs from targets for logging
-    skus = list({t.get("sku", "") for t in targets if t.get("sku")})
-
     # Log to compat_logs
     db = get_db()
     db.table("compat_logs").insert({
         "source_item_id": source_item_id,
-        "skus": skus,
+        "skus": skus or [],
         "targets": results,
         "total_targets": len(targets),
         "success_count": success_count,
