@@ -1,348 +1,78 @@
 # Ralph Progress Log
-Started: Fri Feb 27 11:46:39 -03 2026
-
-## Codebase Patterns
-- Use `bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")` for password hashing
-- Admin section uses sub-navigation (ViewTab) in App.tsx with `adminSubView` state for Sellers vs Usuários
-- UsersPage receives `headers` and `currentUserId` props from App.tsx (not from useAuth directly)
-- Use `bcrypt.checkpw(password.encode(), hashed.encode())` for password verification
-- Supabase client: `db.table("name").select/insert/update/delete` pattern via `get_db()` from `app.db.supabase`
-- FastAPI dependencies that return user dicts are passed via `Depends()` — use `user: dict = Depends(require_user)`
-- Auth header is `X-Auth-Token` extracted via `Header(...)` in FastAPI
-- Session tokens are `secrets.token_urlsafe(32)` with 7-day expiry stored in `user_sessions`
-- All migrations use `IF NOT EXISTS` pattern
-- Python modules compile-checked with `python3 -m py_compile`
-- Frontend typecheck: `cd frontend && npx tsc --noEmit`
-- `require_admin` from `app.routers.auth` is imported by `auth_ml.py`, `copy.py`, `compat.py`, `admin_users.py`
-- Admin user CRUD router: `app/routers/admin_users.py` with prefix `/api/admin`
-- USER_FIELDS constant for safe select (excludes password_hash): `"id, username, role, can_run_compat, active, created_at, last_login_at"`
-- Supabase upsert with composite key: `.upsert(data, on_conflict="col1,col2")`
-- `copy_sellers` table has `slug` and `name` columns for seller identification
-- Permission check pattern: `_check_seller_permission(user, seller_slug, "from"|"to")` helper in copy.py
-- Admin bypass: always check `user["role"] == "admin"` before permission checks
-- `search_sku_all_sellers` accepts optional `allowed_sellers` param to filter sellers
-- Supabase join for username: `.select("*, users(username)")` then flatten `row.pop("users")["username"]`
-- Audit logging: wrap `auth_logs` inserts in try/except so logging failures don't break main operations
-- Log entry pattern: conditionally add `user_id` only if present (`if user_id: log_entry["user_id"] = user_id`)
-- Frontend auth token: localStorage key is `copy-auth-token`, header is `X-Auth-Token`
-- `useAuth.login` signature: `(username: string, password: string) => Promise<boolean>`
-- `useAuth` exports `user: AuthUser | null` with `{id, username, role, can_run_compat, permissions}`
-- `AuthUser` and `UserPermission` types exported from `hooks/useAuth.ts`
-- `isAuthenticated` requires both token AND user object (double check)
-- Tab visibility: check `user.permissions.some(p => p.can_copy_from)` AND `some(p => p.can_copy_to)` for Copiar tab
-- `activeView` pattern: fallback to first visible tab if current view is hidden
-- UsersPage inline panels are mutually exclusive: opening permissions closes edit (and vice versa) via state resets
-- Permissions API: GET returns `[{seller_slug, seller_name, can_copy_from, can_copy_to}]`, PUT accepts `{permissions: [...]}`
-
----
-
-## 2026-02-27 - US-001
-- Already committed in previous iteration (commit 44b8ee0)
-- Migration file: app/db/migrations/004_user_auth.sql (numbered 004 not 003)
-- Tables: users, user_sessions, user_permissions, auth_logs
-- ALTER TABLE copy_logs and compat_logs to add user_id column
-- **Learnings for future iterations:**
-  - Migration numbering gap (no 003) — 004 is fine, just note in docs
-  - All tables use UUID PKs with gen_random_uuid()
-
----
-
-## 2026-02-27 - US-002
-- Rewrote app/routers/auth.py: replaced admin_config-based auth with users/user_sessions tables
-- Added ADMIN_MASTER_PASSWORD to app/config.py Settings class
-- Files changed: app/routers/auth.py, app/config.py
-- **Learnings for future iterations:**
-  - `require_admin()` is a drop-in replacement — takes same Header param, now returns user dict instead of True
-  - `require_user()` returns dict: {id, username, role, can_run_compat, permissions: [{seller_slug, can_copy_from, can_copy_to}]}
-  - auth_ml.py imports require_admin — any signature change must be backward compatible
-  - copy.py and compat.py use require_admin as router-level dependency (will change to require_user in US-006)
-
----
-
-## 2026-02-27 - US-003
-- Added POST /api/auth/admin-promote endpoint to app/routers/auth.py
-- Endpoint accepts {username, password, master_password}
-- Creates new admin user or promotes existing user to admin
-- Logs action='admin_promote' to auth_logs table
-- Files changed: app/routers/auth.py
-- **Learnings for future iterations:**
-  - admin_master_password in config defaults to "" (empty string) — check with `not settings.admin_master_password`
-  - admin-promote endpoint is unauthenticated (no Depends) — it's the bootstrap mechanism
-  - Reuse `_hash_password()` helper already in auth.py for all password hashing
-
----
-
-## 2026-02-27 - US-004
-- Created app/routers/admin_users.py with CRUD endpoints for user management
-- Registered router in app/main.py with prefix /api/admin
-- Endpoints: GET /api/admin/users, POST /api/admin/users, PUT /api/admin/users/{user_id}, DELETE /api/admin/users/{user_id}
-- All endpoints protected by require_admin dependency
-- Files changed: app/routers/admin_users.py (new), app/main.py
-- **Learnings for future iterations:**
-  - admin_users.py has its own `_hash_password()` (duplicated from auth.py) to keep the module self-contained
-  - USER_FIELDS constant excludes password_hash — use it for all user queries returned to clients
-  - Delete endpoint prevents self-deletion by comparing user_id param to authenticated user's id
-  - 409 status for duplicate username on create
-
----
-
-## 2026-02-27 - US-005
-- Added GET /api/admin/users/{user_id}/permissions endpoint to admin_users.py
-- Added PUT /api/admin/users/{user_id}/permissions endpoint to admin_users.py
-- GET merges all sellers from copy_sellers with existing user_permissions, defaulting to false/false
-- PUT uses Supabase .upsert() with on_conflict="user_id,seller_slug" for each entry
-- Added Pydantic models: PermissionEntry, UpdatePermissionsRequest
-- Files changed: app/routers/admin_users.py
-- **Learnings for future iterations:**
-  - copy_sellers table has `slug` and `name` columns for seller identification
-  - Supabase upsert: `.upsert(data, on_conflict="col1,col2")` for composite unique constraints
-  - Permissions GET returns `seller_name` from copy_sellers for display, not stored in user_permissions
-  - PUT accepts `{permissions: [{seller_slug, can_copy_from, can_copy_to}]}` as request body
-
----
-
-## 2026-02-27 - US-006
-- Replaced `require_admin` with `require_user` in copy.py and compat.py (per-endpoint, not router-level)
-- Added `_check_seller_permission(user, seller_slug, direction)` helper in copy.py for source/dest checks
-- POST /api/copy and POST /api/copy/with-dimensions: check can_copy_from for source, can_copy_to for each dest. Return 403 with specific seller names on denial
-- GET /api/copy/preview: require_user only (any authenticated user can preview)
-- GET /api/copy/logs and GET /api/compat/logs: require_user only
-- POST /api/compat/copy and GET /api/compat/preview: check user.can_run_compat, return 403 if not permitted
-- POST /api/compat/search-sku: filter sellers to can_copy_to via allowed_sellers param in search_sku_all_sellers
-- Modified search_sku_all_sellers in compat_copier.py to accept optional allowed_sellers parameter
-- auth_ml.py unchanged (keeps require_admin for seller management)
-- Files changed: app/routers/copy.py, app/routers/compat.py, app/services/compat_copier.py
-- **Learnings for future iterations:**
-  - Router-level `dependencies=[Depends(require_admin)]` was removed; each endpoint now has explicit `user: dict = Depends(require_user)` for granular control
-  - Admin bypass pattern: check `user["role"] == "admin"` before any permission check
-  - For seller permission checks, iterate `user["permissions"]` list matching seller_slug
-  - The `allowed_sellers=None` pattern means "all sellers" (admin), while a list filters (operator)
-
----
-
-## 2026-02-27 - US-007
-- Added user_id to copy_logs insertion in item_copier.py (copy_items accepts user_id param)
-- Added user_id to compat_logs insertion in compat_copier.py (copy_compat_to_targets accepts user_id param)
-- Passed user["id"] from copy.py and compat.py routers to service functions
-- Added auth_logs entries in auth.py: login success (action='login'), login failure (action='login_failed'), logout (action='logout')
-- Updated GET /api/copy/logs: operators see only their logs (filter by user_id), admins see all. Includes username via Supabase join
-- Updated GET /api/compat/logs: same operator/admin filtering with username join
-- Files changed: app/routers/auth.py, app/routers/copy.py, app/routers/compat.py, app/services/item_copier.py, app/services/compat_copier.py
-- **Learnings for future iterations:**
-  - Supabase FK join syntax: `.select("*, users(username)")` returns `{"users": {"username": "..."}}` — flatten before returning
-  - Wrap audit log inserts in try/except to avoid breaking main operations on logging failure
-  - For compat background tasks (`bg.add_task`), pass user_id as positional arg after skus
-  - Login failure logging captures username even when user doesn't exist (user_id will be null)
-
----
-
-## 2026-02-27 - US-008
-- Updated Login.tsx: replaced single password field with username + password fields
-- Added "Acesso Admin" discrete link that toggles a master password field for admin-promote flow
-- Admin-promote calls POST /api/auth/admin-promote then auto-logs in via onLogin
-- Normal login calls onLogin(username, password) which sends {username, password} to POST /api/auth/login
-- Updated useAuth.ts: TOKEN_KEY from 'copy-admin-token' to 'copy-auth-token', header from X-Admin-Token to X-Auth-Token, login accepts (username, password) instead of just (password)
-- Old single-password login flow completely removed
-- Files changed: frontend/src/pages/Login.tsx, frontend/src/hooks/useAuth.ts
-- **Learnings for future iterations:**
-  - Login.tsx imports API_BASE from lib/api for the admin-promote call (only Login does this, other API calls go through useAuth)
-  - The onLogin prop signature changed from `(password) => boolean` to `(username, password) => boolean` — any component passing auth.login is automatically compatible
-  - Admin-promote flow: call /api/auth/admin-promote first, then call onLogin to get a session token (two-step)
-  - inputStyle helper function extracted for consistent border-color on error state across all input fields
-
----
-
-## 2026-02-27 - US-009
-- Updated useAuth.ts: added fetchMe() to call GET /api/auth/me on mount and store full user object
-- Added AuthUser and UserPermission TypeScript interfaces exported from useAuth.ts
-- isAuthenticated now requires both token AND user object
-- On mount with existing token, fetches /api/auth/me; on 401, clears auth state
-- Updated App.tsx: username displayed in navbar, tabs conditionally rendered based on user permissions
-- Copiar tab: shown if admin OR has >=1 can_copy_from AND >=1 can_copy_to permissions
-- Compat tab: shown if admin OR can_run_compat is true
-- Sellers (Admin) tab: shown only if user.role === 'admin'
-- activeView falls back to first visible tab if current view is not available
-- Files changed: frontend/src/hooks/useAuth.ts, frontend/src/App.tsx
-- **Learnings for future iterations:**
-  - useAuth.fetchMe is called with explicit token param (not from state) to avoid stale closure issues
-  - On login, fetchMe is called immediately after setting token to populate user before sellers load
-  - The visibleTabs useMemo pattern allows clean conditional tab rendering without nested ternaries
-  - `activeView` computed variable auto-redirects if user's current tab becomes hidden
-
----
-
-## 2026-02-27 - US-010
-- Created frontend/src/pages/UsersPage.tsx with full user management UI
-- Table displays: username, role badge (Admin/Operador), compat tag, active/inactive status, last login date
-- "Novo Usuário" button opens inline create form with: username, password, role (select), can_run_compat (checkbox)
-- Each row has "Editar" button that expands inline edit form below the row: password (optional), role, can_run_compat, active toggle
-- Each row has "Deletar" button with confirm() dialog; button hidden for current user (self-deletion prevented)
-- All API calls use X-Auth-Token header via headers() prop and show toast on success/error
-- Updated App.tsx: main navbar tab renamed from "Sellers" to "Admin", added sub-navigation with ViewTab for "Sellers" vs "Usuários" inside admin section
-- Added `adminSubView` state to App.tsx for toggling between sellers and users management
-- UsersPage imported and rendered in App.tsx with headers and currentUserId props
-- Files changed: frontend/src/pages/UsersPage.tsx (new), frontend/src/App.tsx
-- **Learnings for future iterations:**
-  - Admin sub-navigation reuses the same ViewTab component from App.tsx (no duplication needed)
-  - UsersPage takes `currentUserId` prop to disable self-delete (simpler than importing useAuth)
-  - RoleBadge and Tag are local helper components inside UsersPage — not exported
-  - Inline edit form appears directly below the user row (borderTop: none, borderRadius bottom only) for visual continuity
-  - `color-mix(in srgb, color 10%, transparent)` works well for badge backgrounds across themes
-
----
-
-## 2026-02-27 - US-011
-- Added permissions panel to UsersPage.tsx with expand/collapse per user row
-- "Permissões" button added to each user row's action buttons
-- Panel fetches GET /api/admin/users/{id}/permissions on open, displays sellers with Origem/Destino checkboxes
-- Save button calls PUT /api/admin/users/{id}/permissions with full array
-- Admin users see "Admins têm acesso total a todos os sellers" message instead of checkboxes
-- Empty state shows "Nenhum seller conectado" when no sellers are available
-- Permissions panel and edit form are mutually exclusive (opening one closes the other)
-- Files changed: frontend/src/pages/UsersPage.tsx
-- **Learnings for future iterations:**
-  - The `permissionsId` state pattern mirrors `editingId` — both expand inline panels below a user row
-  - Opening permissions panel closes edit form and create form (and vice versa) for clean UX
-  - Permission checkboxes track state locally via `permissions` useState array, then send full array on save
-  - The `PermissionRow` interface includes `seller_name` for display (comes from backend merge with copy_sellers)
-  - `var(--surface)` background on individual permission rows provides visual separation from the panel background
-- CopyForm accepts `sourceSellers` and `destSellers` props (not a single `sellers`) for permission-based filtering
-
----
-
-## 2026-02-27 - US-012
-- Filtered CopyForm source sellers by user's can_copy_from permissions and destination sellers by can_copy_to
-- Admin users bypass all filtering and see all sellers
-- Added empty state message in CopyPage when operator has no permitted sellers
-- CopyForm now accepts separate `sourceSellers` and `destSellers` props instead of single `sellers`
-- CompatPage: no changes needed — backend (US-006) already filters sellers, tab visibility handled by US-009
-- Compat redirect: already handled by `activeView` fallback logic in App.tsx from US-009
-- Files changed: frontend/src/App.tsx, frontend/src/pages/CopyPage.tsx, frontend/src/components/CopyForm.tsx
-- **Learnings for future iterations:**
-  - Filtering with `useMemo` + `Set` for O(1) lookup is efficient for permission-based seller filtering
-  - CopyForm's `sourceSellers` and `destSellers` separation allows independent filtering of origin vs destination
-  - Empty state check: `sourceSellers.length > 0 && destSellers.length > 0` covers the "no access" scenario
-  - The compat tab and redirect were already fully handled by US-009's visibleTabs and activeView logic — no additional work needed
-  - Manual browser verification is needed (no browser testing tools configured)
-
----
-
-
----
-
-# ========== UX IMPROVEMENTS BRANCH LOG ==========
-
-# Ralph Progress Log
-Started: Fri Feb 27 11:00:28 -03 2026
+Started: Fri Feb 27 14:21:08 -03 2026
 ---
 
 ## Codebase Patterns
-- Supabase client: use `get_db()` from `app/db/supabase.py`, returns a `Client` instance
-- Supabase insert returns: `row = db.table("x").insert({...}).execute()` → `row.data[0]["id"]` for the new row id
-- Supabase update pattern: `db.table("x").update({...}).eq("id", row_id).execute()`
-- copy_logs table has no CHECK constraint on status — any string value is accepted
-- No pyproject.toml — use `mypy --ignore-missing-imports` and `ruff check` for quality checks
-- Migrations live in `app/db/migrations/` using plain SQL files with numeric prefixes
-- compat_logs table originally had no `status` column — added via migration 003
-- Use `python3` not `python` for CLI tools (mypy, ruff) on this machine
-- ML item SKU locations: `item.seller_custom_field`, `item.variations[].seller_custom_field`, `item.variations[].attributes[{id:"SELLER_SKU"}].value_name`
-- StatusBadge in CopyPage.tsx uses `c` (color) and `bg` (background) maps keyed by status string — add new statuses to both
-- Pulse animations (`pulse-badge`, `pulse-dot`) are defined in `index.css` — reuse for any in_progress indicator
-- In React hooks, define `useCallback` dependencies before consumers — no hoisting like regular functions
+- Use `_post_with_retry` / `_put_with_retry` for ML API calls that may hit 429 rate limits
+- `get_item_compatibilities()` returns `None` for 404 (no compats) or a dict with `products` list
+- `copy_item_compatibilities` has `mode` param (default "add") — callers that don't pass it get backward-compatible behavior
+- mypy is the typecheck tool: `python3 -m mypy <file>` — pyright not installed
+- User Product items are pre-detected via `dest_item.get("user_product_id")` and routed to `/copy-paste` endpoint
+- `_copy_user_product_copy_paste()` needs `domain_id` — passed via `source_domain_id` param or fetched from source compats as fallback
+- New DB columns need a migration SQL file in `app/db/migrations/` — use `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`
+- Use `Literal["a", "b"]` from `typing` for Pydantic field validation on fixed option sets
 
 ## 2026-02-27 - US-001
-- Implemented in_progress status for copy_logs in `copy_items()` function
-- Modified `app/services/item_copier.py`: insert in_progress row before copy loop, update with final status after
-- Added fallback: if in_progress insert fails, falls back to inserting a new row with final status
-- Files changed: `app/services/item_copier.py`
+- Implemented POST vs PUT logic in `copy_item_compatibilities` based on destination existing compats
+- Added `_put_with_retry` helper (mirrors `_post_with_retry` for PUT requests)
+- Added `mode: str = "add"` parameter — `add` appends, `replace` deletes existing then creates
+- When `has_existing` and `mode='replace'`: extracts `catalog_product_id` from dest compats for the PUT delete body
+- When `has_existing` and `mode='add'`: PUT with only `create` key
+- When no existing compats: POST regardless of mode (nothing to delete)
+- Kept `_is_user_product_error` fallback as required
+- Added info-level logging of HTTP method used (POST or PUT)
+- Files changed: `app/services/ml_api.py`
 - **Learnings for future iterations:**
-  - The `copy_items` function handles multiple items × multiple destinations. The log is per-item (one log row per source item), not per item×destination pair
-  - `copy_single_item` returns a result dict with status/dest_item_id/error — the aggregation happens in `copy_items`
-  - Supabase insert `.execute()` returns `.data` as a list; get the id with `.data[0]["id"]`
-  - No CHECK constraint on status column — `in_progress` works without migration
+  - `dest_compat.get("products", [])` needs `# type: ignore[union-attr]` when dest_compat could be None (but is guarded by `has_existing` check)
+  - The `source_compat_products` param is kept for backward compat with `item_copier.py` — don't remove until US-002 changes the flow
+  - Callers: `compat_copier.py:118` and `item_copier.py:792` — both work fine with default `mode="add"`
 ---
 
 ## 2026-02-27 - US-002
-- Implemented in_progress status for compat_logs in compat copy flow
-- Added migration `app/db/migrations/003_compat_logs_status.sql` to add `status` column to compat_logs
-- Modified `app/routers/compat.py`: create in_progress log row before background task, pass log_id
-- Modified `app/services/compat_copier.py`: accept optional `log_id` param, update existing row instead of inserting new one
-- Final status is determined: success (all ok), error (all failed), partial (mixed)
-- Files changed: `app/routers/compat.py`, `app/services/compat_copier.py`, `app/db/migrations/003_compat_logs_status.sql`
+- Replaced legacy User Product flow with new `/copy-paste` endpoint
+- Added `_copy_user_product_copy_paste()` function calling `POST /user-products/{id}/compatibilities/copy-paste`
+- Pre-detects User Product items in `copy_item_compatibilities` via `get_item()` → `user_product_id` field
+- Request body: `domain_id`, `category_id`, `item_id`, `extended_information` (never sends `user_product_id` in body)
+- Added `source_domain_id: str | None = None` parameter — falls back to fetching from source compats if not provided
+- Deleted legacy `_copy_user_product_compatibilities()` (old batch approach)
+- Deleted legacy `_is_user_product_error()` detection function
+- Removed `_is_user_product_error` fallback check from `copy_item_compatibilities`
+- Removed unused constants `_UP_COMPAT_BATCH` and `_COMPAT_PACE`
+- Files changed: `app/services/ml_api.py`
 - **Learnings for future iterations:**
-  - compat_logs originally had no `status` column — had to add via ALTER TABLE migration
-  - The `copy_compat` endpoint creates the log row synchronously, then the background task updates it
-  - `log_id` is passed as a keyword arg to the background task — FastAPI BackgroundTasks supports this
-  - Kept legacy insert path in `copy_compat_to_targets` when `log_id` is None for backward compatibility
+  - `get_item()` returns full item data including `user_product_id` and `category_id` — useful for detecting User Product items
+  - The `/copy-paste` endpoint is simpler than the old batch approach — single POST with source item_id does all the work
+  - `source_compat_products` param is still in the signature for backward compat with `item_copier.py` but is no longer used internally
+  - US-003 will wire `source_domain_id` through `compat_copier.py` so the fallback fetch in `_copy_user_product_copy_paste` is avoided
 ---
 
 ## 2026-02-27 - US-003
-- Added SKU extraction to `GET /api/compat/preview/{item_id}` endpoint
-- Extracts SKUs from: item-level `seller_custom_field`, variation-level `seller_custom_field`, and variation attributes where `id='SELLER_SKU'`
-- Returns deduplicated `skus` array (preserves order) in the response alongside existing fields
-- Returns empty array if no SKUs found
-- Files changed: `app/routers/compat.py`
+- Added `mode: Literal["add", "replace"] = "add"` field to `CopyRequest` model in `app/routers/compat.py`
+- Pydantic `Literal` type provides automatic validation — rejects any value other than "add" or "replace"
+- Passed `req.mode` to `copy_compat_to_targets()` background task call
+- Added `mode` to `in_progress` log row inserted into `compat_logs` table
+- Added `mode: str = "add"` parameter to `copy_compat_to_targets()` in `app/services/compat_copier.py`
+- Extracted `source_domain_id` from pre-fetched source compats: `source_compat_products[0].get("domain_id")`
+- Passed both `mode` and `source_domain_id` to each `copy_item_compatibilities()` call
+- Created migration `006_compat_logs_mode.sql` to add `mode` column to `compat_logs` table
+- Files changed: `app/routers/compat.py`, `app/services/compat_copier.py`, `app/db/migrations/006_compat_logs_mode.sql`
 - **Learnings for future iterations:**
-  - ML API item structure: `item.seller_custom_field` for item-level SKU, `item.variations[].seller_custom_field` for variation SKU, `item.variations[].attributes` array with `{id: "SELLER_SKU", value_name: "..."}` for attribute-based SKU
-  - `get_item()` already returns full item data including variations — no extra API call needed
-  - Order-preserving deduplication: use a `seen` set + list instead of `list(set(...))` which loses order
+  - Use `Literal["add", "replace"]` from `typing` for Pydantic field validation — cleaner than manual validation
+  - The `compat_logs` table needs a migration for any new columns — SQL files in `app/db/migrations/` are applied manually
+  - `source_compat_products[0].get("domain_id")` safely extracts domain_id; guarded by `if source_compat_products` check
+  - All params flow: CopyRequest → copy_compat endpoint → bg.add_task → copy_compat_to_targets → copy_item_compatibilities
 ---
 
 ## 2026-02-27 - US-004
-- Added in_progress status polling to CopyPage history table
-- StatusBadge now shows pulsing blue "Copiando..." badge with animated dot for in_progress rows
-- Added useEffect + useRef polling: setInterval every 5s while any row has status 'in_progress', auto-stops when none remain
-- Moved loadLogs() above handleCopy to fix TS block-scoped variable ordering
-- Added setTimeout(loadLogs, 1000) after copy submission to pick up in_progress rows mid-operation
-- Moved final loadLogs() call to `finally` block so it runs on both success and error
-- Added pulse-badge and pulse-dot keyframes to index.css
-- Files changed: `frontend/src/pages/CopyPage.tsx`, `frontend/src/index.css`
-- **Learnings for future iterations:**
-  - useCallback ordering matters in React — a callback referencing another must be defined after it (no hoisting like regular functions)
-  - StatusBadge component in CopyPage.tsx is shared for rendering all status types — add new statuses to both `c` and `bg` maps
-  - The copy POST is synchronous (awaited), so to show in_progress rows you need a setTimeout to refresh logs while the POST is pending
-  - CSS keyframes for pulse animations are in index.css: `pulse-badge` and `pulse-dot` — reuse these in CompatPage (US-005)
----
-
-## 2026-02-27 - US-005
-- Added in_progress status polling to CompatPage history table
-- Added `status` field to CompatLog interface (optional for backward compat with legacy rows)
-- Created CompatStatusBadge component: derives status from explicit field or falls back to success/error/partial counts for legacy rows
-- Added useRef + useEffect polling: setInterval every 5s while any row has status 'in_progress', auto-stops when none remain
-- Replaced setTimeout-based refresh (5s/15s/30s) with immediate loadLogs() in finally + setTimeout(loadLogs, 1000) for picking up in_progress rows
-- Added 'Status' column to history table with pulsing blue "Copiando..." badge for in_progress rows
-- Reused pulse-badge and pulse-dot CSS animations from index.css (added in US-004)
+- Added `mode` state (`'add' | 'replace'`, default `'add'`) to CompatPage
+- Added "Modo de copia" Card with a `<select>` between search results and copy button
+- Options: "Adicionar às existentes" (add) and "Substituir todas" (replace)
+- Wired `mode` into the POST `/api/compat/copy` request body
+- Added `mode` to `handleCopy` useCallback dependency array
+- Styling follows existing patterns: CSS variables, `input-base` class, same border/radius/font
 - Files changed: `frontend/src/pages/CompatPage.tsx`
 - **Learnings for future iterations:**
-  - CompatStatusBadge needs fallback logic for legacy compat_logs rows that don't have a `status` column — derive from success_count/error_count
-  - The compat copy endpoint returns synchronously (background task), so `loadLogs()` in `finally` picks up the in_progress row immediately
-  - Same polling pattern as CopyPage: useRef for interval, hasInProgress derived from logs, useEffect cleanup
----
-
-## 2026-02-27 - US-006
-- Added `skus: string[]` to `CompatPreview` interface in `api.ts`
-- Added SKU chip display in CompatPage preview card with copy-to-clipboard buttons
-- Each SKU renders as a clickable chip with a copy icon (⧉); clicking copies to clipboard via `navigator.clipboard.writeText()`
-- After copying, shows a checkmark (✓) in green for 2 seconds as visual feedback
-- If no SKUs found, shows "Sem SKU" in muted text
-- Used `copiedSku` state with `setTimeout` to reset feedback after 2s
-- Files changed: `frontend/src/lib/api.ts`, `frontend/src/pages/CompatPage.tsx`
-- **Learnings for future iterations:**
-  - The `CompatPreview` type in `api.ts` must match backend response fields — `skus` was added in US-003 backend but type wasn't updated until now
-  - `navigator.clipboard.writeText()` works in modern browsers without fallback; returns a Promise but fire-and-forget is fine for UX
-  - Using a single `copiedSku` state string works well for tracking which chip shows feedback — no need for a map/object when only one can be copied at a time
----
-
-## 2026-02-27 - US-007
-- Replaced `<SellerSelect>` dropdown for origin seller with checkbox-style buttons matching destination layout
-- Single-select behavior: clicking a seller selects it, clicking again deselects; when one is selected, others are visually disabled
-- Disabled sellers have `opacity: 0.4`, `cursor: not-allowed`, and muted color
-- Selected seller shows checkmark (✓) and ink/paper inverted style, same as destination chips
-- Removed `SellerSelect` import (no longer used in CopyForm)
-- Existing behavior preserved: selected origin seller is excluded from destination checkboxes
-- Files changed: `frontend/src/components/CopyForm.tsx`
-- **Learnings for future iterations:**
-  - The `chip-toggle` CSS class and the destination button styling pattern are the canonical way to render seller selectors — reuse for any new seller selection UI
-  - For single-select with visual disable: use `opacity: 0.4` + `cursor: not-allowed` + early return in onClick for disabled items
-  - `SellerSelect` component still exists in `frontend/src/components/SellerSelect.tsx` but is now unused — can be deleted in a future cleanup
+  - The `Card` component from `CopyPage` supports `title` prop and wraps children — reuse it for new UI sections
+  - Use `className="input-base"` on `<select>` elements to match existing input styling
+  - `useCallback` deps must include all state vars used in the callback body (e.g., `mode`)
 ---

@@ -52,6 +52,7 @@ export default function CompatPage({ sellers, headers }: Props) {
   const [logsOpen, setLogsOpen] = useState(true);
 
   const [copiedSku, setCopiedSku] = useState<string | null>(null);
+  const [mode, setMode] = useState<'add' | 'replace'>('add');
 
   const firstSellerSlug = sellers[0]?.slug || '';
 
@@ -140,6 +141,7 @@ export default function CompatPage({ sellers, headers }: Props) {
           source_item_id: preview.id,
           targets: searchResults.map(r => ({ seller_slug: r.seller_slug, item_id: r.item_id })),
           skus: searchedSkus,
+          mode,
         }),
       });
       if (!res.ok) {
@@ -161,7 +163,7 @@ export default function CompatPage({ sellers, headers }: Props) {
       setCopying(false);
       loadLogs();
     }
-  }, [preview, searchResults, searchedSkus, headers, loadLogs]);
+  }, [preview, searchResults, searchedSkus, mode, headers, loadLogs]);
 
   const canCopy = preview?.has_compatibilities && searchResults.length > 0 && !copying;
 
@@ -388,6 +390,34 @@ export default function CompatPage({ sellers, headers }: Props) {
                 SKUs sem resultados: {skusNotFound.join(', ')}
               </div>
             )}
+          </div>
+        </Card>
+      )}
+
+      {/* Mode Select */}
+      {searchResults.length > 0 && (
+        <Card title="Modo de copia">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+            <label style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', fontWeight: 500 }}>
+              Como tratar compatibilidades existentes nos destinos?
+            </label>
+            <select
+              className="input-base"
+              value={mode}
+              onChange={e => setMode(e.target.value as 'add' | 'replace')}
+              style={{
+                padding: 'var(--space-2) var(--space-3)',
+                border: '1px solid var(--line)',
+                borderRadius: 6,
+                fontSize: 'var(--text-sm)',
+                background: 'var(--paper)',
+                color: 'var(--ink)',
+                maxWidth: 300,
+              }}
+            >
+              <option value="add">Adicionar às existentes</option>
+              <option value="replace">Substituir todas</option>
+            </select>
           </div>
         </Card>
       )}
