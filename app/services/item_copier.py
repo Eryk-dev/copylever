@@ -636,7 +636,10 @@ async def copy_single_item(
         has_compat = False
         try:
             compat = await get_item_compatibilities(source_seller, item_id)
-            has_compat = compat is not None and bool(compat)
+            if compat and isinstance(compat, dict):
+                has_compat = len(compat.get("products", [])) > 0
+            elif compat:
+                has_compat = True
         except Exception as e:
             logger.warning(f"Could not fetch compatibilities for {item_id}: {e}")
 
@@ -804,7 +807,18 @@ async def copy_single_item(
         # 6. Copy compatibilities (using ML native copy)
         if has_compat:
             try:
-                await copy_item_compatibilities(dest_seller, new_item_id, item_id)
+                # Pre-fetch source compat products for User Product fallback
+                source_compat_products = None
+                try:
+                    compat_data = await get_item_compatibilities(source_seller, item_id)
+                    if compat_data and isinstance(compat_data, dict):
+                        source_compat_products = compat_data.get("products")
+                except Exception:
+                    logger.warning(f"Could not pre-fetch source compats for {item_id}")
+                await copy_item_compatibilities(
+                    dest_seller, new_item_id, item_id,
+                    source_compat_products=source_compat_products,
+                )
                 logger.info(f"Compatibilities copied for {new_item_id} from {item_id}")
             except Exception as e:
                 logger.warning(f"Failed to copy compatibilities for {new_item_id}: {e}")

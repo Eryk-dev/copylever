@@ -77,7 +77,7 @@ async def search_sku_all_sellers(
 async def _resolve_source_seller(source_item_id: str) -> str | None:
     """Find which connected seller owns the source item."""
     db = get_db()
-    sellers = (db.table("copy_sellers").select("slug").execute()).data or []
+    sellers = (db.table("copy_sellers").select("slug").eq("active", True).execute()).data or []
     for s in sellers:
         try:
             await get_item(s["slug"], source_item_id)
