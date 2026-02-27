@@ -3,6 +3,8 @@ Started: Fri Feb 27 11:46:39 -03 2026
 
 ## Codebase Patterns
 - Use `bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")` for password hashing
+- Admin section uses sub-navigation (ViewTab) in App.tsx with `adminSubView` state for Sellers vs Usuários
+- UsersPage receives `headers` and `currentUserId` props from App.tsx (not from useAuth directly)
 - Use `bcrypt.checkpw(password.encode(), hashed.encode())` for password verification
 - Supabase client: `db.table("name").select/insert/update/delete` pattern via `get_db()` from `app.db.supabase`
 - FastAPI dependencies that return user dicts are passed via `Depends()` — use `user: dict = Depends(require_user)`
@@ -164,5 +166,25 @@ Started: Fri Feb 27 11:46:39 -03 2026
   - On login, fetchMe is called immediately after setting token to populate user before sellers load
   - The visibleTabs useMemo pattern allows clean conditional tab rendering without nested ternaries
   - `activeView` computed variable auto-redirects if user's current tab becomes hidden
+
+---
+
+## 2026-02-27 - US-010
+- Created frontend/src/pages/UsersPage.tsx with full user management UI
+- Table displays: username, role badge (Admin/Operador), compat tag, active/inactive status, last login date
+- "Novo Usuário" button opens inline create form with: username, password, role (select), can_run_compat (checkbox)
+- Each row has "Editar" button that expands inline edit form below the row: password (optional), role, can_run_compat, active toggle
+- Each row has "Deletar" button with confirm() dialog; button hidden for current user (self-deletion prevented)
+- All API calls use X-Auth-Token header via headers() prop and show toast on success/error
+- Updated App.tsx: main navbar tab renamed from "Sellers" to "Admin", added sub-navigation with ViewTab for "Sellers" vs "Usuários" inside admin section
+- Added `adminSubView` state to App.tsx for toggling between sellers and users management
+- UsersPage imported and rendered in App.tsx with headers and currentUserId props
+- Files changed: frontend/src/pages/UsersPage.tsx (new), frontend/src/App.tsx
+- **Learnings for future iterations:**
+  - Admin sub-navigation reuses the same ViewTab component from App.tsx (no duplication needed)
+  - UsersPage takes `currentUserId` prop to disable self-delete (simpler than importing useAuth)
+  - RoleBadge and Tag are local helper components inside UsersPage — not exported
+  - Inline edit form appears directly below the user row (borderTop: none, borderRadius bottom only) for visual continuity
+  - `color-mix(in srgb, color 10%, transparent)` works well for badge backgrounds across themes
 
 ---

@@ -178,7 +178,7 @@
         "Typecheck passes"
       ],
       "priority": 10,
-      "passes": false,
+      "passes": true,
       "notes": "Look at Admin.tsx for the existing layout pattern and how sellers are listed. Reuse the same card/table styling. For the inline form, look at how CopyForm.tsx handles form state. Use the Toast component for feedback. The API endpoints are /api/admin/users (GET, POST) and /api/admin/users/{id} (PUT, DELETE). Add navigation to UsersPage from Admin.tsx or App.tsx."
     },
     {

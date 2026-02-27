@@ -3,13 +3,16 @@ import { useAuth } from './hooks/useAuth';
 import Login from './pages/Login';
 import CopyPage from './pages/CopyPage';
 import Admin from './pages/Admin';
+import UsersPage from './pages/UsersPage';
 import CompatPage from './pages/CompatPage';
 
 type View = 'copy' | 'admin' | 'compat';
+type AdminSubView = 'sellers' | 'users';
 
 export default function App() {
   const auth = useAuth();
   const [view, setView] = useState<View>('copy');
+  const [adminSubView, setAdminSubView] = useState<AdminSubView>('sellers');
 
   const visibleTabs = useMemo(() => {
     if (!auth.user) return [] as View[];
@@ -90,7 +93,7 @@ export default function App() {
             )}
             {visibleTabs.includes('admin') && (
               <ViewTab active={activeView === 'admin'} onClick={() => setView('admin')}>
-                Sellers
+                Admin
               </ViewTab>
             )}
           </nav>
@@ -124,11 +127,26 @@ export default function App() {
           <CopyPage sellers={auth.sellers} headers={auth.headers} />
         )}
         {activeView === 'admin' && (
-          <Admin
-            sellers={auth.sellers}
-            loadSellers={auth.loadSellers}
-            disconnectSeller={auth.disconnectSeller}
-          />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
+            <nav style={{ display: 'flex', gap: 2, background: 'var(--surface)', borderRadius: 8, padding: 2, alignSelf: 'flex-start' }}>
+              <ViewTab active={adminSubView === 'sellers'} onClick={() => setAdminSubView('sellers')}>
+                Sellers
+              </ViewTab>
+              <ViewTab active={adminSubView === 'users'} onClick={() => setAdminSubView('users')}>
+                Usuários
+              </ViewTab>
+            </nav>
+            {adminSubView === 'sellers' && (
+              <Admin
+                sellers={auth.sellers}
+                loadSellers={auth.loadSellers}
+                disconnectSeller={auth.disconnectSeller}
+              />
+            )}
+            {adminSubView === 'users' && auth.user && (
+              <UsersPage headers={auth.headers} currentUserId={auth.user.id} />
+            )}
+          </div>
         )}
         {activeView === 'compat' && (
           <CompatPage sellers={auth.sellers} headers={auth.headers} />
