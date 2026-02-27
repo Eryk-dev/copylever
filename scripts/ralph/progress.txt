@@ -1,87 +1,39 @@
 # Ralph Progress Log
-Started: Thu Feb 26 16:00:37 -03 2026
+Started: Fri Feb 27 11:00:28 -03 2026
 ---
 
 ## Codebase Patterns
-- Use `get_db()` from `app/db/supabase.py` to access Supabase client
-- Use `_get_token(seller_slug)` from `app/services/ml_api.py` for ML API auth
-- `copy_sellers` table stores seller info: slug, name, ml_user_id, ml_access_token, ml_refresh_token, etc.
-- Python backend uses `httpx.AsyncClient` for all HTTP calls with explicit timeouts
-- TypeScript typecheck: `npx tsc --noEmit` from `frontend/` directory
-- Migrations go in `app/db/migrations/` — use `IF NOT EXISTS` for safety
-- Router pattern: `APIRouter(prefix="/api/...", tags=[...])` registered in `app/main.py`
-- `copy_sellers` table has `ml_user_id` field needed for ML API user-scoped endpoints
-- ML items/search endpoint: GET /users/{user_id}/items/search?seller_sku={sku} returns { results: [item_ids] }
+- Supabase client: use `get_db()` from `app/db/supabase.py`, returns a `Client` instance
+- Supabase insert returns: `row = db.table("x").insert({...}).execute()` → `row.data[0]["id"]` for the new row id
+- Supabase update pattern: `db.table("x").update({...}).eq("id", row_id).execute()`
+- copy_logs table has no CHECK constraint on status — any string value is accepted
+- No pyproject.toml — use `mypy --ignore-missing-imports` and `ruff check` for quality checks
+- Migrations live in `app/db/migrations/` using plain SQL files with numeric prefixes
+- compat_logs table originally had no `status` column — added via migration 003
+- Use `python3` not `python` for CLI tools (mypy, ruff) on this machine
 
+## 2026-02-27 - US-001
+- Implemented in_progress status for copy_logs in `copy_items()` function
+- Modified `app/services/item_copier.py`: insert in_progress row before copy loop, update with final status after
+- Added fallback: if in_progress insert fails, falls back to inserting a new row with final status
+- Files changed: `app/services/item_copier.py`
+- **Learnings for future iterations:**
+  - The `copy_items` function handles multiple items × multiple destinations. The log is per-item (one log row per source item), not per item×destination pair
+  - `copy_single_item` returns a result dict with status/dest_item_id/error — the aggregation happens in `copy_items`
+  - Supabase insert `.execute()` returns `.data` as a list; get the id with `.data[0]["id"]`
+  - No CHECK constraint on status column — `in_progress` works without migration
 ---
 
-## 2026-02-26 - US-001
-- Created `app/db/migrations/001_compat_logs.sql` with compat_logs table
-- Files changed: `app/db/migrations/001_compat_logs.sql` (new)
+## 2026-02-27 - US-002
+- Implemented in_progress status for compat_logs in compat copy flow
+- Added migration `app/db/migrations/003_compat_logs_status.sql` to add `status` column to compat_logs
+- Modified `app/routers/compat.py`: create in_progress log row before background task, pass log_id
+- Modified `app/services/compat_copier.py`: accept optional `log_id` param, update existing row instead of inserting new one
+- Final status is determined: success (all ok), error (all failed), partial (mixed)
+- Files changed: `app/routers/compat.py`, `app/services/compat_copier.py`, `app/db/migrations/003_compat_logs_status.sql`
 - **Learnings for future iterations:**
-  - No existing migrations directory — created `app/db/migrations/`
-  - Python uses `python3` not `python` on this machine
-  - TypeScript typecheck passes cleanly with `npx tsc --noEmit`
-  - Git repo was initialized fresh (no remote) for this project
----
-
-## 2026-02-26 - US-002
-- Added `search_items_by_sku(seller_slug, sku) -> list[str]` to `app/services/ml_api.py`
-- Function queries `copy_sellers` for `ml_user_id`, then calls ML search endpoint with seller_sku param
-- Returns empty list on 404, otherwise returns `results` array from response
-- Files changed: `app/services/ml_api.py` (modified)
-- **Learnings for future iterations:**
-  - `copy_sellers` table has `ml_user_id` needed for user-scoped ML API endpoints like items/search
-  - ML search API returns `{ results: [item_ids], paging: {...} }` — use `.get("results", [])` for safety
-  - All existing functions follow same pattern: get token, create httpx client, make request, handle 404 gracefully
----
-
-## 2026-02-26 - US-003
-- Created `app/services/compat_copier.py` with two orchestration functions
-- `search_sku_all_sellers(skus)`: queries all sellers from copy_sellers, searches each seller+SKU combo in parallel via asyncio.create_task, fetches item titles via get_item()
-- `copy_compat_to_targets(source_item_id, targets)`: copies compatibilities to each target sequentially (error-resilient), logs operation to compat_logs table
-- Files changed: `app/services/compat_copier.py` (new)
-- **Learnings for future iterations:**
-  - Supabase python client insert for array columns (TEXT[]) accepts Python lists directly
-  - Supabase python client insert for JSONB columns accepts Python dicts/lists directly
-  - `copy_item_compatibilities` signature is (seller_slug, new_item_id, source_item_id) — target first, source second
-  - asyncio.create_task works well for parallel API calls; await tasks individually after creation
----
-
-## 2026-02-26 - US-004
-- Created `app/routers/compat.py` with 4 endpoints: preview, search-sku, copy, logs
-- Registered compat router in `app/main.py`
-- Files changed: `app/routers/compat.py` (new), `app/main.py` (modified)
-- **Learnings for future iterations:**
-  - Follow same router pattern: `APIRouter(prefix="/api/...", tags=[...], dependencies=[Depends(require_admin)])`
-  - For optional seller param, query first seller from copy_sellers as fallback
-  - get_item_compatibilities returns dict with `products` key for the list of compatibilities
-  - Pydantic BaseModel for request bodies, Query() for query params — same as copy.py
-  - Python syntax check: `python3 -m py_compile <file>` is a quick validation
----
-
-## 2026-02-26 - US-005
-- Created `frontend/src/pages/CompatPage.tsx` with full compat copy flow
-- Added `CompatPreview`, `CompatSearchResult`, `CompatCopyResult` interfaces to `frontend/src/lib/api.ts`
-- Features: source input with MLB URL parsing, preview with compat count, SKU search textarea, results grouped by SKU, copy button with progress, results summary, history table
-- Files changed: `frontend/src/pages/CompatPage.tsx` (new), `frontend/src/lib/api.ts` (modified)
-- **Learnings for future iterations:**
-  - `Card` component is exported from `CopyPage.tsx` — reuse it for consistent UI across pages
-  - `headers` prop is a function `() => Record<string,string>`, not a plain object
-  - CopyPage uses inline styles matching CSS variables from index.css — follow same pattern
-  - For MLB URL parsing: regex `/MLB[-]?(\d+)/i` then format as `MLB{digits}`
-  - `sellers[0]?.slug` provides the first seller slug for preview API calls
-  - Logs table pattern: collapsible Card with table, same header styles as CopyPage
----
-
-## 2026-02-26 - US-006
-- Added 'compat' to View type in App.tsx
-- Added Compat ViewTab in header navigation
-- Imported and rendered CompatPage when view === 'compat'
-- History section was already implemented in US-005 (loads on mount, refreshes after copy)
-- Files changed: `frontend/src/App.tsx` (modified)
-- **Learnings for future iterations:**
-  - CompatPage history was already built into US-005 — the Card component supports `collapsible`, `open`, `onToggle` props
-  - Adding a new view follows a simple 3-step pattern: extend View type, add ViewTab, add conditional render
-  - `headers` prop on CompatPage is `() => Record<string,string>` (function), consistent with CopyPage
+  - compat_logs originally had no `status` column — had to add via ALTER TABLE migration
+  - The `copy_compat` endpoint creates the log row synchronously, then the background task updates it
+  - `log_id` is passed as a keyword arg to the background task — FastAPI BackgroundTasks supports this
+  - Kept legacy insert path in `copy_compat_to_targets` when `log_id` is None for backward compatibility
 ---

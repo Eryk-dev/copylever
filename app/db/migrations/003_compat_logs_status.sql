@@ -1,0 +1,1 @@
+ALTER TABLE compat_logs ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'in_progress';

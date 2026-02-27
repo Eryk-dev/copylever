@@ -86,11 +86,29 @@ async def copy_compat(req: CopyRequest, bg: BackgroundTasks):
         raise HTTPException(status_code=400, detail="At least one target is required")
 
     targets = [{"seller_slug": t.seller_slug, "item_id": t.item_id} for t in req.targets]
-    bg.add_task(copy_compat_to_targets, req.source_item_id, targets, req.skus)
+
+    # Create in_progress log row before starting background task
+    db = get_db()
+    pending_targets = [
+        {**t, "status": "pending", "error": None} for t in targets
+    ]
+    log_row = db.table("compat_logs").insert({
+        "source_item_id": req.source_item_id,
+        "skus": req.skus or [],
+        "targets": pending_targets,
+        "total_targets": len(targets),
+        "success_count": 0,
+        "error_count": 0,
+        "status": "in_progress",
+    }).execute()
+    log_id = log_row.data[0]["id"]
+
+    bg.add_task(copy_compat_to_targets, req.source_item_id, targets, req.skus, log_id)
 
     return {
         "status": "queued",
         "total_targets": len(targets),
+        "log_id": log_id,
     }
 
 
