@@ -12,6 +12,7 @@ import httpx
 from app.db.supabase import get_db
 
 ML_API = "https://api.mercadolibre.com"
+MP_API = "https://api.mercadopago.com"
 
 logger = logging.getLogger(__name__)
 
@@ -134,20 +135,32 @@ async def _get_token(seller_slug: str) -> str:
 
     app_id, secret = _get_seller_credentials(s)
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(f"{ML_API}/oauth/token", data={
+        resp = await client.post(f"{MP_API}/oauth/token", json={
             "grant_type": "refresh_token",
             "client_id": app_id,
             "client_secret": secret,
             "refresh_token": old_refresh,
         })
-        _raise_for_status(resp, "Mercado Livre API")
-        data = resp.json()
+
+    if resp.status_code in (400, 401):
+        logger.warning("Refresh token invalid/revoked for seller '%s' — clearing tokens", seller_slug)
+        db.table("copy_sellers").update({
+            "ml_access_token": None,
+            "ml_refresh_token": None,
+            "ml_token_expires_at": None,
+        }).eq("slug", seller_slug).execute()
+        raise RuntimeError(
+            f"Seller '{seller_slug}': refresh token inválido ou revogado. "
+            f"Reconecte via /api/ml/install"
+        )
+
+    _raise_for_status(resp, "Mercado Livre API")
+    data = resp.json()
 
     new_expires = datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 21600))
-    new_refresh = data.get("refresh_token") or old_refresh
     db.table("copy_sellers").update({
         "ml_access_token": data["access_token"],
-        "ml_refresh_token": new_refresh,
+        "ml_refresh_token": data["refresh_token"],
         "ml_token_expires_at": new_expires.isoformat(),
     }).eq("slug", seller_slug).execute()
 
@@ -158,7 +171,7 @@ async def exchange_code(code: str) -> dict:
     """Exchange authorization_code for access_token + refresh_token."""
     from app.config import settings
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(f"{ML_API}/oauth/token", data={
+        resp = await client.post(f"{MP_API}/oauth/token", json={
             "grant_type": "authorization_code",
             "client_id": settings.ml_app_id,
             "client_secret": settings.ml_secret_key,
