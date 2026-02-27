@@ -11,7 +11,6 @@ import httpx
 from app.db.supabase import get_db
 
 ML_API = "https://api.mercadolibre.com"
-MP_API = "https://api.mercadopago.com"
 
 logger = logging.getLogger(__name__)
 
@@ -111,10 +110,17 @@ def _get_seller_credentials(seller: dict) -> tuple[str, str]:
 async def _get_token(seller_slug: str) -> str:
     """Get access_token for seller. Auto-refresh if expired."""
     db = get_db()
-    seller = db.table("copy_sellers").select(
-        "ml_access_token, ml_refresh_token, ml_token_expires_at, ml_app_id, ml_secret_key"
-    ).eq("slug", seller_slug).single().execute()
-    s = seller.data
+    result = db.table("copy_sellers").select(
+        "ml_access_token, ml_refresh_token, ml_token_expires_at, ml_app_id, ml_secret_key, active"
+    ).eq("slug", seller_slug).execute()
+
+    if not result.data:
+        raise RuntimeError(f"Seller '{seller_slug}' not found")
+
+    s = result.data[0]
+
+    if not s.get("active"):
+        raise RuntimeError(f"Seller '{seller_slug}' is disconnected. Reconnect via /api/ml/install")
 
     expires_at = datetime.fromisoformat(s["ml_token_expires_at"]) if s.get("ml_token_expires_at") else None
     if expires_at and expires_at > datetime.now(timezone.utc):
@@ -127,13 +133,13 @@ async def _get_token(seller_slug: str) -> str:
 
     app_id, secret = _get_seller_credentials(s)
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(f"{MP_API}/oauth/token", json={
+        resp = await client.post(f"{ML_API}/oauth/token", data={
             "grant_type": "refresh_token",
             "client_id": app_id,
             "client_secret": secret,
             "refresh_token": old_refresh,
         })
-        _raise_for_status(resp, "Mercado Pago API")
+        _raise_for_status(resp, "Mercado Livre API")
         data = resp.json()
 
     new_expires = datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 21600))
@@ -151,14 +157,14 @@ async def exchange_code(code: str) -> dict:
     """Exchange authorization_code for access_token + refresh_token."""
     from app.config import settings
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(f"{MP_API}/oauth/token", json={
+        resp = await client.post(f"{ML_API}/oauth/token", data={
             "grant_type": "authorization_code",
             "client_id": settings.ml_app_id,
             "client_secret": settings.ml_secret_key,
             "code": code,
             "redirect_uri": settings.ml_redirect_uri,
         })
-        _raise_for_status(resp, "Mercado Pago API")
+        _raise_for_status(resp, "Mercado Livre API")
         return resp.json()
 
 

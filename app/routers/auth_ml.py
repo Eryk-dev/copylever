@@ -55,8 +55,12 @@ async def callback(code: str, state: str = ""):
         raise HTTPException(status_code=502, detail=f"ML OAuth returned no access_token. Keys: {list(token_data.keys())}")
 
     if not refresh_token:
-        logger.error(f"ML OAuth returned no refresh_token. Keys: {list(token_data.keys())}")
-        raise HTTPException(status_code=502, detail="ML OAuth returned no refresh_token. Cannot maintain session.")
+        logger.warning(
+            "ML OAuth returned no refresh_token. scope=%s user_id=%s keys=%s",
+            token_data.get("scope"),
+            ml_user_id_from_token,
+            list(token_data.keys()),
+        )
 
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
 
@@ -74,25 +78,36 @@ async def callback(code: str, state: str = ""):
     try:
         db = get_db()
 
-        # Check if seller already exists in copy_sellers
-        existing = db.table("copy_sellers").select("slug").or_(
-            f"ml_user_id.eq.{ml_user_id},slug.eq.{slug}"
-        ).execute()
+        # Look up existing seller by ml_user_id (immutable ML identifier)
+        result = db.table("copy_sellers").select(
+            "slug, ml_refresh_token"
+        ).eq("ml_user_id", ml_user_id).execute()
+        existing_row = result.data[0] if result.data else None
+
+        # Fallback: look up by slug (covers manual row creation edge case)
+        if not existing_row:
+            result = db.table("copy_sellers").select(
+                "slug, ml_refresh_token"
+            ).eq("slug", slug).execute()
+            existing_row = result.data[0] if result.data else None
+
+        effective_refresh_token = refresh_token or (existing_row or {}).get("ml_refresh_token")
 
         seller_data = {
             "ml_user_id": ml_user_id,
             "ml_access_token": access_token,
-            "ml_refresh_token": refresh_token,
+            "ml_refresh_token": effective_refresh_token,
             "ml_token_expires_at": expires_at.isoformat(),
             "active": True,
         }
 
-        if existing.data:
-            db.table("copy_sellers").update(seller_data).eq(
-                "slug", existing.data[0]["slug"]
-            ).execute()
-            logger.info(f"OAuth: updated tokens for existing copy_seller {existing.data[0]['slug']}")
-            return _success_page(existing.data[0]["slug"], already_exists=True)
+        if existing_row:
+            db.table("copy_sellers").update({
+                "name": nickname,
+                **seller_data,
+            }).eq("slug", existing_row["slug"]).execute()
+            logger.info(f"OAuth: updated tokens for existing copy_seller {existing_row['slug']}")
+            return _success_page(existing_row["slug"], already_exists=True, has_refresh=bool(effective_refresh_token))
 
         # Create new seller
         db.table("copy_sellers").insert({
@@ -102,7 +117,7 @@ async def callback(code: str, state: str = ""):
         }).execute()
 
         logger.info(f"OAuth: new copy_seller created — slug={slug}, ml_user_id={ml_user_id}")
-        return _success_page(slug, already_exists=False)
+        return _success_page(slug, already_exists=False, has_refresh=bool(effective_refresh_token))
 
     except Exception as e:
         logger.error(f"Supabase operation failed during OAuth callback: {e}")
@@ -153,11 +168,13 @@ async def disconnect_seller(slug: str):
     return {"status": "ok", "seller": slug}
 
 
-def _success_page(slug: str, already_exists: bool) -> HTMLResponse:
+def _success_page(slug: str, already_exists: bool, has_refresh: bool) -> HTMLResponse:
     if already_exists:
         message = f"Conta <strong>{slug}</strong> j&aacute; estava cadastrada. Tokens atualizados com sucesso."
     else:
         message = f"Conta <strong>{slug}</strong> conectada com sucesso!"
+    if not has_refresh:
+        message += " Aviso: o ML n&atilde;o retornou refresh token; esta conex&atilde;o pode expirar e exigir nova autoriza&ccedil;&atilde;o."
 
     html = f"""<!DOCTYPE html>
 <html lang="pt-BR">
