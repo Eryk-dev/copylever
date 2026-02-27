@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { API_BASE, type Seller, type CopyResponse, type CopyLog, type ItemPreview } from '../lib/api';
 import CopyForm from '../components/CopyForm';
 import CopyProgress from '../components/CopyProgress';
@@ -18,9 +18,18 @@ export default function CopyPage({ sellers, headers }: Props) {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState('');
 
+  const loadLogs = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/copy/logs?limit=20`, { headers: headers(), cache: 'no-store' });
+      if (res.ok) { setLogs(await res.json()); setLogsLoaded(true); }
+    } catch (e) { console.error('Failed to load logs:', e); }
+  }, [headers]);
+
   const handleCopy = useCallback(async (source: string, destinations: string[], itemIds: string[]) => {
     setCopying(true);
     setResults(null);
+    // Refresh logs after a short delay to pick up in_progress rows created by the backend
+    setTimeout(loadLogs, 1000);
     try {
       const res = await fetch(`${API_BASE}/api/copy`, {
         method: 'POST',
@@ -34,20 +43,13 @@ export default function CopyPage({ sellers, headers }: Props) {
       }
       const data: CopyResponse = await res.json();
       setResults({ ...data, source });
-      loadLogs();
     } catch (e) {
       setResults({ total: 0, success: 0, errors: 1, results: [{ source_item_id: '', dest_seller: '', status: 'error', dest_item_id: null, error: String(e) }] });
     } finally {
       setCopying(false);
+      loadLogs();
     }
-  }, [headers]);
-
-  const loadLogs = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/copy/logs?limit=20`, { headers: headers(), cache: 'no-store' });
-      if (res.ok) { setLogs(await res.json()); setLogsLoaded(true); }
-    } catch (e) { console.error('Failed to load logs:', e); }
-  }, [headers]);
+  }, [headers, loadLogs]);
 
   const handlePreview = useCallback(async (itemId: string, seller: string) => {
     if (!itemId.trim() || !seller) return;
@@ -61,6 +63,18 @@ export default function CopyPage({ sellers, headers }: Props) {
     } catch (e) { setPreviewError(String(e)); }
     finally { setPreviewLoading(false); }
   }, [headers]);
+
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const hasInProgress = logs.some(l => l.status === 'in_progress');
+
+  useEffect(() => {
+    if (hasInProgress) {
+      pollRef.current = setInterval(loadLogs, 5000);
+    }
+    return () => {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    };
+  }, [hasInProgress, loadLogs]);
 
   if (!logsLoaded) loadLogs();
 
@@ -240,8 +254,9 @@ export function Card({ title, action, collapsible, open, onToggle, children }: {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const c: Record<string, string> = { success: 'var(--success)', error: 'var(--danger)', partial: 'var(--warning)', pending: 'var(--ink-faint)' };
-  const bg: Record<string, string> = { success: 'rgba(16, 185, 129, 0.08)', error: 'rgba(239, 68, 68, 0.08)', partial: 'rgba(245, 158, 11, 0.08)' };
+  const c: Record<string, string> = { success: 'var(--success)', error: 'var(--danger)', partial: 'var(--warning)', pending: 'var(--ink-faint)', in_progress: 'var(--info, #3b82f6)' };
+  const bg: Record<string, string> = { success: 'rgba(16, 185, 129, 0.08)', error: 'rgba(239, 68, 68, 0.08)', partial: 'rgba(245, 158, 11, 0.08)', in_progress: 'rgba(59, 130, 246, 0.08)' };
+  const isInProgress = status === 'in_progress';
   return (
     <span style={{
       color: c[status] || 'var(--ink-faint)',
@@ -251,8 +266,13 @@ function StatusBadge({ status }: { status: string }) {
       background: bg[status] || 'transparent',
       padding: '2px 8px',
       borderRadius: 4,
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 6,
+      animation: isInProgress ? 'pulse-badge 1.5s ease-in-out infinite' : undefined,
     }}>
-      {status}
+      {isInProgress && <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'currentColor', animation: 'pulse-dot 1.5s ease-in-out infinite' }} />}
+      {isInProgress ? 'Copiando...' : status}
     </span>
   );
 }

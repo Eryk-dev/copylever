@@ -253,6 +253,16 @@ a:hover {
   to { opacity: 0; transform: translateY(-8px) scale(0.95); }
 }
 
+@keyframes pulse-badge {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.4); opacity: 0.5; }
+}
+
 .animate-in {
   animation: fadeIn 0.25s ease-out;
 }
