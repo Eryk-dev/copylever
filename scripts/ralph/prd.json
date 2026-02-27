@@ -141,7 +141,7 @@
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "notes": "Current Login.tsx has a single password field and calls /api/auth/login with just {password}. Update to {username, password}. The localStorage key changes from 'copy-admin-token' to 'copy-auth-token'. The admin-promote flow: call /api/auth/admin-promote first, if success then call /api/auth/login with same username/password to get a session token."
     },
     {

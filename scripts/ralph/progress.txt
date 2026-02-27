@@ -22,6 +22,8 @@ Started: Fri Feb 27 11:46:39 -03 2026
 - Supabase join for username: `.select("*, users(username)")` then flatten `row.pop("users")["username"]`
 - Audit logging: wrap `auth_logs` inserts in try/except so logging failures don't break main operations
 - Log entry pattern: conditionally add `user_id` only if present (`if user_id: log_entry["user_id"] = user_id`)
+- Frontend auth token: localStorage key is `copy-auth-token`, header is `X-Auth-Token`
+- `useAuth.login` signature: `(username: string, password: string) => Promise<boolean>`
 
 ---
 
@@ -122,5 +124,21 @@ Started: Fri Feb 27 11:46:39 -03 2026
   - Wrap audit log inserts in try/except to avoid breaking main operations on logging failure
   - For compat background tasks (`bg.add_task`), pass user_id as positional arg after skus
   - Login failure logging captures username even when user doesn't exist (user_id will be null)
+
+---
+
+## 2026-02-27 - US-008
+- Updated Login.tsx: replaced single password field with username + password fields
+- Added "Acesso Admin" discrete link that toggles a master password field for admin-promote flow
+- Admin-promote calls POST /api/auth/admin-promote then auto-logs in via onLogin
+- Normal login calls onLogin(username, password) which sends {username, password} to POST /api/auth/login
+- Updated useAuth.ts: TOKEN_KEY from 'copy-admin-token' to 'copy-auth-token', header from X-Admin-Token to X-Auth-Token, login accepts (username, password) instead of just (password)
+- Old single-password login flow completely removed
+- Files changed: frontend/src/pages/Login.tsx, frontend/src/hooks/useAuth.ts
+- **Learnings for future iterations:**
+  - Login.tsx imports API_BASE from lib/api for the admin-promote call (only Login does this, other API calls go through useAuth)
+  - The onLogin prop signature changed from `(password) => boolean` to `(username, password) => boolean` — any component passing auth.login is automatically compatible
+  - Admin-promote flow: call /api/auth/admin-promote first, then call onLogin to get a session token (two-step)
+  - inputStyle helper function extracted for consistent border-color on error state across all input fields
 
 ---
