@@ -2,6 +2,7 @@
 Compat endpoints — preview, search-sku, copy, logs for vehicle compatibilities.
 """
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -111,6 +112,7 @@ class CopyRequest(BaseModel):
     source_item_id: str
     targets: list[CopyTarget]
     skus: list[str] = []
+    mode: Literal["add", "replace"] = "add"
 
 
 @router.post("/copy")
@@ -138,13 +140,14 @@ async def copy_compat(req: CopyRequest, bg: BackgroundTasks, user: dict = Depend
         "success_count": 0,
         "error_count": 0,
         "status": "in_progress",
+        "mode": req.mode,
     }
     if user.get("id"):
         log_insert["user_id"] = user["id"]
     log_row = db.table("compat_logs").insert(log_insert).execute()
     log_id = log_row.data[0]["id"]
 
-    bg.add_task(copy_compat_to_targets, req.source_item_id, targets, req.skus, log_id)
+    bg.add_task(copy_compat_to_targets, req.source_item_id, targets, req.skus, log_id, req.mode)
 
     return {
         "status": "queued",

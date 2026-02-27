@@ -88,6 +88,7 @@ async def copy_compat_to_targets(
     targets: list[dict[str, str]],
     skus: list[str] | None = None,
     log_id: int | None = None,
+    mode: str = "add",
 ) -> list[dict[str, Any]]:
     """Copy compatibilities from source item to each target item.
 
@@ -98,12 +99,15 @@ async def copy_compat_to_targets(
     """
     # Pre-fetch source compatibilities once (needs source seller's token).
     source_compat_products: list[dict] | None = None
+    source_domain_id: str | None = None
     source_seller = await _resolve_source_seller(source_item_id)
     if source_seller:
         try:
             compat = await get_item_compatibilities(source_seller, source_item_id)
             if compat and isinstance(compat, dict):
                 source_compat_products = compat.get("products")
+                if source_compat_products:
+                    source_domain_id = source_compat_products[0].get("domain_id")
         except Exception:
             logger.warning("Could not pre-fetch source compats for %s", source_item_id)
 
@@ -118,6 +122,8 @@ async def copy_compat_to_targets(
             await copy_item_compatibilities(
                 target["seller_slug"], target["item_id"], source_item_id,
                 source_compat_products=source_compat_products,
+                mode=mode,
+                source_domain_id=source_domain_id,
             )
             results.append({
                 "seller_slug": target["seller_slug"],
