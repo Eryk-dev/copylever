@@ -348,6 +348,21 @@ async def _post_with_retry(
     return resp  # return last 429 response so caller can raise
 
 
+async def _put_with_retry(
+    client: httpx.AsyncClient, url: str, headers: dict, json: dict,
+) -> httpx.Response:
+    """PUT with automatic retry on 429 Too Many Requests."""
+    for attempt in range(_RATE_LIMIT_RETRIES):
+        resp = await client.put(url, headers=headers, json=json)
+        if resp.status_code != 429:
+            return resp
+        retry_after = resp.headers.get("retry-after")
+        wait = int(retry_after) if retry_after and retry_after.isdigit() else _RATE_LIMIT_BASE_WAIT * (2 ** attempt)
+        logger.warning("Rate-limited on %s — waiting %ds (attempt %d/%d)", url, wait, attempt + 1, _RATE_LIMIT_RETRIES)
+        await asyncio.sleep(wait)
+    return resp  # return last 429 response so caller can raise
+
+
 def _is_user_product_error(resp: httpx.Response) -> bool:
     """Check if the response indicates a User Product compat fallback is needed."""
     if resp.status_code not in (400, 403):
@@ -365,21 +380,44 @@ async def copy_item_compatibilities(
     new_item_id: str,
     source_item_id: str,
     source_compat_products: list[dict] | None = None,
+    mode: str = "add",
 ) -> dict:
-    """POST /items/{id}/compatibilities — copy from source item.
+    """Copy compatibilities from source item to destination.
+
+    Uses POST when the destination has no compatibilities, and PUT when it does.
+    mode='add' appends to existing compats; mode='replace' deletes then creates.
 
     Falls back to /user-products/{user_product_id}/compatibilities when the
-    target item uses User Product compatibilities.  In that case the source
-    products must be supplied via *source_compat_products* (pre-fetched by the
-    caller with the source seller's token).
+    target item uses User Product compatibilities.
     """
     token = await _get_token(seller_slug)
     headers = {"Authorization": f"Bearer {token}"}
-    payload = {"item_to_copy": {"item_id": source_item_id, "extended_information": True}}
+    url = f"{ML_API}/items/{new_item_id}/compatibilities"
+    copy_body = {"item_to_copy": {"item_id": source_item_id, "extended_information": True}}
+
+    # Check if destination already has compatibilities
+    dest_compat = await get_item_compatibilities(seller_slug, new_item_id)
+    has_existing = dest_compat is not None and bool(dest_compat.get("products"))
+
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await _post_with_retry(
-            client, f"{ML_API}/items/{new_item_id}/compatibilities", headers, payload,
-        )
+        if has_existing:
+            # Destination has compats → use PUT
+            put_body: dict = {"create": copy_body}
+            if mode == "replace":
+                product_ids = [
+                    p["catalog_product_id"]
+                    for p in dest_compat.get("products", [])  # type: ignore[union-attr]
+                    if p.get("catalog_product_id")
+                ]
+                if product_ids:
+                    put_body["delete"] = {"product_ids": product_ids}
+            logger.info("Compat copy %s → %s: using PUT (mode=%s, existing=%d products)", source_item_id, new_item_id, mode, len(dest_compat.get("products", [])))  # type: ignore[union-attr]
+            resp = await _put_with_retry(client, url, headers, put_body)
+        else:
+            # No existing compats → use POST
+            logger.info("Compat copy %s → %s: using POST (no existing compats)", source_item_id, new_item_id)
+            resp = await _post_with_retry(client, url, headers, copy_body)
+
         if resp.status_code == 404:
             return {}
 
