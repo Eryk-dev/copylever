@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import type { Seller } from '../lib/api';
-import SellerSelect from './SellerSelect';
 
 interface Props {
   sourceSellers: Seller[];
@@ -67,12 +66,43 @@ export default function CopyForm({ sourceSellers, destSellers, onCopy, onPreview
 
       {/* Step 1: Source */}
       <Field label="Seller de Origem" step={1} done={step1Done}>
-        <SellerSelect
-          sellers={validSources}
-          value={source}
-          onChange={val => { setSource(val); setDestinations(prev => prev.filter(d => d !== val)); setConfirming(false); }}
-          placeholder="Selecione o seller de origem"
-        />
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
+          {validSources.map(seller => {
+            const selected = source === seller.slug;
+            const disabled = !!source && !selected;
+            return (
+              <button
+                key={seller.slug}
+                type="button"
+                onClick={() => {
+                  if (disabled) return;
+                  const next = selected ? '' : seller.slug;
+                  setSource(next);
+                  setDestinations(prev => prev.filter(d => d !== next));
+                  setConfirming(false);
+                }}
+                className="chip-toggle"
+                style={{
+                  padding: '6px 12px',
+                  fontSize: 'var(--text-xs)',
+                  fontWeight: selected ? 600 : 400,
+                  background: selected ? 'var(--ink)' : 'var(--paper)',
+                  color: selected ? 'var(--paper)' : disabled ? 'var(--ink-faint)' : 'var(--ink-muted)',
+                  border: `1px solid ${selected ? 'var(--ink)' : 'var(--line)'}`,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  opacity: disabled ? 0.4 : 1,
+                  cursor: disabled ? 'not-allowed' : 'pointer',
+                  transition: 'opacity 0.2s, background 0.2s, color 0.2s',
+                }}
+              >
+                {selected && <span style={{ fontSize: 10 }}>{'\u2713'}</span>}
+                {seller.name || seller.slug}
+              </button>
+            );
+          })}
+        </div>
       </Field>
 
       {/* Step 2: Destinations */}

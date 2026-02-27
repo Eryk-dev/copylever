@@ -49,12 +49,33 @@ async def preview_item(item_id: str, seller: str = Query(None), user: dict = Dep
     except Exception:
         pass
 
+    # Extract SKUs from item-level and variation-level fields
+    skus: list[str] = []
+    item_sku = item.get("seller_custom_field")
+    if item_sku:
+        skus.append(item_sku)
+    for var in item.get("variations", []):
+        var_sku = var.get("seller_custom_field")
+        if var_sku:
+            skus.append(var_sku)
+        for attr in var.get("attributes", []):
+            if attr.get("id") == "SELLER_SKU" and attr.get("value_name"):
+                skus.append(attr["value_name"])
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique_skus: list[str] = []
+    for s in skus:
+        if s not in seen:
+            seen.add(s)
+            unique_skus.append(s)
+
     return {
         "id": item.get("id"),
         "title": item.get("title"),
         "thumbnail": item.get("secure_thumbnail") or item.get("thumbnail"),
         "has_compatibilities": has_compatibilities,
         "compat_count": compat_count,
+        "skus": unique_skus,
     }
 
 
@@ -103,11 +124,32 @@ async def copy_compat(req: CopyRequest, bg: BackgroundTasks, user: dict = Depend
         raise HTTPException(status_code=400, detail="At least one target is required")
 
     targets = [{"seller_slug": t.seller_slug, "item_id": t.item_id} for t in req.targets]
-    bg.add_task(copy_compat_to_targets, req.source_item_id, targets, req.skus, user["id"])
+
+    # Create in_progress log row before starting background task
+    db = get_db()
+    pending_targets = [
+        {**t, "status": "pending", "error": None} for t in targets
+    ]
+    log_insert = {
+        "source_item_id": req.source_item_id,
+        "skus": req.skus or [],
+        "targets": pending_targets,
+        "total_targets": len(targets),
+        "success_count": 0,
+        "error_count": 0,
+        "status": "in_progress",
+    }
+    if user.get("id"):
+        log_insert["user_id"] = user["id"]
+    log_row = db.table("compat_logs").insert(log_insert).execute()
+    log_id = log_row.data[0]["id"]
+
+    bg.add_task(copy_compat_to_targets, req.source_item_id, targets, req.skus, log_id)
 
     return {
         "status": "queued",
         "total_targets": len(targets),
+        "log_id": log_id,
     }
 
 

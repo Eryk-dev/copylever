@@ -82,14 +82,17 @@ async def _resolve_source_seller(source_item_id: str) -> str | None:
 
 
 async def copy_compat_to_targets(
-    source_item_id: str, targets: list[dict[str, str]], skus: list[str] | None = None,
-    user_id: str | None = None,
+    source_item_id: str,
+    targets: list[dict[str, str]],
+    skus: list[str] | None = None,
+    log_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """Copy compatibilities from source item to each target item.
 
     Each target dict must have: seller_slug, item_id.
+    If log_id is provided, updates the existing compat_logs row with final results.
+    Otherwise, inserts a new row (legacy behavior).
     Returns per-target results with status/error.
-    Logs the operation to compat_logs after completion.
     """
     # Pre-fetch source compatibilities once (needs source seller's token).
     source_compat_products: list[dict] | None = None
@@ -133,18 +136,30 @@ async def copy_compat_to_targets(
             })
             error_count += 1
 
-    # Log to compat_logs
+    # Determine final status
+    if error_count == 0:
+        final_status = "success"
+    elif success_count == 0:
+        final_status = "error"
+    else:
+        final_status = "partial"
+
+    # Update or insert compat_logs
     db = get_db()
-    log_entry = {
-        "source_item_id": source_item_id,
-        "skus": skus or [],
+    log_data = {
         "targets": results,
-        "total_targets": len(targets),
         "success_count": success_count,
         "error_count": error_count,
+        "status": final_status,
     }
-    if user_id:
-        log_entry["user_id"] = user_id
-    db.table("compat_logs").insert(log_entry).execute()
+    if log_id:
+        db.table("compat_logs").update(log_data).eq("id", log_id).execute()
+    else:
+        db.table("compat_logs").insert({
+            "source_item_id": source_item_id,
+            "skus": skus or [],
+            "total_targets": len(targets),
+            **log_data,
+        }).execute()
 
     return results
