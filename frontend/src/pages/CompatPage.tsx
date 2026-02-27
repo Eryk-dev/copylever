@@ -132,15 +132,22 @@ export default function CompatPage({ sellers, headers }: Props) {
         setPreviewError(err.detail);
         return;
       }
-      const data: CompatCopyResult = await res.json();
-      setCopyResult(data);
-      loadLogs();
+      const data = await res.json();
+      // Background job queued — show confirmation and reset for next job
+      setCopyResult({ total: data.total_targets, success: 0, errors: 0, results: [] });
+      setSearchResults([]);
+      setSearchedSkus([]);
+      setSkuInput('');
+      // Auto-refresh logs after a delay so the user sees progress
+      setTimeout(() => loadLogs(), 5000);
+      setTimeout(() => loadLogs(), 15000);
+      setTimeout(() => loadLogs(), 30000);
     } catch (e) {
       setPreviewError(String(e));
     } finally {
       setCopying(false);
     }
-  }, [preview, searchResults, headers, loadLogs]);
+  }, [preview, searchResults, searchedSkus, headers, loadLogs]);
 
   const canCopy = preview?.has_compatibilities && searchResults.length > 0 && !copying;
 
@@ -359,16 +366,25 @@ export default function CompatPage({ sellers, headers }: Props) {
 
       {/* Copy Results */}
       {copyResult && (
-        <Card title="Resultado da Copia">
-          <div className="animate-in" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-            <div style={{ display: 'flex', gap: 'var(--space-4)', fontSize: 'var(--text-sm)' }}>
-              <span>Total: <b>{copyResult.total}</b></span>
-              <span style={{ color: 'var(--success)' }}>Sucesso: <b>{copyResult.success}</b></span>
-              {copyResult.errors > 0 && (
-                <span style={{ color: 'var(--danger)' }}>Erros: <b>{copyResult.errors}</b></span>
-              )}
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+        <Card title="Enviado">
+          <div className="animate-in" style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--space-2)',
+            padding: 'var(--space-2) var(--space-3)',
+            background: 'rgba(34, 197, 94, 0.06)',
+            borderRadius: 6,
+            fontSize: 'var(--text-sm)',
+            color: 'var(--success)',
+            fontWeight: 500,
+          }}>
+            {copyResult.results.length > 0
+              ? <>Total: <b>{copyResult.total}</b> &nbsp; Sucesso: <b>{copyResult.success}</b>{copyResult.errors > 0 && <> &nbsp; <span style={{ color: 'var(--danger)' }}>Erros: <b>{copyResult.errors}</b></span></>}</>
+              : <>Copiando {copyResult.total} destino{copyResult.total !== 1 ? 's' : ''} em segundo plano. Acompanhe no historico abaixo.</>
+            }
+          </div>
+          {copyResult.results.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)', marginTop: 'var(--space-3)' }}>
               {copyResult.results.map(r => (
                 <div key={`${r.seller_slug}-${r.item_id}`} style={{
                   display: 'flex',
@@ -390,7 +406,7 @@ export default function CompatPage({ sellers, headers }: Props) {
                 </div>
               ))}
             </div>
-          </div>
+          )}
         </Card>
       )}
 

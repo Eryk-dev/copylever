@@ -3,7 +3,7 @@ Compat endpoints — preview, search-sku, copy, logs for vehicle compatibilities
 """
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.db.supabase import get_db
@@ -80,22 +80,17 @@ class CopyRequest(BaseModel):
 
 
 @router.post("/copy")
-async def copy_compat(req: CopyRequest):
-    """Copy compatibilities from source item to target items."""
+async def copy_compat(req: CopyRequest, bg: BackgroundTasks):
+    """Queue compatibility copy — returns immediately, results appear in logs."""
     if not req.targets:
         raise HTTPException(status_code=400, detail="At least one target is required")
 
     targets = [{"seller_slug": t.seller_slug, "item_id": t.item_id} for t in req.targets]
-    results = await copy_compat_to_targets(req.source_item_id, targets, skus=req.skus)
-
-    success_count = sum(1 for r in results if r["status"] == "ok")
-    error_count = sum(1 for r in results if r["status"] == "error")
+    bg.add_task(copy_compat_to_targets, req.source_item_id, targets, req.skus)
 
     return {
-        "total": len(results),
-        "success": success_count,
-        "errors": error_count,
-        "results": results,
+        "status": "queued",
+        "total_targets": len(targets),
     }
 
 
