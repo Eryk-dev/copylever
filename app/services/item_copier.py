@@ -12,6 +12,7 @@ from app.services.ml_api import (
     get_item,
     get_item_description,
     get_item_compatibilities,
+    get_seller_user_info,
     create_item,
     update_item,
     set_item_description,
@@ -323,6 +324,24 @@ def _is_family_name_invalid_error(exc: MlApiError) -> bool:
                 continue
             msg = str(cause.get("message", "")).lower()
             if "family name" in msg and "invalid" in msg:
+                return True
+    return False
+
+
+def _is_official_store_id_error(exc: MlApiError) -> bool:
+    """Detect 'official_store_id' required/invalid error for brand accounts."""
+    text = str(exc).lower()
+    if "official_store_id" in text:
+        return True
+    payload = exc.payload if isinstance(exc.payload, dict) else {}
+    causes = payload.get("cause", [])
+    if isinstance(causes, list):
+        for cause in causes:
+            if not isinstance(cause, dict):
+                continue
+            code = str(cause.get("code", "")).lower()
+            msg = str(cause.get("message", "")).lower()
+            if "official_store_id" in code or "official_store_id" in msg:
                 return True
     return False
 
@@ -657,6 +676,17 @@ async def copy_single_item(
                 if _is_family_name_invalid_error(exc):
                     force_no_family_name = True
                 adjusted_payload, actions = _adjust_payload_for_ml_error(payload, item, exc)
+
+                # Handle official_store_id error for brand accounts
+                if _is_official_store_id_error(exc) and not adjusted_payload.get("official_store_id"):
+                    try:
+                        user_info = await get_seller_user_info(dest_seller)
+                        osi = user_info.get("official_store_id")
+                        if osi:
+                            adjusted_payload["official_store_id"] = osi
+                            actions.append(f"added official_store_id={osi} for brand account")
+                    except Exception as osi_exc:
+                        logger.warning("Failed to fetch official_store_id for %s: %s", dest_seller, osi_exc)
 
                 # Log every failed attempt to api_debug_logs
                 _log_api_debug(

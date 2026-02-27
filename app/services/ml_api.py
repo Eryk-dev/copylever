@@ -180,6 +180,18 @@ async def fetch_user_info(access_token: str) -> dict:
         return resp.json()
 
 
+async def get_seller_user_info(seller_slug: str) -> dict:
+    """GET /users/me for a connected seller (by slug). Returns ML user profile."""
+    token = await _get_token(seller_slug)
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"{ML_API}/users/me",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        _raise_for_status(resp, "Mercado Livre API")
+        return resp.json()
+
+
 # ── Item operations ──────────────────────────────────────
 
 
