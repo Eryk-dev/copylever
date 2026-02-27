@@ -103,7 +103,7 @@ async def copy_compat(req: CopyRequest, bg: BackgroundTasks, user: dict = Depend
         raise HTTPException(status_code=400, detail="At least one target is required")
 
     targets = [{"seller_slug": t.seller_slug, "item_id": t.item_id} for t in req.targets]
-    bg.add_task(copy_compat_to_targets, req.source_item_id, targets, req.skus)
+    bg.add_task(copy_compat_to_targets, req.source_item_id, targets, req.skus, user["id"])
 
     return {
         "status": "queued",
@@ -116,9 +116,18 @@ async def compat_logs(
     limit: int = Query(50, le=200),
     user: dict = Depends(require_user),
 ):
-    """Get compat copy history."""
+    """Get compat copy history. Operators see only their own logs; admins see all."""
     db = get_db()
-    result = db.table("compat_logs").select("*").order(
+    query = db.table("compat_logs").select("*, users(username)").order(
         "created_at", desc=True
-    ).limit(limit).execute()
-    return result.data or []
+    )
+    if user["role"] != "admin":
+        query = query.eq("user_id", user["id"])
+    result = query.limit(limit).execute()
+    # Flatten the joined username into each log entry
+    logs = []
+    for row in result.data or []:
+        users_data = row.pop("users", None)
+        row["username"] = users_data["username"] if users_data else None
+        logs.append(row)
+    return logs

@@ -82,7 +82,8 @@ async def _resolve_source_seller(source_item_id: str) -> str | None:
 
 
 async def copy_compat_to_targets(
-    source_item_id: str, targets: list[dict[str, str]], skus: list[str] | None = None
+    source_item_id: str, targets: list[dict[str, str]], skus: list[str] | None = None,
+    user_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Copy compatibilities from source item to each target item.
 
@@ -134,13 +135,16 @@ async def copy_compat_to_targets(
 
     # Log to compat_logs
     db = get_db()
-    db.table("compat_logs").insert({
+    log_entry = {
         "source_item_id": source_item_id,
         "skus": skus or [],
         "targets": results,
         "total_targets": len(targets),
         "success_count": success_count,
         "error_count": error_count,
-    }).execute()
+    }
+    if user_id:
+        log_entry["user_id"] = user_id
+    db.table("compat_logs").insert(log_entry).execute()
 
     return results

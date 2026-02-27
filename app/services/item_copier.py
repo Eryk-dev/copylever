@@ -593,6 +593,7 @@ async def copy_items(
     dest_sellers: list[str],
     item_ids: list[str],
     user_email: str | None = None,
+    user_id: str | None = None,
 ) -> list[dict]:
     """
     Copy multiple items to multiple destination sellers.
@@ -622,7 +623,7 @@ async def copy_items(
 
         # Log to copy_logs
         try:
-            db.table("copy_logs").insert({
+            log_entry = {
                 "user_email": user_email,
                 "source_seller": source_seller,
                 "dest_sellers": dest_sellers,
@@ -630,7 +631,10 @@ async def copy_items(
                 "dest_item_ids": dest_item_ids,
                 "status": item_status,
                 "error_details": item_errors if item_errors else None,
-            }).execute()
+            }
+            if user_id:
+                log_entry["user_id"] = user_id
+            db.table("copy_logs").insert(log_entry).execute()
         except Exception as e:
             logger.error(f"Failed to log copy for {item_id}: {e}")
 

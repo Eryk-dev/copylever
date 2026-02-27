@@ -80,6 +80,7 @@ async def copy_anuncios(req: CopyRequest, user: dict = Depends(require_user)):
         source_seller=req.source,
         dest_sellers=req.destinations,
         item_ids=clean_ids,
+        user_id=user["id"],
     )
 
     success_count = sum(1 for r in results if r["status"] == "success")
@@ -133,12 +134,21 @@ async def copy_logs(
     offset: int = Query(0, ge=0),
     user: dict = Depends(require_user),
 ):
-    """Get copy history."""
+    """Get copy history. Operators see only their own logs; admins see all."""
     db = get_db()
-    result = db.table("copy_logs").select("*").order(
+    query = db.table("copy_logs").select("*, users(username)").order(
         "created_at", desc=True
-    ).range(offset, offset + limit - 1).execute()
-    return result.data or []
+    )
+    if user["role"] != "admin":
+        query = query.eq("user_id", user["id"])
+    result = query.range(offset, offset + limit - 1).execute()
+    # Flatten the joined username into each log entry
+    logs = []
+    for row in result.data or []:
+        users_data = row.pop("users", None)
+        row["username"] = users_data["username"] if users_data else None
+        logs.append(row)
+    return logs
 
 
 @router.get("/preview/{item_id}")

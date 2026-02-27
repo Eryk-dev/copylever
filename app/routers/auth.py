@@ -101,14 +101,40 @@ async def login(req: LoginRequest):
     # Find user
     result = db.table("users").select("*").eq("username", req.username).execute()
     if not result.data:
+        # Log failed login attempt (user not found)
+        try:
+            db.table("auth_logs").insert({
+                "username": req.username,
+                "action": "login_failed",
+            }).execute()
+        except Exception:
+            logger.warning("Failed to log login_failed for unknown user %s", req.username)
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
     user = result.data[0]
 
     if not user.get("active"):
+        # Log failed login attempt (inactive user)
+        try:
+            db.table("auth_logs").insert({
+                "user_id": user["id"],
+                "username": req.username,
+                "action": "login_failed",
+            }).execute()
+        except Exception:
+            logger.warning("Failed to log login_failed for inactive user %s", req.username)
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
     if not _verify_password(req.password, user["password_hash"]):
+        # Log failed login attempt (wrong password)
+        try:
+            db.table("auth_logs").insert({
+                "user_id": user["id"],
+                "username": req.username,
+                "action": "login_failed",
+            }).execute()
+        except Exception:
+            logger.warning("Failed to log login_failed for user %s", req.username)
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
     # Create session
@@ -126,6 +152,16 @@ async def login(req: LoginRequest):
         "last_login_at": datetime.now(timezone.utc).isoformat(),
     }).eq("id", user["id"]).execute()
 
+    # Log successful login
+    try:
+        db.table("auth_logs").insert({
+            "user_id": user["id"],
+            "username": user["username"],
+            "action": "login",
+        }).execute()
+    except Exception:
+        logger.warning("Failed to log login for user %s", user["username"])
+
     return {
         "token": token,
         "user": {
@@ -142,6 +178,23 @@ async def logout(x_auth_token: str = Header(None)):
     """Invalidate session token."""
     if x_auth_token:
         db = get_db()
+        # Look up session to identify user for audit log
+        session_result = db.table("user_sessions").select("user_id").eq(
+            "token", x_auth_token
+        ).execute()
+        if session_result.data:
+            user_id = session_result.data[0]["user_id"]
+            # Fetch username for the log
+            user_result = db.table("users").select("username").eq("id", user_id).execute()
+            username = user_result.data[0]["username"] if user_result.data else None
+            try:
+                db.table("auth_logs").insert({
+                    "user_id": user_id,
+                    "username": username,
+                    "action": "logout",
+                }).execute()
+            except Exception:
+                logger.warning("Failed to log logout for user_id %s", user_id)
         db.table("user_sessions").delete().eq("token", x_auth_token).execute()
     return {"status": "ok"}
 
