@@ -10,6 +10,7 @@ from app.db.supabase import get_db
 from app.services.ml_api import (
     copy_item_compatibilities,
     get_item,
+    get_item_compatibilities,
     search_items_by_sku,
 )
 
@@ -60,6 +61,19 @@ async def search_sku_all_sellers(skus: list[str]) -> list[dict[str, Any]]:
     return results
 
 
+async def _resolve_source_seller(source_item_id: str) -> str | None:
+    """Find which connected seller owns the source item."""
+    db = get_db()
+    sellers = (db.table("copy_sellers").select("slug").execute()).data or []
+    for s in sellers:
+        try:
+            await get_item(s["slug"], source_item_id)
+            return s["slug"]
+        except Exception:
+            continue
+    return None
+
+
 async def copy_compat_to_targets(
     source_item_id: str, targets: list[dict[str, str]], skus: list[str] | None = None
 ) -> list[dict[str, Any]]:
@@ -69,6 +83,17 @@ async def copy_compat_to_targets(
     Returns per-target results with status/error.
     Logs the operation to compat_logs after completion.
     """
+    # Pre-fetch source compatibilities once (needs source seller's token).
+    source_compat_products: list[dict] | None = None
+    source_seller = await _resolve_source_seller(source_item_id)
+    if source_seller:
+        try:
+            compat = await get_item_compatibilities(source_seller, source_item_id)
+            if compat and isinstance(compat, dict):
+                source_compat_products = compat.get("products")
+        except Exception:
+            logger.warning("Could not pre-fetch source compats for %s", source_item_id)
+
     results: list[dict[str, Any]] = []
     success_count = 0
     error_count = 0
@@ -76,7 +101,8 @@ async def copy_compat_to_targets(
     for target in targets:
         try:
             await copy_item_compatibilities(
-                target["seller_slug"], target["item_id"], source_item_id
+                target["seller_slug"], target["item_id"], source_item_id,
+                source_compat_products=source_compat_products,
             )
             results.append({
                 "seller_slug": target["seller_slug"],
