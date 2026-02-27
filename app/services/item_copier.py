@@ -52,6 +52,7 @@ DIMENSION_ERROR_KEYWORDS = {
 
 USER_PRODUCT_LISTING_TAG = "user_product_listing"
 BRACKET_FIELDS_RE = re.compile(r"\[([^\]]+)\]")
+MAX_FAMILY_NAME_LEN = 120
 
 
 def _is_dimension_error(exc: MlApiError) -> bool:
@@ -171,10 +172,17 @@ def _get_variation_seller_custom_field(variation: dict) -> str:
 
 
 def _get_family_name(item: dict) -> str:
-    family_name = _clean_text(item.get("family_name"))
-    if family_name:
-        return family_name
-    return _clean_text(item.get("title"))
+    candidates = [
+        item.get("family_name"),
+        item.get("title"),
+        _get_item_seller_custom_field(item),
+        item.get("id"),
+    ]
+    for raw in candidates:
+        value = _clean_text(raw)
+        if value:
+            return value[:MAX_FAMILY_NAME_LEN]
+    return ""
 
 
 def _is_user_product_item(item: dict) -> bool:
@@ -213,7 +221,17 @@ def _extract_ml_error_fields(exc: MlApiError, marker: str) -> set[str]:
                 if isinstance(value, str):
                     texts.append(value)
 
-    if marker and not any(marker in text for text in texts):
+    marker_lc = marker.lower().strip()
+    lowered = [text.lower() for text in texts if isinstance(text, str)]
+    marker_found = not marker_lc or any(marker_lc in text for text in lowered)
+    if not marker_found and marker_lc == "required_fields":
+        marker_found = any(
+            "following properties" in text or "required field" in text
+            for text in lowered
+        )
+    if not marker_found and marker_lc == "invalid_fields":
+        marker_found = any("invalid field" in text for text in lowered)
+    if not marker_found:
         return set()
 
     fields: set[str] = set()
@@ -253,6 +271,7 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
 
     removable_top_fields = {
         "title",
+        "family_name",
         "variations",
         "channels",
         "video_id",
@@ -339,10 +358,11 @@ def _build_item_payload(item: dict, safe_mode: bool = False) -> dict:
     if seller_custom_field:
         payload["seller_custom_field"] = seller_custom_field
 
-    if is_user_product:
+    family_name = _clean_text(item.get("family_name"))
+    if not family_name and is_user_product:
         family_name = _get_family_name(item)
-        if family_name:
-            payload["family_name"] = family_name
+    if family_name:
+        payload["family_name"] = family_name[:MAX_FAMILY_NAME_LEN]
 
     # Pictures — ML accepts source URLs
     if item.get("pictures"):
@@ -532,6 +552,9 @@ async def copy_single_item(
 
                 if not safe_mode_retry_used:
                     safe_payload = _build_item_payload(item, safe_mode=True)
+                    family_name = _get_family_name(item)
+                    if family_name and not safe_payload.get("family_name"):
+                        safe_payload["family_name"] = family_name
                     if safe_payload != payload:
                         safe_mode_retry_used = True
                         logger.warning(
