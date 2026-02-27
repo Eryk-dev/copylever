@@ -14,7 +14,7 @@ export interface Seller {
 export interface CopyResult {
   source_item_id: string;
   dest_seller: string;
-  status: 'success' | 'error' | 'pending';
+  status: 'success' | 'error' | 'pending' | 'needs_dimensions';
   dest_item_id: string | null;
   error: string | null;
 }
@@ -23,6 +23,7 @@ export interface CopyResponse {
   total: number;
   success: number;
   errors: number;
+  needs_dimensions?: number;
   results: CopyResult[];
 }
 

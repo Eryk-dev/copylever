@@ -262,6 +262,19 @@ async def set_item_compatibilities(seller_slug: str, item_id: str, compat_data: 
         return resp.json()
 
 
+async def update_item(seller_slug: str, item_id: str, payload: dict) -> dict:
+    """PUT /items/{item_id} — update existing listing."""
+    token = await _get_token(seller_slug)
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.put(
+            f"{ML_API}/items/{item_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            json=payload,
+        )
+        _raise_for_status(resp, "Mercado Livre API")
+        return resp.json()
+
+
 async def search_items_by_sku(seller_slug: str, sku: str) -> list[str]:
     """GET /users/{user_id}/items/search with seller_sku and sku params."""
     db = get_db()

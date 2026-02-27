@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from app.db.supabase import get_db
 from app.routers.auth import require_admin
-from app.services.item_copier import copy_items
+from app.services.item_copier import copy_items, copy_with_dimensions
 from app.services.ml_api import get_item, get_item_description, get_item_compatibilities
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,20 @@ class CopyRequest(BaseModel):
     source: str
     destinations: list[str]
     item_ids: list[str]
+
+
+class Dimensions(BaseModel):
+    height: float | None = None
+    width: float | None = None
+    length: float | None = None
+    weight: float | None = None
+
+
+class CopyWithDimensionsRequest(BaseModel):
+    source: str
+    destinations: list[str]
+    item_id: str
+    dimensions: Dimensions
 
 
 @router.post("")
@@ -48,6 +62,33 @@ async def copy_anuncios(req: CopyRequest):
         source_seller=req.source,
         dest_sellers=req.destinations,
         item_ids=clean_ids,
+    )
+
+    success_count = sum(1 for r in results if r["status"] == "success")
+    error_count = sum(1 for r in results if r["status"] == "error")
+    dim_count = sum(1 for r in results if r["status"] == "needs_dimensions")
+
+    return {
+        "total": len(results),
+        "success": success_count,
+        "errors": error_count,
+        "needs_dimensions": dim_count,
+        "results": results,
+    }
+
+
+@router.post("/with-dimensions")
+async def copy_with_dims(req: CopyWithDimensionsRequest):
+    """Apply dimensions to source item, then copy to destinations."""
+    dims = req.dimensions.model_dump(exclude_none=True)
+    if not dims:
+        raise HTTPException(status_code=400, detail="At least one dimension is required")
+
+    results = await copy_with_dimensions(
+        source_seller=req.source,
+        dest_sellers=req.destinations,
+        item_id=req.item_id.strip(),
+        dimensions=dims,
     )
 
     success_count = sum(1 for r in results if r["status"] == "success")

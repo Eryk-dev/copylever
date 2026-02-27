@@ -9,7 +9,7 @@ interface Props {
 }
 
 export default function CopyPage({ sellers, headers }: Props) {
-  const [results, setResults] = useState<CopyResponse | null>(null);
+  const [results, setResults] = useState<(CopyResponse & { source?: string }) | null>(null);
   const [copying, setCopying] = useState(false);
   const [logs, setLogs] = useState<CopyLog[]>([]);
   const [logsLoaded, setLogsLoaded] = useState(false);
@@ -33,7 +33,7 @@ export default function CopyPage({ sellers, headers }: Props) {
         return;
       }
       const data: CopyResponse = await res.json();
-      setResults(data);
+      setResults({ ...data, source });
       loadLogs();
     } catch (e) {
       setResults({ total: 0, success: 0, errors: 1, results: [{ source_item_id: '', dest_seller: '', status: 'error', dest_item_id: null, error: String(e) }] });
@@ -82,7 +82,13 @@ export default function CopyPage({ sellers, headers }: Props) {
         </Card>
       )}
       {preview && <PreviewCard preview={preview} onClose={() => setPreview(null)} />}
-      {results && <CopyProgress results={results} />}
+      {results && (
+        <CopyProgress
+          results={results}
+          headers={headers}
+          onDimensionRetry={(updated) => setResults({ ...updated, source: results.source })}
+        />
+      )}
 
       {/* Logs */}
       {logs.length > 0 && (
