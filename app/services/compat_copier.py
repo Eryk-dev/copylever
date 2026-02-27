@@ -17,14 +17,21 @@ from app.services.ml_api import (
 logger = logging.getLogger(__name__)
 
 
-async def search_sku_all_sellers(skus: list[str]) -> list[dict[str, Any]]:
-    """Search for items matching the given SKUs across all connected sellers.
+async def search_sku_all_sellers(
+    skus: list[str],
+    allowed_sellers: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Search for items matching the given SKUs across connected sellers.
 
+    If allowed_sellers is provided, only those sellers are searched.
     Returns a list of dicts with: seller_slug, seller_name, item_id, sku, title.
     """
     db = get_db()
     sellers_resp = db.table("copy_sellers").select("slug, name, ml_user_id").execute()
     sellers = sellers_resp.data or []
+
+    if allowed_sellers is not None:
+        sellers = [s for s in sellers if s["slug"] in allowed_sellers]
 
     # Build tasks: one per seller+SKU combination
     tasks: list[tuple[dict[str, Any], str, asyncio.Task[list[str]]]] = []

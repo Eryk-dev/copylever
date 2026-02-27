@@ -7,17 +7,20 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.db.supabase import get_db
-from app.routers.auth import require_admin
+from app.routers.auth import require_user
 from app.services.compat_copier import copy_compat_to_targets, search_sku_all_sellers
 from app.services.ml_api import get_item, get_item_compatibilities
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/compat", tags=["compat"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api/compat", tags=["compat"])
 
 
 @router.get("/preview/{item_id}")
-async def preview_item(item_id: str, seller: str = Query(None)):
+async def preview_item(item_id: str, seller: str = Query(None), user: dict = Depends(require_user)):
     """Preview an item's compatibility info."""
+    # Check can_run_compat (admins bypass)
+    if user["role"] != "admin" and not user.get("can_run_compat"):
+        raise HTTPException(status_code=403, detail="Sem permissão para rodar compatibilidade")
     # If no seller provided, use the first connected seller
     if not seller:
         db = get_db()
@@ -60,11 +63,21 @@ class SearchSkuRequest(BaseModel):
 
 
 @router.post("/search-sku")
-async def search_sku(req: SearchSkuRequest):
-    """Search for items by SKU across all connected sellers."""
+async def search_sku(req: SearchSkuRequest, user: dict = Depends(require_user)):
+    """Search for items by SKU across connected sellers (filtered by permissions)."""
     if not req.skus:
         raise HTTPException(status_code=400, detail="At least one SKU is required")
-    results = await search_sku_all_sellers(req.skus)
+
+    # Filter sellers by can_copy_to permission (admins get all)
+    allowed_sellers = None
+    if user["role"] != "admin":
+        allowed_sellers = [
+            p["seller_slug"]
+            for p in user.get("permissions", [])
+            if p.get("can_copy_to")
+        ]
+
+    results = await search_sku_all_sellers(req.skus, allowed_sellers=allowed_sellers)
     return results
 
 
@@ -80,8 +93,12 @@ class CopyRequest(BaseModel):
 
 
 @router.post("/copy")
-async def copy_compat(req: CopyRequest, bg: BackgroundTasks):
+async def copy_compat(req: CopyRequest, bg: BackgroundTasks, user: dict = Depends(require_user)):
     """Queue compatibility copy — returns immediately, results appear in logs."""
+    # Check can_run_compat (admins bypass)
+    if user["role"] != "admin" and not user.get("can_run_compat"):
+        raise HTTPException(status_code=403, detail="Sem permissão para rodar compatibilidade")
+
     if not req.targets:
         raise HTTPException(status_code=400, detail="At least one target is required")
 
@@ -97,6 +114,7 @@ async def copy_compat(req: CopyRequest, bg: BackgroundTasks):
 @router.get("/logs")
 async def compat_logs(
     limit: int = Query(50, le=200),
+    user: dict = Depends(require_user),
 ):
     """Get compat copy history."""
     db = get_db()

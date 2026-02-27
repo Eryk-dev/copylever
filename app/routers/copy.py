@@ -7,12 +7,23 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.db.supabase import get_db
-from app.routers.auth import require_admin
+from app.routers.auth import require_user
 from app.services.item_copier import copy_items, copy_with_dimensions
 from app.services.ml_api import get_item, get_item_description, get_item_compatibilities
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/copy", tags=["copy"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api/copy", tags=["copy"])
+
+
+def _check_seller_permission(user: dict, seller_slug: str, direction: str) -> bool:
+    """Check if user has permission for a seller. direction: 'from' or 'to'."""
+    if user["role"] == "admin":
+        return True
+    key = "can_copy_from" if direction == "from" else "can_copy_to"
+    return any(
+        p["seller_slug"] == seller_slug and p.get(key, False)
+        for p in user.get("permissions", [])
+    )
 
 
 class CopyRequest(BaseModel):
@@ -36,7 +47,7 @@ class CopyWithDimensionsRequest(BaseModel):
 
 
 @router.post("")
-async def copy_anuncios(req: CopyRequest):
+async def copy_anuncios(req: CopyRequest, user: dict = Depends(require_user)):
     """Copy listings from source seller to destination seller(s)."""
     if not req.source:
         raise HTTPException(status_code=400, detail="source is required")
@@ -46,6 +57,13 @@ async def copy_anuncios(req: CopyRequest):
         raise HTTPException(status_code=400, detail="At least one item_id is required")
     if req.source in req.destinations:
         raise HTTPException(status_code=400, detail="Source cannot be in destinations")
+
+    # Permission checks (admins bypass)
+    if not _check_seller_permission(user, req.source, "from"):
+        raise HTTPException(status_code=403, detail=f"Sem permissão de origem para o seller '{req.source}'")
+    denied_dests = [d for d in req.destinations if not _check_seller_permission(user, d, "to")]
+    if denied_dests:
+        raise HTTPException(status_code=403, detail=f"Sem permissão de destino para o(s) seller(s): {', '.join(denied_dests)}")
 
     # Clean item_ids (support comma-separated and newline-separated)
     clean_ids = []
@@ -78,11 +96,18 @@ async def copy_anuncios(req: CopyRequest):
 
 
 @router.post("/with-dimensions")
-async def copy_with_dims(req: CopyWithDimensionsRequest):
+async def copy_with_dims(req: CopyWithDimensionsRequest, user: dict = Depends(require_user)):
     """Apply dimensions to source item, then copy to destinations."""
     dims = req.dimensions.model_dump(exclude_none=True)
     if not dims:
         raise HTTPException(status_code=400, detail="At least one dimension is required")
+
+    # Permission checks (admins bypass)
+    if not _check_seller_permission(user, req.source, "from"):
+        raise HTTPException(status_code=403, detail=f"Sem permissão de origem para o seller '{req.source}'")
+    denied_dests = [d for d in req.destinations if not _check_seller_permission(user, d, "to")]
+    if denied_dests:
+        raise HTTPException(status_code=403, detail=f"Sem permissão de destino para o(s) seller(s): {', '.join(denied_dests)}")
 
     results = await copy_with_dimensions(
         source_seller=req.source,
@@ -106,6 +131,7 @@ async def copy_with_dims(req: CopyWithDimensionsRequest):
 async def copy_logs(
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
+    user: dict = Depends(require_user),
 ):
     """Get copy history."""
     db = get_db()
@@ -116,7 +142,7 @@ async def copy_logs(
 
 
 @router.get("/preview/{item_id}")
-async def preview_item(item_id: str, seller: str = Query(...)):
+async def preview_item(item_id: str, seller: str = Query(...), user: dict = Depends(require_user)):
     """Preview an item before copying."""
     try:
         item = await get_item(seller, item_id)
