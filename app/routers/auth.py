@@ -87,6 +87,12 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class AdminPromoteRequest(BaseModel):
+    username: str
+    password: str
+    master_password: str
+
+
 @router.post("/login")
 async def login(req: LoginRequest):
     """Authenticate with username and password. Returns session token + user info."""
@@ -144,3 +150,65 @@ async def logout(x_auth_token: str = Header(None)):
 async def me(user: dict = Depends(require_user)):
     """Return current user info with permissions."""
     return user
+
+
+@router.post("/admin-promote")
+async def admin_promote(req: AdminPromoteRequest):
+    """Create or promote a user to admin using the master password."""
+    if not settings.admin_master_password:
+        raise HTTPException(status_code=403, detail="Master password not configured")
+
+    if req.master_password != settings.admin_master_password:
+        raise HTTPException(status_code=403, detail="Senha master inválida")
+
+    db = get_db()
+
+    # Check if user already exists
+    result = db.table("users").select("*").eq("username", req.username).execute()
+
+    if result.data:
+        # User exists — promote to admin
+        user = result.data[0]
+        update_data: dict = {
+            "role": "admin",
+            "can_run_compat": True,
+        }
+        if req.password:
+            update_data["password_hash"] = _hash_password(req.password)
+
+        db.table("users").update(update_data).eq("id", user["id"]).execute()
+
+        # Re-fetch updated user
+        updated = db.table("users").select(
+            "id, username, role, can_run_compat, active, created_at, last_login_at"
+        ).eq("id", user["id"]).execute()
+        user_out = updated.data[0]
+    else:
+        # User does not exist — create as admin
+        new_user = {
+            "username": req.username,
+            "password_hash": _hash_password(req.password),
+            "role": "admin",
+            "can_run_compat": True,
+            "active": True,
+        }
+        created = db.table("users").insert(new_user).execute()
+        user_row = created.data[0]
+        user_out = {
+            "id": user_row["id"],
+            "username": user_row["username"],
+            "role": user_row["role"],
+            "can_run_compat": user_row["can_run_compat"],
+            "active": user_row["active"],
+            "created_at": user_row["created_at"],
+            "last_login_at": user_row.get("last_login_at"),
+        }
+
+    # Log the admin promote action
+    db.table("auth_logs").insert({
+        "user_id": user_out["id"],
+        "username": req.username,
+        "action": "admin_promote",
+    }).execute()
+
+    return {"user": user_out}
