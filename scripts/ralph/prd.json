@@ -160,7 +160,7 @@
         "Typecheck passes"
       ],
       "priority": 9,
-      "passes": false,
+      "passes": true,
       "notes": "Current useAuth stores: authed, sellers, login(), logout(), etc. Expand to also store 'user' object. The navbar in App.tsx renders tab buttons — add conditional rendering. The localStorage key was 'copy-admin-token', now 'copy-auth-token'. Make sure to update all references. The user.permissions array has {seller_slug, can_copy_from, can_copy_to} — check if any has can_copy_from=true and any has can_copy_to=true to show Copiar tab."
     },
     {

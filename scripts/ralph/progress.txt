@@ -24,6 +24,11 @@ Started: Fri Feb 27 11:46:39 -03 2026
 - Log entry pattern: conditionally add `user_id` only if present (`if user_id: log_entry["user_id"] = user_id`)
 - Frontend auth token: localStorage key is `copy-auth-token`, header is `X-Auth-Token`
 - `useAuth.login` signature: `(username: string, password: string) => Promise<boolean>`
+- `useAuth` exports `user: AuthUser | null` with `{id, username, role, can_run_compat, permissions}`
+- `AuthUser` and `UserPermission` types exported from `hooks/useAuth.ts`
+- `isAuthenticated` requires both token AND user object (double check)
+- Tab visibility: check `user.permissions.some(p => p.can_copy_from)` AND `some(p => p.can_copy_to)` for Copiar tab
+- `activeView` pattern: fallback to first visible tab if current view is hidden
 
 ---
 
@@ -140,5 +145,24 @@ Started: Fri Feb 27 11:46:39 -03 2026
   - The onLogin prop signature changed from `(password) => boolean` to `(username, password) => boolean` — any component passing auth.login is automatically compatible
   - Admin-promote flow: call /api/auth/admin-promote first, then call onLogin to get a session token (two-step)
   - inputStyle helper function extracted for consistent border-color on error state across all input fields
+
+---
+
+## 2026-02-27 - US-009
+- Updated useAuth.ts: added fetchMe() to call GET /api/auth/me on mount and store full user object
+- Added AuthUser and UserPermission TypeScript interfaces exported from useAuth.ts
+- isAuthenticated now requires both token AND user object
+- On mount with existing token, fetches /api/auth/me; on 401, clears auth state
+- Updated App.tsx: username displayed in navbar, tabs conditionally rendered based on user permissions
+- Copiar tab: shown if admin OR has >=1 can_copy_from AND >=1 can_copy_to permissions
+- Compat tab: shown if admin OR can_run_compat is true
+- Sellers (Admin) tab: shown only if user.role === 'admin'
+- activeView falls back to first visible tab if current view is not available
+- Files changed: frontend/src/hooks/useAuth.ts, frontend/src/App.tsx
+- **Learnings for future iterations:**
+  - useAuth.fetchMe is called with explicit token param (not from state) to avoid stale closure issues
+  - On login, fetchMe is called immediately after setting token to populate user before sellers load
+  - The visibleTabs useMemo pattern allows clean conditional tab rendering without nested ternaries
+  - `activeView` computed variable auto-redirects if user's current tab becomes hidden
 
 ---
