@@ -50,7 +50,7 @@ export default function App() {
   return (
     <div style={{
       width: '100%',
-      maxWidth: 720,
+      maxWidth: 960,
       margin: '0 auto',
       padding: 'clamp(16px, 3vw, 48px) var(--space-6)',
       display: 'flex',
