@@ -46,12 +46,33 @@ async def preview_item(item_id: str, seller: str = Query(None)):
     except Exception:
         pass
 
+    # Extract SKUs from item-level and variation-level fields
+    skus: list[str] = []
+    item_sku = item.get("seller_custom_field")
+    if item_sku:
+        skus.append(item_sku)
+    for var in item.get("variations", []):
+        var_sku = var.get("seller_custom_field")
+        if var_sku:
+            skus.append(var_sku)
+        for attr in var.get("attributes", []):
+            if attr.get("id") == "SELLER_SKU" and attr.get("value_name"):
+                skus.append(attr["value_name"])
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique_skus: list[str] = []
+    for s in skus:
+        if s not in seen:
+            seen.add(s)
+            unique_skus.append(s)
+
     return {
         "id": item.get("id"),
         "title": item.get("title"),
         "thumbnail": item.get("secure_thumbnail") or item.get("thumbnail"),
         "has_compatibilities": has_compatibilities,
         "compat_count": compat_count,
+        "skus": unique_skus,
     }
 
 
