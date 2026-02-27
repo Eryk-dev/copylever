@@ -87,7 +87,7 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": "For the GET, fetch all sellers from copy_sellers, then fetch user_permissions for the user_id, then merge — sellers not in permissions get false/false defaults. For upsert in Supabase, use .upsert() with on_conflict='user_id,seller_slug'. The seller_name comes from copy_sellers.name column."
     },
     {

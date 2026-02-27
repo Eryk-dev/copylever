@@ -14,6 +14,8 @@ Started: Fri Feb 27 11:46:39 -03 2026
 - `require_admin` from `app.routers.auth` is imported by `auth_ml.py`, `copy.py`, `compat.py`, `admin_users.py`
 - Admin user CRUD router: `app/routers/admin_users.py` with prefix `/api/admin`
 - USER_FIELDS constant for safe select (excludes password_hash): `"id, username, role, can_run_compat, active, created_at, last_login_at"`
+- Supabase upsert with composite key: `.upsert(data, on_conflict="col1,col2")`
+- `copy_sellers` table has `slug` and `name` columns for seller identification
 
 ---
 
@@ -64,5 +66,20 @@ Started: Fri Feb 27 11:46:39 -03 2026
   - USER_FIELDS constant excludes password_hash — use it for all user queries returned to clients
   - Delete endpoint prevents self-deletion by comparing user_id param to authenticated user's id
   - 409 status for duplicate username on create
+
+---
+
+## 2026-02-27 - US-005
+- Added GET /api/admin/users/{user_id}/permissions endpoint to admin_users.py
+- Added PUT /api/admin/users/{user_id}/permissions endpoint to admin_users.py
+- GET merges all sellers from copy_sellers with existing user_permissions, defaulting to false/false
+- PUT uses Supabase .upsert() with on_conflict="user_id,seller_slug" for each entry
+- Added Pydantic models: PermissionEntry, UpdatePermissionsRequest
+- Files changed: app/routers/admin_users.py
+- **Learnings for future iterations:**
+  - copy_sellers table has `slug` and `name` columns for seller identification
+  - Supabase upsert: `.upsert(data, on_conflict="col1,col2")` for composite unique constraints
+  - Permissions GET returns `seller_name` from copy_sellers for display, not stored in user_permissions
+  - PUT accepts `{permissions: [{seller_slug, can_copy_from, can_copy_to}]}` as request body
 
 ---
