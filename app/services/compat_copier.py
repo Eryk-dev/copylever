@@ -29,7 +29,7 @@ async def search_sku_all_sellers(
     Returns a list of dicts with: seller_slug, seller_name, item_id, sku, title.
     """
     db = get_db()
-    sellers_resp = db.table("copy_sellers").select("slug, name, ml_user_id").execute()
+    sellers_resp = db.table("copy_sellers").select("slug, name, ml_user_id").eq("active", True).execute()
     sellers = sellers_resp.data or []
 
     if allowed_sellers is not None:
@@ -47,7 +47,11 @@ async def search_sku_all_sellers(
     item_info_tasks: list[tuple[dict[str, Any], str, str, asyncio.Task[dict[str, Any]]]] = []
 
     for seller, sku, task in tasks:
-        item_ids = await task
+        try:
+            item_ids = await task
+        except Exception:
+            logger.warning("SKU search failed for seller %s, sku %s", seller["slug"], sku)
+            continue
         for item_id in item_ids:
             info_task = asyncio.create_task(get_item(seller["slug"], item_id))
             item_info_tasks.append((seller, sku, item_id, info_task))
