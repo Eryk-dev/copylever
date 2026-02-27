@@ -310,6 +310,23 @@ def _is_title_invalid_error(exc: MlApiError) -> bool:
     return "[title]" in text and "invalid" in text
 
 
+def _is_family_name_invalid_error(exc: MlApiError) -> bool:
+    """Detect 'family name is invalid' even without bracket-enclosed field name."""
+    text = str(exc).lower()
+    if "family name" in text and "invalid" in text:
+        return True
+    payload = exc.payload if isinstance(exc.payload, dict) else {}
+    causes = payload.get("cause", [])
+    if isinstance(causes, list):
+        for cause in causes:
+            if not isinstance(cause, dict):
+                continue
+            msg = str(cause.get("message", "")).lower()
+            if "family name" in msg and "invalid" in msg:
+                return True
+    return False
+
+
 def _ensure_top_level_stock(payload: dict, item: dict) -> None:
     if "available_quantity" in payload:
         return
@@ -612,6 +629,7 @@ async def copy_single_item(
         new_item: dict | None = None
         safe_mode_retry_used = False
         force_no_title = False
+        force_no_family_name = False
         last_exc: Exception | None = None
 
         for attempt in range(1, 5):
@@ -622,6 +640,13 @@ async def copy_single_item(
                     family_name = _get_family_name(item)
                     if family_name:
                         payload["family_name"] = family_name
+            if force_no_family_name and payload.get("family_name"):
+                payload = dict(payload)
+                payload.pop("family_name", None)
+                if not payload.get("title"):
+                    title = _clean_text(item.get("title"))
+                    if title:
+                        payload["title"] = title
             try:
                 new_item = await create_item(dest_seller, payload)
                 break
@@ -629,6 +654,8 @@ async def copy_single_item(
                 last_exc = exc
                 if _is_title_invalid_error(exc):
                     force_no_title = True
+                if _is_family_name_invalid_error(exc):
+                    force_no_family_name = True
                 adjusted_payload, actions = _adjust_payload_for_ml_error(payload, item, exc)
 
                 # Log every failed attempt to api_debug_logs
@@ -667,6 +694,12 @@ async def copy_single_item(
                         safe_payload["family_name"] = family_name
                     if force_no_title:
                         safe_payload.pop("title", None)
+                    if force_no_family_name:
+                        safe_payload.pop("family_name", None)
+                        if not safe_payload.get("title"):
+                            title = _clean_text(item.get("title"))
+                            if title:
+                                safe_payload["title"] = title
                     if safe_payload != payload:
                         safe_mode_retry_used = True
                         logger.warning(
