@@ -3,20 +3,58 @@ import { API_BASE, type Seller } from '../lib/api';
 
 const TOKEN_KEY = 'copy-auth-token';
 
+export interface UserPermission {
+  seller_slug: string;
+  can_copy_from: boolean;
+  can_copy_to: boolean;
+}
+
+export interface AuthUser {
+  id: string;
+  username: string;
+  role: 'admin' | 'operator';
+  can_run_compat: boolean;
+  permissions: UserPermission[];
+}
+
 export function useAuth() {
   const [token, setToken] = useState<string | null>(() => {
     return localStorage.getItem(TOKEN_KEY);
   });
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [sellers, setSellers] = useState<Seller[]>([]);
   const [loadingSellers, setLoadingSellers] = useState(false);
 
-  const isAuthenticated = !!token;
+  const isAuthenticated = !!token && !!user;
 
   const headers = useCallback((): Record<string, string> => {
     const h: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) h['X-Auth-Token'] = token;
     return h;
   }, [token]);
+
+  const clearAuth = useCallback(() => {
+    setToken(null);
+    setUser(null);
+    localStorage.removeItem(TOKEN_KEY);
+    setSellers([]);
+  }, []);
+
+  const fetchMe = useCallback(async (t: string): Promise<AuthUser | null> => {
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/me`, {
+        headers: { 'X-Auth-Token': t },
+      });
+      if (res.status === 401) {
+        clearAuth();
+        return null;
+      }
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }, [clearAuth]);
 
   const login = useCallback(async (username: string, password: string): Promise<boolean> => {
     try {
@@ -27,13 +65,17 @@ export function useAuth() {
       });
       if (!res.ok) return false;
       const data = await res.json();
-      setToken(data.token);
-      localStorage.setItem(TOKEN_KEY, data.token);
+      const newToken = data.token;
+      setToken(newToken);
+      localStorage.setItem(TOKEN_KEY, newToken);
+      const me = await fetchMe(newToken);
+      if (!me) return false;
+      setUser(me);
       return true;
     } catch {
       return false;
     }
-  }, []);
+  }, [fetchMe]);
 
   const logout = useCallback(() => {
     if (token) {
@@ -42,10 +84,8 @@ export function useAuth() {
         headers: { 'X-Auth-Token': token },
       }).catch(() => {});
     }
-    setToken(null);
-    localStorage.removeItem(TOKEN_KEY);
-    setSellers([]);
-  }, [token]);
+    clearAuth();
+  }, [token, clearAuth]);
 
   const loadSellers = useCallback(async () => {
     if (!token) return;
@@ -55,7 +95,7 @@ export function useAuth() {
         headers: headers(),
         cache: 'no-store',
       });
-      if (res.status === 401) { logout(); return; }
+      if (res.status === 401) { clearAuth(); return; }
       const data = await res.json();
       setSellers(data);
     } catch (e) {
@@ -63,7 +103,7 @@ export function useAuth() {
     } finally {
       setLoadingSellers(false);
     }
-  }, [token, headers, logout]);
+  }, [token, headers, clearAuth]);
 
   const disconnectSeller = useCallback(async (slug: string) => {
     if (!token) return;
@@ -78,16 +118,25 @@ export function useAuth() {
     }
   }, [token, headers, loadSellers]);
 
-  // Auto-load sellers on auth
+  // Fetch user on mount if token exists
   useEffect(() => {
-    if (isAuthenticated) {
+    if (token && !user) {
+      fetchMe(token).then(me => {
+        if (me) setUser(me);
+      });
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-load sellers when user is available
+  useEffect(() => {
+    if (token && user) {
       loadSellers();
     }
-  }, [isAuthenticated, loadSellers]);
+  }, [token, user, loadSellers]);
 
   // Refresh on visibility change
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!token || !user) return;
     const onVisibility = () => {
       if (document.visibilityState === 'visible') {
         void loadSellers();
@@ -95,11 +144,12 @@ export function useAuth() {
     };
     document.addEventListener('visibilitychange', onVisibility);
     return () => document.removeEventListener('visibilitychange', onVisibility);
-  }, [isAuthenticated, loadSellers]);
+  }, [token, user, loadSellers]);
 
   return {
     isAuthenticated,
     token,
+    user,
     login,
     logout,
     sellers,

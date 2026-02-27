@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useAuth } from './hooks/useAuth';
 import Login from './pages/Login';
 import CopyPage from './pages/CopyPage';
@@ -10,6 +10,35 @@ type View = 'copy' | 'admin' | 'compat';
 export default function App() {
   const auth = useAuth();
   const [view, setView] = useState<View>('copy');
+
+  const visibleTabs = useMemo(() => {
+    if (!auth.user) return [] as View[];
+    const tabs: View[] = [];
+    const u = auth.user;
+
+    // Show Copiar tab if admin or has at least one can_copy_from AND one can_copy_to
+    if (u.role === 'admin' ||
+        (u.permissions.some(p => p.can_copy_from) && u.permissions.some(p => p.can_copy_to))) {
+      tabs.push('copy');
+    }
+
+    // Show Compat tab if admin or can_run_compat
+    if (u.role === 'admin' || u.can_run_compat) {
+      tabs.push('compat');
+    }
+
+    // Show Admin tab only for admins
+    if (u.role === 'admin') {
+      tabs.push('admin');
+    }
+
+    return tabs;
+  }, [auth.user]);
+
+  // Redirect to first available tab if current tab is not visible
+  const activeView = visibleTabs.includes(view)
+    ? view
+    : visibleTabs[0] ?? 'copy';
 
   if (!auth.isAuthenticated) {
     return <Login onLogin={auth.login} />;
@@ -49,43 +78,59 @@ export default function App() {
             borderRadius: 8,
             padding: 2,
           }}>
-            <ViewTab active={view === 'copy'} onClick={() => setView('copy')}>
-              Copiar
-            </ViewTab>
-            <ViewTab active={view === 'compat'} onClick={() => setView('compat')}>
-              Compat
-            </ViewTab>
-            <ViewTab active={view === 'admin'} onClick={() => setView('admin')}>
-              Sellers
-            </ViewTab>
+            {visibleTabs.includes('copy') && (
+              <ViewTab active={activeView === 'copy'} onClick={() => setView('copy')}>
+                Copiar
+              </ViewTab>
+            )}
+            {visibleTabs.includes('compat') && (
+              <ViewTab active={activeView === 'compat'} onClick={() => setView('compat')}>
+                Compat
+              </ViewTab>
+            )}
+            {visibleTabs.includes('admin') && (
+              <ViewTab active={activeView === 'admin'} onClick={() => setView('admin')}>
+                Sellers
+              </ViewTab>
+            )}
           </nav>
         </div>
 
-        <button
-          onClick={auth.logout}
-          className="btn-ghost"
-          style={{
-            padding: '6px 12px',
-            fontSize: 'var(--text-xs)',
-          }}
-        >
-          Sair
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+          {auth.user && (
+            <span style={{
+              fontSize: 'var(--text-xs)',
+              color: 'var(--ink-muted)',
+            }}>
+              {auth.user.username}
+            </span>
+          )}
+          <button
+            onClick={auth.logout}
+            className="btn-ghost"
+            style={{
+              padding: '6px 12px',
+              fontSize: 'var(--text-xs)',
+            }}
+          >
+            Sair
+          </button>
+        </div>
       </header>
 
       {/* Content */}
       <div className="animate-in">
-        {view === 'copy' && (
+        {activeView === 'copy' && (
           <CopyPage sellers={auth.sellers} headers={auth.headers} />
         )}
-        {view === 'admin' && (
+        {activeView === 'admin' && (
           <Admin
             sellers={auth.sellers}
             loadSellers={auth.loadSellers}
             disconnectSeller={auth.disconnectSeller}
           />
         )}
-        {view === 'compat' && (
+        {activeView === 'compat' && (
           <CompatPage sellers={auth.sellers} headers={auth.headers} />
         )}
       </div>
