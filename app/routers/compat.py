@@ -54,6 +54,10 @@ async def preview_item(item_id: str, seller: str = Query(None), user: dict = Dep
     item_sku = item.get("seller_custom_field")
     if item_sku:
         skus.append(item_sku)
+    # Check item-level attributes for SELLER_SKU
+    for attr in item.get("attributes", []):
+        if attr.get("id") == "SELLER_SKU" and attr.get("value_name"):
+            skus.append(attr["value_name"])
     for var in item.get("variations", []):
         var_sku = var.get("seller_custom_field")
         if var_sku:
