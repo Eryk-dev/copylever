@@ -195,7 +195,7 @@
         "Typecheck passes"
       ],
       "priority": 11,
-      "passes": false,
+      "passes": true,
       "notes": "The permissions API returns [{seller_slug, seller_name, can_copy_from, can_copy_to}] for all sellers. Render as a grid/table with seller name + two checkboxes. On save, send the full array back. Use useState to track permission changes locally before saving."
     },
     {

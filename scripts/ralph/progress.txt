@@ -31,6 +31,8 @@ Started: Fri Feb 27 11:46:39 -03 2026
 - `isAuthenticated` requires both token AND user object (double check)
 - Tab visibility: check `user.permissions.some(p => p.can_copy_from)` AND `some(p => p.can_copy_to)` for Copiar tab
 - `activeView` pattern: fallback to first visible tab if current view is hidden
+- UsersPage inline panels are mutually exclusive: opening permissions closes edit (and vice versa) via state resets
+- Permissions API: GET returns `[{seller_slug, seller_name, can_copy_from, can_copy_to}]`, PUT accepts `{permissions: [...]}`
 
 ---
 
@@ -186,5 +188,23 @@ Started: Fri Feb 27 11:46:39 -03 2026
   - RoleBadge and Tag are local helper components inside UsersPage — not exported
   - Inline edit form appears directly below the user row (borderTop: none, borderRadius bottom only) for visual continuity
   - `color-mix(in srgb, color 10%, transparent)` works well for badge backgrounds across themes
+
+---
+
+## 2026-02-27 - US-011
+- Added permissions panel to UsersPage.tsx with expand/collapse per user row
+- "Permissões" button added to each user row's action buttons
+- Panel fetches GET /api/admin/users/{id}/permissions on open, displays sellers with Origem/Destino checkboxes
+- Save button calls PUT /api/admin/users/{id}/permissions with full array
+- Admin users see "Admins têm acesso total a todos os sellers" message instead of checkboxes
+- Empty state shows "Nenhum seller conectado" when no sellers are available
+- Permissions panel and edit form are mutually exclusive (opening one closes the other)
+- Files changed: frontend/src/pages/UsersPage.tsx
+- **Learnings for future iterations:**
+  - The `permissionsId` state pattern mirrors `editingId` — both expand inline panels below a user row
+  - Opening permissions panel closes edit form and create form (and vice versa) for clean UX
+  - Permission checkboxes track state locally via `permissions` useState array, then send full array on save
+  - The `PermissionRow` interface includes `seller_name` for display (comes from backend merge with copy_sellers)
+  - `var(--surface)` background on individual permission rows provides visual separation from the panel background
 
 ---

@@ -13,6 +13,13 @@ interface UserRow {
   last_login_at: string | null;
 }
 
+interface PermissionRow {
+  seller_slug: string;
+  seller_name: string;
+  can_copy_from: boolean;
+  can_copy_to: boolean;
+}
+
 interface Props {
   headers: () => Record<string, string>;
   currentUserId: string;
@@ -40,6 +47,12 @@ export default function UsersPage({ headers, currentUserId }: Props) {
   const [saving, setSaving] = useState(false);
 
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  // Permissions panel state
+  const [permissionsId, setPermissionsId] = useState<string | null>(null);
+  const [permissions, setPermissions] = useState<PermissionRow[]>([]);
+  const [loadingPerms, setLoadingPerms] = useState(false);
+  const [savingPerms, setSavingPerms] = useState(false);
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -132,6 +145,44 @@ export default function UsersPage({ headers, currentUserId }: Props) {
       fetchUsers();
     } catch { toast('Erro de conexão', 'error'); }
     finally { setDeletingId(null); }
+  };
+
+  const openPermissions = async (userId: string) => {
+    if (permissionsId === userId) { setPermissionsId(null); return; }
+    setPermissionsId(userId);
+    setEditingId(null);
+    setShowCreate(false);
+    setLoadingPerms(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/users/${userId}/permissions`, { headers: headers() });
+      if (res.ok) setPermissions(await res.json());
+      else toast('Erro ao carregar permissões', 'error');
+    } catch { toast('Erro de conexão', 'error'); }
+    finally { setLoadingPerms(false); }
+  };
+
+  const handlePermissionChange = (slug: string, field: 'can_copy_from' | 'can_copy_to', value: boolean) => {
+    setPermissions(prev => prev.map(p => p.seller_slug === slug ? { ...p, [field]: value } : p));
+  };
+
+  const handleSavePermissions = async (userId: string) => {
+    setSavingPerms(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/users/${userId}/permissions`, {
+        method: 'PUT',
+        headers: headers(),
+        body: JSON.stringify({
+          permissions: permissions.map(p => ({
+            seller_slug: p.seller_slug,
+            can_copy_from: p.can_copy_from,
+            can_copy_to: p.can_copy_to,
+          })),
+        }),
+      });
+      if (res.ok) toast('Permissões salvas');
+      else { const err = await res.json().catch(() => ({ detail: 'Erro ao salvar' })); toast(err.detail, 'error'); }
+    } catch { toast('Erro de conexão', 'error'); }
+    finally { setSavingPerms(false); }
   };
 
   const formatDate = (d: string | null) => {
@@ -284,7 +335,18 @@ export default function UsersPage({ headers, currentUserId }: Props) {
                 </div>
                 <div style={{ display: 'flex', gap: 'var(--space-2)', flexShrink: 0 }}>
                   <button
-                    onClick={() => { startEdit(u); setShowCreate(false); }}
+                    onClick={() => openPermissions(u.id)}
+                    className="btn-ghost"
+                    style={{
+                      padding: '4px 10px',
+                      fontSize: 'var(--text-xs)',
+                      fontWeight: permissionsId === u.id ? 600 : 400,
+                    }}
+                  >
+                    Permissões
+                  </button>
+                  <button
+                    onClick={() => { startEdit(u); setShowCreate(false); setPermissionsId(null); }}
                     className="btn-ghost"
                     style={{ padding: '4px 10px', fontSize: 'var(--text-xs)' }}
                   >
@@ -378,6 +440,102 @@ export default function UsersPage({ headers, currentUserId }: Props) {
                       {saving ? 'Salvando...' : 'Salvar'}
                     </button>
                   </div>
+                </div>
+              )}
+
+              {/* Permissions Panel (inline below row) */}
+              {permissionsId === u.id && (
+                <div className="animate-in" style={{
+                  background: 'var(--paper)',
+                  border: '1px solid var(--line)',
+                  borderTop: 'none',
+                  borderRadius: '0 0 6px 6px',
+                  padding: 'var(--space-4)',
+                  marginTop: -1,
+                }}>
+                  {u.role === 'admin' ? (
+                    <div style={{
+                      textAlign: 'center',
+                      padding: 'var(--space-4)',
+                      color: 'var(--ink-muted)',
+                      fontSize: 'var(--text-sm)',
+                    }}>
+                      Admins têm acesso total a todos os sellers
+                    </div>
+                  ) : loadingPerms ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', color: 'var(--ink-faint)', fontSize: 'var(--text-sm)', padding: 'var(--space-2)' }}>
+                      <span className="spinner spinner-sm" />
+                      Carregando permissões...
+                    </div>
+                  ) : permissions.length === 0 ? (
+                    <div style={{
+                      textAlign: 'center',
+                      padding: 'var(--space-4)',
+                      color: 'var(--ink-faint)',
+                      fontSize: 'var(--text-sm)',
+                    }}>
+                      Nenhum seller conectado.
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{ marginBottom: 'var(--space-3)' }}>
+                        <span style={labelStyle}>Permissões por seller</span>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+                        {permissions.map(p => (
+                          <div key={p.seller_slug} style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: 'var(--space-2) var(--space-3)',
+                            borderRadius: 4,
+                            background: 'var(--surface)',
+                            gap: 'var(--space-3)',
+                          }}>
+                            <span style={{ fontSize: 'var(--text-sm)', color: 'var(--ink)', fontWeight: 500, minWidth: 0, flex: 1 }}>
+                              {p.seller_name || p.seller_slug}
+                            </span>
+                            <div style={{ display: 'flex', gap: 'var(--space-4)', flexShrink: 0 }}>
+                              <label style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1)', cursor: 'pointer', fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={p.can_copy_from}
+                                  onChange={e => handlePermissionChange(p.seller_slug, 'can_copy_from', e.target.checked)}
+                                />
+                                Origem
+                              </label>
+                              <label style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1)', cursor: 'pointer', fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={p.can_copy_to}
+                                  onChange={e => handlePermissionChange(p.seller_slug, 'can_copy_to', e.target.checked)}
+                                />
+                                Destino
+                              </label>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--space-2)', marginTop: 'var(--space-3)' }}>
+                        <button
+                          onClick={() => setPermissionsId(null)}
+                          className="btn-ghost"
+                          style={{ padding: '6px 14px', fontSize: 'var(--text-xs)' }}
+                        >
+                          Fechar
+                        </button>
+                        <button
+                          onClick={() => handleSavePermissions(u.id)}
+                          disabled={savingPerms}
+                          className="btn-primary"
+                          style={{ padding: '6px 14px', fontSize: 'var(--text-xs)', display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}
+                        >
+                          {savingPerms && <span className="spinner spinner-sm" />}
+                          {savingPerms ? 'Salvando...' : 'Salvar'}
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
             </div>
