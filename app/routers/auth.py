@@ -1,93 +1,146 @@
 """
-Admin authentication — bcrypt password + persistent session tokens (Supabase).
+User authentication — bcrypt password + per-user session tokens (Supabase).
 """
 import logging
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel
 
+from app.config import settings
 from app.db.supabase import get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-SESSION_MAX_AGE = 7 * 86400  # 7 days
-
-
-def _get_admin_config() -> dict | None:
-    db = get_db()
-    result = db.table("admin_config").select("*").eq("id", 1).execute()
-    if result.data:
-        return result.data[0]
-    return None
+SESSION_EXPIRY_DAYS = 7
 
 
 def _verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
 
 
-async def require_admin(x_admin_token: str = Header(...)):
-    """Dependency: verify admin session token."""
-    config = _get_admin_config()
-    if not config or config.get("session_token") != x_admin_token:
-        raise HTTPException(status_code=401, detail="Invalid or expired admin token")
-    created = config.get("session_created_at")
-    if created:
-        if isinstance(created, str):
-            created = datetime.fromisoformat(created)
-        if (datetime.now(timezone.utc) - created).total_seconds() > SESSION_MAX_AGE:
-            db = get_db()
-            db.table("admin_config").update(
-                {"session_token": None, "session_created_at": None}
-            ).eq("id", 1).execute()
-            raise HTTPException(status_code=401, detail="Session expired")
-    return True
+def _hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def _get_user_permissions(user_id: str) -> list[dict]:
+    db = get_db()
+    result = db.table("user_permissions").select(
+        "seller_slug, can_copy_from, can_copy_to"
+    ).eq("user_id", user_id).execute()
+    return result.data or []
+
+
+async def require_user(x_auth_token: str = Header(...)) -> dict:
+    """Dependency: verify user session token, return user dict with permissions."""
+    db = get_db()
+
+    # Look up session
+    session_result = db.table("user_sessions").select("*").eq(
+        "token", x_auth_token
+    ).execute()
+    if not session_result.data:
+        raise HTTPException(status_code=401, detail="Token inválido ou expirado")
+
+    session = session_result.data[0]
+
+    # Check expiry
+    expires_at = session["expires_at"]
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if datetime.now(timezone.utc) > expires_at:
+        # Clean up expired session
+        db.table("user_sessions").delete().eq("id", session["id"]).execute()
+        raise HTTPException(status_code=401, detail="Token inválido ou expirado")
+
+    # Fetch user
+    user_result = db.table("users").select("*").eq("id", session["user_id"]).execute()
+    if not user_result.data or not user_result.data[0].get("active"):
+        raise HTTPException(status_code=401, detail="Token inválido ou expirado")
+
+    user = user_result.data[0]
+    permissions = _get_user_permissions(user["id"])
+
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "role": user["role"],
+        "can_run_compat": user["can_run_compat"],
+        "permissions": permissions,
+    }
+
+
+async def require_admin(x_auth_token: str = Header(...)) -> dict:
+    """Dependency: verify user is an admin."""
+    user = await require_user(x_auth_token)
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Acesso restrito a administradores")
+    return user
 
 
 class LoginRequest(BaseModel):
+    username: str
     password: str
 
 
 @router.post("/login")
 async def login(req: LoginRequest):
-    """Authenticate with admin password. Returns session token."""
-    config = _get_admin_config()
-    if not config or not config.get("password_hash"):
-        # First-time setup: hash and store the provided password
-        new_hash = bcrypt.hashpw(req.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-        db = get_db()
-        db.table("admin_config").upsert({"id": 1, "password_hash": new_hash}).execute()
-        config = {"password_hash": new_hash}
-
-    if not _verify_password(req.password, config["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid password")
-
-    token = secrets.token_urlsafe(32)
-    now = datetime.now(timezone.utc).isoformat()
+    """Authenticate with username and password. Returns session token + user info."""
     db = get_db()
-    db.table("admin_config").update(
-        {"session_token": token, "session_created_at": now}
-    ).eq("id", 1).execute()
-    return {"token": token}
+
+    # Find user
+    result = db.table("users").select("*").eq("username", req.username).execute()
+    if not result.data:
+        raise HTTPException(status_code=401, detail="Credenciais inválidas")
+
+    user = result.data[0]
+
+    if not user.get("active"):
+        raise HTTPException(status_code=401, detail="Credenciais inválidas")
+
+    if not _verify_password(req.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Credenciais inválidas")
+
+    # Create session
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_EXPIRY_DAYS)
+
+    db.table("user_sessions").insert({
+        "user_id": user["id"],
+        "token": token,
+        "expires_at": expires_at.isoformat(),
+    }).execute()
+
+    # Update last_login_at
+    db.table("users").update({
+        "last_login_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", user["id"]).execute()
+
+    return {
+        "token": token,
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+            "can_run_compat": user["can_run_compat"],
+        },
+    }
 
 
 @router.post("/logout")
-async def logout(x_admin_token: str = Header(None)):
+async def logout(x_auth_token: str = Header(None)):
     """Invalidate session token."""
-    if x_admin_token:
+    if x_auth_token:
         db = get_db()
-        config = _get_admin_config()
-        if config and config.get("session_token") == x_admin_token:
-            db.table("admin_config").update(
-                {"session_token": None, "session_created_at": None}
-            ).eq("id", 1).execute()
+        db.table("user_sessions").delete().eq("token", x_auth_token).execute()
     return {"status": "ok"}
 
 
-@router.get("/me", dependencies=[Depends(require_admin)])
-async def me():
-    """Check if session is valid."""
-    return {"authenticated": True}
+@router.get("/me")
+async def me(user: dict = Depends(require_user)):
+    """Return current user info with permissions."""
+    return user

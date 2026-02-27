@@ -1,117 +1,219 @@
 {
-  "project": "Copy Anuncios ML",
-  "branchName": "ralph/copy-compatibilities",
-  "description": "Nova view para copiar compatibilidades de veículos de um anúncio fonte para múltiplos anúncios de destino (identificados por SKU) em todas as contas conectadas do Mercado Livre",
+  "project": "COPY ANUNCIOS — User Auth & RBAC",
+  "branchName": "ralph/user-auth-rbac",
+  "description": "Replace single shared password with per-user login (username+password), role-based access control (admin/operator), granular per-seller permissions, and full audit logging.",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Create compat_logs Supabase migration",
-      "description": "As a developer, I want the compat_logs table created in Supabase so that compatibility copy operations can be logged",
+      "title": "Database migration: auth tables",
+      "description": "As a developer, I want to create the database schema for users, sessions, permissions, and auth logs so that the backend can store and query auth data.",
       "acceptanceCriteria": [
-        "Create file app/db/migrations/001_compat_logs.sql with CREATE TABLE statement",
-        "Table compat_logs has columns: id (BIGSERIAL PK), source_item_id (TEXT NOT NULL), skus (TEXT[] NOT NULL), targets (JSONB NOT NULL), total_targets (INT NOT NULL), success_count (INT NOT NULL), error_count (INT NOT NULL), created_at (TIMESTAMPTZ DEFAULT NOW())",
-        "SQL file is valid and can be run against Supabase",
+        "Create migration file app/db/migrations/003_user_auth.sql",
+        "Table `users` created with columns: id (UUID PK DEFAULT gen_random_uuid()), username (TEXT UNIQUE NOT NULL), password_hash (TEXT NOT NULL), role (TEXT NOT NULL DEFAULT 'operator' CHECK IN ('admin','operator')), can_run_compat (BOOLEAN NOT NULL DEFAULT false), active (BOOLEAN NOT NULL DEFAULT true), created_at (TIMESTAMPTZ DEFAULT now()), last_login_at (TIMESTAMPTZ)",
+        "Table `user_sessions` created with columns: id (UUID PK DEFAULT gen_random_uuid()), user_id (UUID FK to users ON DELETE CASCADE), token (TEXT UNIQUE NOT NULL), created_at (TIMESTAMPTZ DEFAULT now()), expires_at (TIMESTAMPTZ NOT NULL)",
+        "Table `user_permissions` created with columns: id (UUID PK DEFAULT gen_random_uuid()), user_id (UUID FK to users ON DELETE CASCADE), seller_slug (TEXT NOT NULL), can_copy_from (BOOLEAN NOT NULL DEFAULT false), can_copy_to (BOOLEAN NOT NULL DEFAULT false), UNIQUE(user_id, seller_slug)",
+        "Table `auth_logs` created with columns: id (UUID PK DEFAULT gen_random_uuid()), user_id (UUID REFERENCES users(id) ON DELETE SET NULL), username (TEXT), action (TEXT NOT NULL), created_at (TIMESTAMPTZ DEFAULT now())",
+        "ALTER TABLE copy_logs ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE SET NULL",
+        "ALTER TABLE compat_logs ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE SET NULL",
         "Typecheck passes"
       ],
       "priority": 1,
       "passes": true,
-      "notes": ""
+      "notes": "Use IF NOT EXISTS for all CREATE TABLE statements. The copy_logs and compat_logs tables already exist — only add the user_id column. Check existing migrations in app/db/migrations/ for style reference. Supabase uses PostgreSQL."
     },
     {
       "id": "US-002",
-      "title": "Add search_items_by_sku to ml_api.py",
-      "description": "As a developer, I want a function to search items by seller SKU via ML API so that the compat feature can find target items across all accounts",
+      "title": "Backend: auth endpoints (login, logout, me)",
+      "description": "As an operator, I want to log in with my username and password so that I have an individual session. Replace the old single-password auth system.",
       "acceptanceCriteria": [
-        "Add async function search_items_by_sku(seller_slug: str, sku: str) -> list[str] to app/services/ml_api.py",
-        "Function calls GET /users/{user_id}/items/search with params seller_sku={sku} using the seller's access token",
-        "To get user_id, query copy_sellers table for ml_user_id matching the seller_slug",
-        "Returns list of item_id strings found for that SKU",
-        "Returns empty list if no items found (does not raise on 404)",
-        "Uses _get_token(seller_slug) for authentication, same pattern as existing functions",
+        "Rewrite app/routers/auth.py to use the new users/user_sessions tables instead of admin_config",
+        "POST /api/auth/login accepts {username, password}, verifies bcrypt hash against users table, creates session in user_sessions with UUID4 token and 7-day expiry, returns {token, user:{id, username, role, can_run_compat}}",
+        "POST /api/auth/login returns 401 with {detail: 'Credenciais inválidas'} if username not found, password wrong, or user.active is false",
+        "POST /api/auth/logout deletes the session row from user_sessions matching the token",
+        "GET /api/auth/me looks up token from X-Auth-Token header in user_sessions, checks not expired, returns {id, username, role, can_run_compat, permissions:[{seller_slug, can_copy_from, can_copy_to}]}",
+        "New FastAPI dependency require_user() extracts X-Auth-Token header, looks up user_sessions join users, returns user dict with permissions array. Raises 401 if token missing/invalid/expired",
+        "New FastAPI dependency require_admin() calls require_user() then checks role == 'admin', raises 403 if not",
+        "Login updates users.last_login_at to now()",
+        "Add ADMIN_MASTER_PASSWORD to app/config.py Settings class as optional string field (default None)",
+        "Old admin_config-based session_token/password_hash logic is removed from auth.py",
         "Typecheck passes"
       ],
       "priority": 2,
       "passes": true,
-      "notes": "ML API endpoint: GET https://api.mercadolibre.com/users/{user_id}/items/search?seller_sku={sku} — returns { results: [item_ids], paging: {...} }. The ml_user_id is stored in the copy_sellers table."
+      "notes": "Current auth.py uses admin_config table with password_hash and session_token columns. The new system uses users + user_sessions tables. Keep using bcrypt for password hashing (already in requirements.txt). The require_admin dependency in the current code is used by auth_ml.py router — make sure the new require_admin works as a drop-in replacement. Import Header from fastapi for X-Auth-Token extraction."
     },
     {
       "id": "US-003",
-      "title": "Create compat_copier.py orchestration service",
-      "description": "As a developer, I want an orchestration service that searches SKUs across all sellers and copies compatibilities in batch",
+      "title": "Backend: admin-promote endpoint",
+      "description": "As the system owner, I want to use a master password from .env to create or promote the first admin user without manual database access.",
       "acceptanceCriteria": [
-        "Create file app/services/compat_copier.py",
-        "Add async function search_sku_all_sellers(skus: list[str]) -> list[dict] that queries all sellers from copy_sellers table and calls search_items_by_sku for each seller+SKU combination using asyncio.gather for parallelism",
-        "Each result dict contains: seller_slug, seller_name, item_id, sku",
-        "For each item_id found, fetch basic item info (title) via get_item() to include in results",
-        "Add async function copy_compat_to_targets(source_item_id: str, targets: list[dict]) -> list[dict] that calls copy_item_compatibilities for each target and returns results with status/error per target",
-        "copy_compat_to_targets logs the operation to compat_logs table in Supabase after completion",
-        "Individual target errors do not stop processing of remaining targets",
-        "Import search_items_by_sku, copy_item_compatibilities, get_item from ml_api",
+        "POST /api/auth/admin-promote in app/routers/auth.py accepts {username, password, master_password}",
+        "If ADMIN_MASTER_PASSWORD is not set in config, return 403 with {detail: 'Master password not configured'}",
+        "If master_password does not match ADMIN_MASTER_PASSWORD, return 403 with {detail: 'Senha master inválida'}",
+        "If master_password is correct and user does not exist: create user with role='admin', can_run_compat=true, hash password with bcrypt, return created user (without password_hash)",
+        "If master_password is correct and user exists: update role to 'admin', update can_run_compat to true, update password_hash if provided, return updated user",
+        "Log action='admin_promote' to auth_logs table with the user_id and username",
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": true,
-      "notes": "Reuse existing functions from app/services/ml_api.py: copy_item_compatibilities(seller_slug, new_item_id, source_item_id), get_item(seller_slug, item_id). Use app/db/supabase.py get_db() to access the database. Pattern: db = get_db(); db.table('copy_sellers').select('slug, name, ml_user_id').execute()"
+      "passes": false,
+      "notes": "This endpoint does NOT require authentication (it's the bootstrap mechanism). Add it to the auth router alongside login/logout. Use the same bcrypt hashing pattern from the login endpoint."
     },
     {
       "id": "US-004",
-      "title": "Create compat router with all endpoints",
-      "description": "As a developer, I want API endpoints for the compatibility copy feature so the frontend can interact with the backend",
+      "title": "Backend: user CRUD API",
+      "description": "As an admin, I want API endpoints to create, list, update, and delete operator accounts.",
       "acceptanceCriteria": [
-        "Create file app/routers/compat.py with APIRouter prefix='/api/compat' and dependencies=[Depends(require_admin)]",
-        "GET /api/compat/preview/{item_id}?seller={slug} — returns item preview (id, title, thumbnail, has_compatibilities, compat_count). Use get_item and get_item_compatibilities from ml_api. The seller param is needed to authenticate the API call — use any connected seller if not provided (query first seller from copy_sellers table)",
-        "POST /api/compat/search-sku — accepts body { skus: list[str] }, calls search_sku_all_sellers, returns list of found items grouped by SKU",
-        "POST /api/compat/copy — accepts body { source_item_id: str, targets: list[{ seller_slug: str, item_id: str }] }, calls copy_compat_to_targets, returns summary with total/success/errors and per-target results",
-        "GET /api/compat/logs — returns compat_logs ordered by created_at desc, limit 50",
-        "Register router in app/main.py: add 'from app.routers import auth, auth_ml, copy, compat' and app.include_router(compat.router)",
+        "Create new router file app/routers/admin_users.py",
+        "Register the router in app/main.py with prefix /api/admin",
+        "GET /api/admin/users — returns list of all users with fields: id, username, role, can_run_compat, active, created_at, last_login_at. Never returns password_hash. Protected by require_admin()",
+        "POST /api/admin/users — accepts {username, password, role, can_run_compat}. Hashes password with bcrypt. Returns 409 if username already exists. Returns created user. Protected by require_admin()",
+        "PUT /api/admin/users/{user_id} — accepts partial body: {password?, role?, can_run_compat?, active?}. If password provided, hash it. Returns updated user. Protected by require_admin()",
+        "DELETE /api/admin/users/{user_id} — deletes user. Returns 400 with {detail: 'Não é possível deletar a si mesmo'} if user_id matches the requesting admin. Cascades to sessions and permissions via FK. Protected by require_admin()",
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": true,
-      "notes": "Follow exact same patterns as app/routers/copy.py. Import require_admin from app.routers.auth. Use Pydantic BaseModel for request bodies. For preview, the seller parameter is a query param used to authenticate the ML API call — the frontend will pass any connected seller slug."
+      "passes": false,
+      "notes": "Import require_admin from app/routers/auth. Use get_db() from app/db/supabase. Supabase client uses .table('users').select/insert/update/delete pattern. For password hashing use bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()."
     },
     {
       "id": "US-005",
-      "title": "Create CompatPage frontend with source input and SKU search",
-      "description": "As an operator, I want a dedicated page to input the source listing and search for target items by SKU across all accounts",
+      "title": "Backend: permissions CRUD API",
+      "description": "As an admin, I want API endpoints to read and update per-seller permissions for each operator.",
       "acceptanceCriteria": [
-        "Create file frontend/src/pages/CompatPage.tsx",
-        "Page has an input field for source item (accepts ML URL or item_id directly)",
-        "Parse MLB item_id from ML URLs using regex: extract MLB followed by digits, removing hyphens (e.g. MLB-1234567890 becomes MLB1234567890). Pattern: /MLB[-]?(\\d+)/i then format as MLB{digits}",
-        "On blur or Enter in source field, call GET /api/compat/preview/{item_id}?seller={first_seller_slug} and display preview (title, thumbnail, compatibility count)",
-        "If item has no compatibilities, show warning message and disable the copy flow",
-        "Textarea field for SKUs (placeholder: 'Digite os SKUs separados por vírgula, espaço ou quebra de linha')",
-        "Button 'Buscar Anúncios' that POSTs to /api/compat/search-sku with parsed SKUs array",
-        "Display search results as a list grouped by seller showing: seller name, item_id, title for each found item",
-        "Show warning for SKUs that returned no results",
-        "Button 'Copiar Compatibilidades' (disabled until search results exist and source has compatibilities) that POSTs to /api/compat/copy with source_item_id and all found targets",
-        "Show progress indicator during copy (loading state)",
-        "Show results summary after copy: X successes, Y errors, with per-item detail",
-        "Add compat-related TypeScript interfaces to frontend/src/lib/api.ts: CompatPreview, CompatSearchResult, CompatCopyResult",
-        "Component receives props: sellers (Seller[]) and headers (Record<string,string>) same as CopyPage",
-        "Follow existing design system from index.css (use CSS variables --ink, --paper, --surface, --line, --success, --danger, etc.) and match the visual style of CopyPage",
+        "Add endpoints to app/routers/admin_users.py (same router as US-004)",
+        "GET /api/admin/users/{user_id}/permissions — returns list of {seller_slug, seller_name, can_copy_from, can_copy_to} for ALL connected sellers from copy_sellers table. Sellers without a row in user_permissions default to can_copy_from=false, can_copy_to=false. Protected by require_admin()",
+        "PUT /api/admin/users/{user_id}/permissions — accepts array [{seller_slug, can_copy_from, can_copy_to}]. For each entry, upsert into user_permissions (insert on conflict(user_id, seller_slug) update). Protected by require_admin()",
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": true,
-      "notes": "Use fetch() with API_BASE from lib/api.ts for all API calls, same pattern as existing pages. The sellers prop comes from useAuth hook in App.tsx. Use the first seller's slug for the preview API call. For SKU parsing, split input by commas, spaces, and newlines then trim and filter empty strings."
+      "passes": false,
+      "notes": "For the GET, fetch all sellers from copy_sellers, then fetch user_permissions for the user_id, then merge — sellers not in permissions get false/false defaults. For upsert in Supabase, use .upsert() with on_conflict='user_id,seller_slug'. The seller_name comes from copy_sellers.name column."
     },
     {
       "id": "US-006",
-      "title": "Add Compat tab to App.tsx navigation and history section",
-      "description": "As an operator, I want to access the Compat page via a tab in the header navigation and see operation history",
+      "title": "Backend: permission enforcement in copy and compat endpoints",
+      "description": "As a system, I want to validate user permissions server-side on every copy and compat operation so that operators cannot bypass UI restrictions.",
       "acceptanceCriteria": [
-        "In frontend/src/App.tsx, add 'compat' to the View type: type View = 'copy' | 'admin' | 'compat'",
-        "Add a third ViewTab in the nav: <ViewTab active={view === 'compat'} onClick={() => setView('compat')}>Compat</ViewTab>",
-        "Import CompatPage and render it when view === 'compat': <CompatPage sellers={auth.sellers} headers={auth.headers} />",
-        "In CompatPage.tsx, add a history section below the form that fetches GET /api/compat/logs on mount",
-        "History displays: date (formatted), source item_id, SKUs list, total targets, success count, error count",
-        "History updates after each copy operation completes",
+        "In app/routers/copy.py: replace require_admin with require_user in all endpoints",
+        "POST /api/copy and POST /api/copy/with-dimensions: check user has can_copy_from for source_seller and can_copy_to for each dest_seller. Admin users bypass checks. Return 403 with specific message listing the disallowed seller(s) if not permitted",
+        "GET /api/copy/preview/{item_id}: require_user() only (any authenticated user can preview)",
+        "In app/routers/compat.py: replace require_admin with require_user in all endpoints",
+        "POST /api/compat/copy: check user.can_run_compat is true. Admin users bypass. Return 403 if not",
+        "POST /api/compat/search-sku: require_user(). Filter seller list to only sellers the user has can_copy_to permission (admin gets all sellers)",
+        "GET /api/compat/preview/{item_id}: require_user() and check can_run_compat. Admin bypass",
+        "In app/routers/auth_ml.py: keep require_admin() for seller management (connect/disconnect sellers) — only admins manage sellers",
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": true,
-      "notes": "Follow the exact same pattern used for CopyPage and Admin views in App.tsx. The history section should be similar to the copy logs pattern in CopyPage.tsx."
+      "passes": false,
+      "notes": "The require_user dependency from US-002 returns a dict with {id, username, role, can_run_compat, permissions:[{seller_slug, can_copy_from, can_copy_to}]}. To check permissions, iterate user['permissions'] looking for matching seller_slug. If user['role'] == 'admin', skip all checks. Helper function check_seller_permission(user, seller_slug, direction) could be useful."
+    },
+    {
+      "id": "US-007",
+      "title": "Backend: audit logging with user_id",
+      "description": "As an admin, I want every operation to record which user performed it so I have full traceability.",
+      "acceptanceCriteria": [
+        "In app/routers/copy.py: pass the authenticated user's id when inserting into copy_logs (user_id column added in US-001)",
+        "In app/services/compat_copier.py: accept user_id parameter in copy_compat_to_targets and pass it when inserting into compat_logs",
+        "In app/routers/compat.py: pass user.id to compat_copier functions",
+        "In app/routers/auth.py: insert into auth_logs on login success (action='login'), login failure (action='login_failed'), logout (action='logout')",
+        "GET /api/copy/logs: if user.role == 'operator', filter by user_id. If admin, return all. Include username in response (join users table or add username to log row)",
+        "GET /api/compat/logs: same operator/admin filtering as copy logs. Include username in response",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": "copy_logs insertion happens in app/services/item_copier.py (look for db.table('copy_logs').insert). Add user_id to the insert dict. compat_logs insertion is in app/services/compat_copier.py. For the logs endpoints, use .eq('user_id', user['id']) filter for operators. For username, either join or just store username alongside user_id at insert time."
+    },
+    {
+      "id": "US-008",
+      "title": "Frontend: Login page with username and password",
+      "description": "As an operator, I want a login screen with username and password fields to authenticate individually.",
+      "acceptanceCriteria": [
+        "Update frontend/src/pages/Login.tsx to show two input fields: 'Usuário' (text) and 'Senha' (password) plus 'Entrar' button",
+        "Submitting calls POST /api/auth/login with {username, password}",
+        "On success, stores token in localStorage key 'copy-auth-token' and calls onLogin callback",
+        "On failure (401), shows inline error message with shake animation (reuse existing pattern from current Login.tsx)",
+        "Discrete text link 'Acesso Admin' below the login form toggles visibility of a third field 'Senha Master'",
+        "When 'Senha Master' field is visible and filled, submit calls POST /api/auth/admin-promote with {username, password, master_password} instead of login. On success, auto-login the user",
+        "Old single-password login flow is completely removed",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": "Current Login.tsx has a single password field and calls /api/auth/login with just {password}. Update to {username, password}. The localStorage key changes from 'copy-admin-token' to 'copy-auth-token'. The admin-promote flow: call /api/auth/admin-promote first, if success then call /api/auth/login with same username/password to get a session token."
+    },
+    {
+      "id": "US-009",
+      "title": "Frontend: useAuth hook and navbar update",
+      "description": "As an operator, I want the app to show my name, adapt navigation to my permissions, and let me log out.",
+      "acceptanceCriteria": [
+        "Update frontend/src/hooks/useAuth.ts to call GET /api/auth/me on mount and store full user object: {id, username, role, can_run_compat, permissions:[{seller_slug, can_copy_from, can_copy_to}]}",
+        "All API requests from useAuth use X-Auth-Token header with token from localStorage 'copy-auth-token'",
+        "If GET /api/auth/me returns 401, clear localStorage token and set authed=false (triggers login redirect)",
+        "Update frontend/src/App.tsx navbar to display the logged-in username",
+        "Add logout button in navbar that calls POST /api/auth/logout, clears localStorage 'copy-auth-token', and redirects to login",
+        "Hide 'Admin' tab in navbar if user.role !== 'admin'",
+        "Hide 'Compatibilidade' tab if user.can_run_compat is false",
+        "Hide 'Copiar' tab if user has zero can_copy_from OR zero can_copy_to sellers in permissions array",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": "Current useAuth stores: authed, sellers, login(), logout(), etc. Expand to also store 'user' object. The navbar in App.tsx renders tab buttons — add conditional rendering. The localStorage key was 'copy-admin-token', now 'copy-auth-token'. Make sure to update all references. The user.permissions array has {seller_slug, can_copy_from, can_copy_to} — check if any has can_copy_from=true and any has can_copy_to=true to show Copiar tab."
+    },
+    {
+      "id": "US-010",
+      "title": "Frontend: Admin users management page",
+      "description": "As an admin, I want a UI to create, edit, and delete operator accounts inside the Admin section.",
+      "acceptanceCriteria": [
+        "Create frontend/src/pages/UsersPage.tsx accessible from Admin section (add as sub-tab or section alongside existing Sellers management in Admin.tsx)",
+        "Display table of users with columns: Usuário, Role (admin/operador), Compat (sim/não), Status (ativo/inativo), Último Login (formatted date or 'Nunca')",
+        "Button 'Novo Usuário' opens inline form with fields: username (text), senha (password), role (select: admin/operador), pode rodar compat (toggle/checkbox)",
+        "Each user row has edit button that opens inline form to change: senha (optional blank=no change), role, can_run_compat, active toggle",
+        "Each user row has delete button with confirmation dialog. Delete button disabled/hidden for current logged-in user",
+        "All actions call /api/admin/users endpoints with X-Auth-Token header and show toast feedback on success/error",
+        "Follow existing design system (CSS variables, button classes, table styling from CopyPage/CompatPage)",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": "Look at Admin.tsx for the existing layout pattern and how sellers are listed. Reuse the same card/table styling. For the inline form, look at how CopyForm.tsx handles form state. Use the Toast component for feedback. The API endpoints are /api/admin/users (GET, POST) and /api/admin/users/{id} (PUT, DELETE). Add navigation to UsersPage from Admin.tsx or App.tsx."
+    },
+    {
+      "id": "US-011",
+      "title": "Frontend: Admin permissions panel per user",
+      "description": "As an admin, I want to set per-seller copy permissions for each operator using simple checkboxes.",
+      "acceptanceCriteria": [
+        "Each user row in UsersPage has a 'Permissões' button that expands or opens a permissions panel below the row",
+        "Panel fetches and displays all connected sellers with two checkboxes each: 'Origem' (can_copy_from) and 'Destino' (can_copy_to)",
+        "Panel loads current permissions from GET /api/admin/users/{id}/permissions and pre-checks the boxes accordingly",
+        "Button 'Salvar' calls PUT /api/admin/users/{id}/permissions with the full array and shows toast on success",
+        "For admin-role users, panel shows message 'Admins têm acesso total a todos os sellers' instead of checkboxes (no editing needed)",
+        "Follow existing design system styling",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": "The permissions API returns [{seller_slug, seller_name, can_copy_from, can_copy_to}] for all sellers. Render as a grid/table with seller name + two checkboxes. On save, send the full array back. Use useState to track permission changes locally before saving."
+    },
+    {
+      "id": "US-012",
+      "title": "Frontend: filter sellers and features by user permissions",
+      "description": "As an operator, I want to only see the sellers and features I have access to, keeping the UI clean and focused.",
+      "acceptanceCriteria": [
+        "In CopyPage.tsx (or CopyForm.tsx), filter the source seller list to only sellers where user has can_copy_from=true. If user is admin, show all sellers",
+        "In CopyPage.tsx (or CopyForm.tsx), filter the destination seller list to only sellers where user has can_copy_to=true. If user is admin, show all sellers",
+        "In CompatPage.tsx, the SKU search only considers sellers the user has can_copy_to permission for (either filter client-side before sending or rely on backend filtering from US-006)",
+        "If user has no permitted origin or destination sellers, CopyPage shows a friendly message like 'Nenhum seller disponível. Peça ao admin para liberar acesso.'",
+        "If user.can_run_compat is false and they navigate to /compat, redirect them to the first available page",
+        "Follow existing design system styling for empty states",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": "The user permissions are available in the useAuth hook from US-009 as user.permissions array. Filter sellers by matching seller.slug against permissions. In CopyForm.tsx, the sellers prop is already passed down — filter before rendering. For compat, the backend (US-006) already filters, but the frontend should also hide the tab (US-009 handles that)."
     }
   ]
 }

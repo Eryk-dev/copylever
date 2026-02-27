@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     supabase_service_role_key: str = ""
     supabase_key: str = ""
 
+    # Auth
+    admin_master_password: str = ""
+
     # Server
     base_url: str = "http://localhost:8000"
 

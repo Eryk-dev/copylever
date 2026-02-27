@@ -1,87 +1,39 @@
 # Ralph Progress Log
-Started: Thu Feb 26 16:00:37 -03 2026
----
+Started: Fri Feb 27 11:46:39 -03 2026
 
 ## Codebase Patterns
-- Use `get_db()` from `app/db/supabase.py` to access Supabase client
-- Use `_get_token(seller_slug)` from `app/services/ml_api.py` for ML API auth
-- `copy_sellers` table stores seller info: slug, name, ml_user_id, ml_access_token, ml_refresh_token, etc.
-- Python backend uses `httpx.AsyncClient` for all HTTP calls with explicit timeouts
-- TypeScript typecheck: `npx tsc --noEmit` from `frontend/` directory
-- Migrations go in `app/db/migrations/` — use `IF NOT EXISTS` for safety
-- Router pattern: `APIRouter(prefix="/api/...", tags=[...])` registered in `app/main.py`
-- `copy_sellers` table has `ml_user_id` field needed for ML API user-scoped endpoints
-- ML items/search endpoint: GET /users/{user_id}/items/search?seller_sku={sku} returns { results: [item_ids] }
+- Use `bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")` for password hashing
+- Use `bcrypt.checkpw(password.encode(), hashed.encode())` for password verification
+- Supabase client: `db.table("name").select/insert/update/delete` pattern via `get_db()` from `app.db.supabase`
+- FastAPI dependencies that return user dicts are passed via `Depends()` — use `user: dict = Depends(require_user)`
+- Auth header is `X-Auth-Token` extracted via `Header(...)` in FastAPI
+- Session tokens are `secrets.token_urlsafe(32)` with 7-day expiry stored in `user_sessions`
+- All migrations use `IF NOT EXISTS` pattern
+- Python modules compile-checked with `python3 -m py_compile`
+- Frontend typecheck: `cd frontend && npx tsc --noEmit`
+- `require_admin` from `app.routers.auth` is imported by `auth_ml.py`, `copy.py`, `compat.py`
 
 ---
 
-## 2026-02-26 - US-001
-- Created `app/db/migrations/001_compat_logs.sql` with compat_logs table
-- Files changed: `app/db/migrations/001_compat_logs.sql` (new)
+## 2026-02-27 - US-001
+- Already committed in previous iteration (commit 44b8ee0)
+- Migration file: app/db/migrations/004_user_auth.sql (numbered 004 not 003)
+- Tables: users, user_sessions, user_permissions, auth_logs
+- ALTER TABLE copy_logs and compat_logs to add user_id column
 - **Learnings for future iterations:**
-  - No existing migrations directory — created `app/db/migrations/`
-  - Python uses `python3` not `python` on this machine
-  - TypeScript typecheck passes cleanly with `npx tsc --noEmit`
-  - Git repo was initialized fresh (no remote) for this project
+  - Migration numbering gap (no 003) — 004 is fine, just note in docs
+  - All tables use UUID PKs with gen_random_uuid()
+
 ---
 
-## 2026-02-26 - US-002
-- Added `search_items_by_sku(seller_slug, sku) -> list[str]` to `app/services/ml_api.py`
-- Function queries `copy_sellers` for `ml_user_id`, then calls ML search endpoint with seller_sku param
-- Returns empty list on 404, otherwise returns `results` array from response
-- Files changed: `app/services/ml_api.py` (modified)
+## 2026-02-27 - US-002
+- Rewrote app/routers/auth.py: replaced admin_config-based auth with users/user_sessions tables
+- Added ADMIN_MASTER_PASSWORD to app/config.py Settings class
+- Files changed: app/routers/auth.py, app/config.py
 - **Learnings for future iterations:**
-  - `copy_sellers` table has `ml_user_id` needed for user-scoped ML API endpoints like items/search
-  - ML search API returns `{ results: [item_ids], paging: {...} }` — use `.get("results", [])` for safety
-  - All existing functions follow same pattern: get token, create httpx client, make request, handle 404 gracefully
----
+  - `require_admin()` is a drop-in replacement — takes same Header param, now returns user dict instead of True
+  - `require_user()` returns dict: {id, username, role, can_run_compat, permissions: [{seller_slug, can_copy_from, can_copy_to}]}
+  - auth_ml.py imports require_admin — any signature change must be backward compatible
+  - copy.py and compat.py use require_admin as router-level dependency (will change to require_user in US-006)
 
-## 2026-02-26 - US-003
-- Created `app/services/compat_copier.py` with two orchestration functions
-- `search_sku_all_sellers(skus)`: queries all sellers from copy_sellers, searches each seller+SKU combo in parallel via asyncio.create_task, fetches item titles via get_item()
-- `copy_compat_to_targets(source_item_id, targets)`: copies compatibilities to each target sequentially (error-resilient), logs operation to compat_logs table
-- Files changed: `app/services/compat_copier.py` (new)
-- **Learnings for future iterations:**
-  - Supabase python client insert for array columns (TEXT[]) accepts Python lists directly
-  - Supabase python client insert for JSONB columns accepts Python dicts/lists directly
-  - `copy_item_compatibilities` signature is (seller_slug, new_item_id, source_item_id) — target first, source second
-  - asyncio.create_task works well for parallel API calls; await tasks individually after creation
----
-
-## 2026-02-26 - US-004
-- Created `app/routers/compat.py` with 4 endpoints: preview, search-sku, copy, logs
-- Registered compat router in `app/main.py`
-- Files changed: `app/routers/compat.py` (new), `app/main.py` (modified)
-- **Learnings for future iterations:**
-  - Follow same router pattern: `APIRouter(prefix="/api/...", tags=[...], dependencies=[Depends(require_admin)])`
-  - For optional seller param, query first seller from copy_sellers as fallback
-  - get_item_compatibilities returns dict with `products` key for the list of compatibilities
-  - Pydantic BaseModel for request bodies, Query() for query params — same as copy.py
-  - Python syntax check: `python3 -m py_compile <file>` is a quick validation
----
-
-## 2026-02-26 - US-005
-- Created `frontend/src/pages/CompatPage.tsx` with full compat copy flow
-- Added `CompatPreview`, `CompatSearchResult`, `CompatCopyResult` interfaces to `frontend/src/lib/api.ts`
-- Features: source input with MLB URL parsing, preview with compat count, SKU search textarea, results grouped by SKU, copy button with progress, results summary, history table
-- Files changed: `frontend/src/pages/CompatPage.tsx` (new), `frontend/src/lib/api.ts` (modified)
-- **Learnings for future iterations:**
-  - `Card` component is exported from `CopyPage.tsx` — reuse it for consistent UI across pages
-  - `headers` prop is a function `() => Record<string,string>`, not a plain object
-  - CopyPage uses inline styles matching CSS variables from index.css — follow same pattern
-  - For MLB URL parsing: regex `/MLB[-]?(\d+)/i` then format as `MLB{digits}`
-  - `sellers[0]?.slug` provides the first seller slug for preview API calls
-  - Logs table pattern: collapsible Card with table, same header styles as CopyPage
----
-
-## 2026-02-26 - US-006
-- Added 'compat' to View type in App.tsx
-- Added Compat ViewTab in header navigation
-- Imported and rendered CompatPage when view === 'compat'
-- History section was already implemented in US-005 (loads on mount, refreshes after copy)
-- Files changed: `frontend/src/App.tsx` (modified)
-- **Learnings for future iterations:**
-  - CompatPage history was already built into US-005 — the Card component supports `collapsible`, `open`, `onToggle` props
-  - Adding a new view follows a simple 3-step pattern: extend View type, add ViewTab, add conditional render
-  - `headers` prop on CompatPage is `() => Record<string,string>` (function), consistent with CopyPage
 ---
