@@ -46,6 +46,7 @@ export default function CompatPage({ sellers, headers }: Props) {
 
   const [copyResult, setCopyResult] = useState<CompatCopyResult | null>(null);
   const [copying, setCopying] = useState(false);
+  const [copyError, setCopyError] = useState('');
 
   const [logs, setLogs] = useState<CompatLog[]>([]);
   const [logsLoaded, setLogsLoaded] = useState(false);
@@ -109,6 +110,7 @@ export default function CompatPage({ sellers, headers }: Props) {
     setSearchResults([]);
     setSearchedSkus(skus);
     setCopyResult(null);
+    setCopyError('');
     try {
       const res = await fetch(`${API_BASE}/api/compat/search-sku`, {
         method: 'POST',
@@ -117,12 +119,12 @@ export default function CompatPage({ sellers, headers }: Props) {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: 'Erro na busca' }));
-        setPreviewError(err.detail);
+        setCopyError(err.detail);
         return;
       }
       setSearchResults(await res.json());
     } catch (e) {
-      setPreviewError(String(e));
+      setCopyError(String(e));
     } finally {
       setSearching(false);
     }
@@ -132,6 +134,7 @@ export default function CompatPage({ sellers, headers }: Props) {
     if (!preview || !searchResults.length) return;
     setCopying(true);
     setCopyResult(null);
+    setCopyError('');
     try {
       const res = await fetch(`${API_BASE}/api/compat/copy`, {
         method: 'POST',
@@ -144,7 +147,7 @@ export default function CompatPage({ sellers, headers }: Props) {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: 'Erro ao copiar' }));
-        setPreviewError(err.detail);
+        setCopyError(err.detail);
         return;
       }
       const data = await res.json();
@@ -156,7 +159,7 @@ export default function CompatPage({ sellers, headers }: Props) {
       // Refresh logs after a short delay to pick up in_progress rows created by the backend
       setTimeout(loadLogs, 1000);
     } catch (e) {
-      setPreviewError(String(e));
+      setCopyError(String(e));
     } finally {
       setCopying(false);
       loadLogs();
@@ -410,6 +413,23 @@ export default function CompatPage({ sellers, headers }: Props) {
             </span>
           ) : `Copiar Compatibilidades (${searchResults.length} destino${searchResults.length !== 1 ? 's' : ''})`}
         </button>
+      )}
+
+      {/* Copy/Search Error */}
+      {copyError && (
+        <div style={{
+          padding: 'var(--space-2) var(--space-3)',
+          background: 'rgba(239, 68, 68, 0.06)',
+          borderRadius: 6,
+          fontSize: 'var(--text-sm)',
+          color: 'var(--danger)',
+          fontWeight: 500,
+          alignSelf: 'center',
+          maxWidth: 480,
+          textAlign: 'center',
+        }}>
+          {copyError}
+        </div>
       )}
 
       {/* Copy Results */}
