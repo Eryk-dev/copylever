@@ -52,11 +52,11 @@ export default function App() {
             <ViewTab active={view === 'copy'} onClick={() => setView('copy')}>
               Copiar
             </ViewTab>
-            <ViewTab active={view === 'admin'} onClick={() => setView('admin')}>
-              Sellers
-            </ViewTab>
             <ViewTab active={view === 'compat'} onClick={() => setView('compat')}>
               Compat
+            </ViewTab>
+            <ViewTab active={view === 'admin'} onClick={() => setView('admin')}>
+              Sellers
             </ViewTab>
           </nav>
         </div>
