@@ -98,7 +98,9 @@ async def copy_compat_to_targets(
     success_count = 0
     error_count = 0
 
-    for target in targets:
+    for idx, target in enumerate(targets):
+        if idx > 0:
+            await asyncio.sleep(1)  # pace between targets to respect ML rate limits
         try:
             await copy_item_compatibilities(
                 target["seller_slug"], target["item_id"], source_item_id,

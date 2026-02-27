@@ -301,8 +301,9 @@ async def search_items_by_sku(seller_slug: str, sku: str) -> list[str]:
 
 
 _UP_COMPAT_BATCH = 200  # ML limit per request
-_RATE_LIMIT_RETRIES = 4
+_RATE_LIMIT_RETRIES = 5
 _RATE_LIMIT_BASE_WAIT = 3  # seconds
+_COMPAT_PACE = 1.0  # seconds between compat API calls to avoid 429s
 
 
 async def _post_with_retry(
@@ -313,7 +314,8 @@ async def _post_with_retry(
         resp = await client.post(url, headers=headers, json=json)
         if resp.status_code != 429:
             return resp
-        wait = _RATE_LIMIT_BASE_WAIT * (2 ** attempt)
+        retry_after = resp.headers.get("retry-after")
+        wait = int(retry_after) if retry_after and retry_after.isdigit() else _RATE_LIMIT_BASE_WAIT * (2 ** attempt)
         logger.warning("Rate-limited on %s — waiting %ds (attempt %d/%d)", url, wait, attempt + 1, _RATE_LIMIT_RETRIES)
         await asyncio.sleep(wait)
     return resp  # return last 429 response so caller can raise
@@ -408,7 +410,7 @@ async def _copy_user_product_compatibilities(
     if not products:
         return {}
 
-    # 3. POST in batches of 200 with rate-limit retry
+    # 3. POST in batches of 200 with rate-limit pacing
     logger.info(
         "Item %s is User Product %s — copying %d products via /user-products",
         item_id, user_product_id, len(products),
@@ -417,6 +419,8 @@ async def _copy_user_product_compatibilities(
     url = f"{ML_API}/user-products/{user_product_id}/compatibilities"
     total_created = 0
     for i in range(0, len(products), _UP_COMPAT_BATCH):
+        if i > 0:
+            await asyncio.sleep(_COMPAT_PACE)
         batch = products[i : i + _UP_COMPAT_BATCH]
         resp = await _post_with_retry(
             client, url, headers, {"domain_id": domain_id, "products": batch},
