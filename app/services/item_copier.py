@@ -606,6 +606,20 @@ async def copy_items(
         if not item_id:
             continue
 
+        # Create in_progress log entry BEFORE starting the copy
+        log_id: int | None = None
+        try:
+            log_row = db.table("copy_logs").insert({
+                "user_email": user_email,
+                "source_seller": source_seller,
+                "dest_sellers": dest_sellers,
+                "source_item_id": item_id,
+                "status": "in_progress",
+            }).execute()
+            log_id = log_row.data[0]["id"] if log_row.data else None
+        except Exception as e:
+            logger.error(f"Failed to create in_progress log for {item_id}: {e}")
+
         dest_item_ids = {}
         item_status = "success"
         item_errors = {}
@@ -620,19 +634,28 @@ async def copy_items(
                 item_status = "partial" if dest_item_ids else "error"
                 item_errors[dest_seller] = result["error"]
 
-        # Log to copy_logs
+        # Update the log entry with final results
         try:
-            db.table("copy_logs").insert({
-                "user_email": user_email,
-                "source_seller": source_seller,
-                "dest_sellers": dest_sellers,
-                "source_item_id": item_id,
-                "dest_item_ids": dest_item_ids,
+            update_data = {
                 "status": item_status,
+                "dest_item_ids": dest_item_ids,
                 "error_details": item_errors if item_errors else None,
-            }).execute()
+            }
+            if log_id is not None:
+                db.table("copy_logs").update(update_data).eq("id", log_id).execute()
+            else:
+                # Fallback: insert a new row if in_progress insert failed
+                db.table("copy_logs").insert({
+                    "user_email": user_email,
+                    "source_seller": source_seller,
+                    "dest_sellers": dest_sellers,
+                    "source_item_id": item_id,
+                    "dest_item_ids": dest_item_ids,
+                    "status": item_status,
+                    "error_details": item_errors if item_errors else None,
+                }).execute()
         except Exception as e:
-            logger.error(f"Failed to log copy for {item_id}: {e}")
+            logger.error(f"Failed to update log for {item_id}: {e}")
 
     return all_results
 
