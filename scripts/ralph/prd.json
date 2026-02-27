@@ -212,7 +212,7 @@
         "Typecheck passes"
       ],
       "priority": 12,
-      "passes": false,
+      "passes": true,
       "notes": "The user permissions are available in the useAuth hook from US-009 as user.permissions array. Filter sellers by matching seller.slug against permissions. In CopyForm.tsx, the sellers prop is already passed down — filter before rendering. For compat, the backend (US-006) already filters, but the frontend should also hide the tab (US-009 handles that)."
     }
   ]

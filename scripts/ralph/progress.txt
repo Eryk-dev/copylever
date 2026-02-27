@@ -206,5 +206,23 @@ Started: Fri Feb 27 11:46:39 -03 2026
   - Permission checkboxes track state locally via `permissions` useState array, then send full array on save
   - The `PermissionRow` interface includes `seller_name` for display (comes from backend merge with copy_sellers)
   - `var(--surface)` background on individual permission rows provides visual separation from the panel background
+- CopyForm accepts `sourceSellers` and `destSellers` props (not a single `sellers`) for permission-based filtering
+
+---
+
+## 2026-02-27 - US-012
+- Filtered CopyForm source sellers by user's can_copy_from permissions and destination sellers by can_copy_to
+- Admin users bypass all filtering and see all sellers
+- Added empty state message in CopyPage when operator has no permitted sellers
+- CopyForm now accepts separate `sourceSellers` and `destSellers` props instead of single `sellers`
+- CompatPage: no changes needed — backend (US-006) already filters sellers, tab visibility handled by US-009
+- Compat redirect: already handled by `activeView` fallback logic in App.tsx from US-009
+- Files changed: frontend/src/App.tsx, frontend/src/pages/CopyPage.tsx, frontend/src/components/CopyForm.tsx
+- **Learnings for future iterations:**
+  - Filtering with `useMemo` + `Set` for O(1) lookup is efficient for permission-based seller filtering
+  - CopyForm's `sourceSellers` and `destSellers` separation allows independent filtering of origin vs destination
+  - Empty state check: `sourceSellers.length > 0 && destSellers.length > 0` covers the "no access" scenario
+  - The compat tab and redirect were already fully handled by US-009's visibleTabs and activeView logic — no additional work needed
+  - Manual browser verification is needed (no browser testing tools configured)
 
 ---
