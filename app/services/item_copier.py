@@ -12,7 +12,7 @@ from app.services.ml_api import (
     get_item,
     get_item_description,
     get_item_compatibilities,
-    get_seller_user_info,
+    get_seller_official_store_id,
     create_item,
     update_item,
     set_item_description,
@@ -680,11 +680,14 @@ async def copy_single_item(
                 # Handle official_store_id error for brand accounts
                 if _is_official_store_id_error(exc) and not adjusted_payload.get("official_store_id"):
                     try:
-                        user_info = await get_seller_user_info(dest_seller)
-                        osi = user_info.get("official_store_id")
+                        osi = await get_seller_official_store_id(dest_seller)
                         if osi:
                             adjusted_payload["official_store_id"] = osi
                             actions.append(f"added official_store_id={osi} for brand account")
+                            # Brand accounts also require free_shipping
+                            if isinstance(adjusted_payload.get("shipping"), dict):
+                                adjusted_payload["shipping"]["free_shipping"] = True
+                                actions.append("forced free_shipping for brand account")
                     except Exception as osi_exc:
                         logger.warning("Failed to fetch official_store_id for %s: %s", dest_seller, osi_exc)
 

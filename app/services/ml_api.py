@@ -180,16 +180,31 @@ async def fetch_user_info(access_token: str) -> dict:
         return resp.json()
 
 
-async def get_seller_user_info(seller_slug: str) -> dict:
-    """GET /users/me for a connected seller (by slug). Returns ML user profile."""
+async def get_seller_official_store_id(seller_slug: str) -> int | None:
+    """Get the official_store_id for a brand seller by checking one of their existing items."""
+    db = get_db()
+    seller = db.table("copy_sellers").select("ml_user_id").eq("slug", seller_slug).single().execute()
+    user_id = seller.data["ml_user_id"]
+
     token = await _get_token(seller_slug)
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(
-            f"{ML_API}/users/me",
+            f"{ML_API}/users/{user_id}/items/search",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"limit": "1"},
+        )
+        if resp.status_code != 200:
+            return None
+        results = resp.json().get("results", [])
+        if not results:
+            return None
+        item_resp = await client.get(
+            f"{ML_API}/items/{results[0]}",
             headers={"Authorization": f"Bearer {token}"},
         )
-        _raise_for_status(resp, "Mercado Livre API")
-        return resp.json()
+        if item_resp.status_code != 200:
+            return None
+        return item_resp.json().get("official_store_id")
 
 
 # ── Item operations ──────────────────────────────────────
