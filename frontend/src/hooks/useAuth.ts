@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { API_BASE, type Seller } from '../lib/api';
 
-const TOKEN_KEY = 'copy-admin-token';
+const TOKEN_KEY = 'copy-auth-token';
 
 export function useAuth() {
   const [token, setToken] = useState<string | null>(() => {
@@ -14,16 +14,16 @@ export function useAuth() {
 
   const headers = useCallback((): Record<string, string> => {
     const h: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (token) h['X-Admin-Token'] = token;
+    if (token) h['X-Auth-Token'] = token;
     return h;
   }, [token]);
 
-  const login = useCallback(async (password: string): Promise<boolean> => {
+  const login = useCallback(async (username: string, password: string): Promise<boolean> => {
     try {
       const res = await fetch(`${API_BASE}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ username, password }),
       });
       if (!res.ok) return false;
       const data = await res.json();
@@ -39,7 +39,7 @@ export function useAuth() {
     if (token) {
       fetch(`${API_BASE}/api/auth/logout`, {
         method: 'POST',
-        headers: { 'X-Admin-Token': token },
+        headers: { 'X-Auth-Token': token },
       }).catch(() => {});
     }
     setToken(null);
