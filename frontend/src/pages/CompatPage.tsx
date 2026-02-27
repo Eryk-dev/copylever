@@ -51,6 +51,8 @@ export default function CompatPage({ sellers, headers }: Props) {
   const [logsLoaded, setLogsLoaded] = useState(false);
   const [logsOpen, setLogsOpen] = useState(true);
 
+  const [copiedSku, setCopiedSku] = useState<string | null>(null);
+
   const firstSellerSlug = sellers[0]?.slug || '';
 
   const loadLogs = useCallback(async () => {
@@ -235,6 +237,40 @@ export default function CompatPage({ sellers, headers }: Props) {
                   : 'Sem compatibilidades'}
               </p>
             </div>
+          </div>
+          {/* SKUs */}
+          <div style={{ marginTop: 'var(--space-3)', display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)', alignItems: 'center' }}>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', fontWeight: 500 }}>SKUs:</span>
+            {preview.skus && preview.skus.length > 0 ? preview.skus.map(sku => (
+              <button
+                key={sku}
+                onClick={() => {
+                  navigator.clipboard.writeText(sku);
+                  setCopiedSku(sku);
+                  setTimeout(() => setCopiedSku(null), 2000);
+                }}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  padding: '2px 8px',
+                  background: 'var(--surface)',
+                  border: '1px solid var(--line)',
+                  borderRadius: 4,
+                  fontSize: 'var(--text-xs)',
+                  fontFamily: 'var(--font-mono)',
+                  color: 'var(--ink)',
+                  cursor: 'pointer',
+                }}
+              >
+                {sku}
+                <span style={{ fontSize: 10, color: copiedSku === sku ? 'var(--success)' : 'var(--ink-faint)' }}>
+                  {copiedSku === sku ? '✓' : '⧉'}
+                </span>
+              </button>
+            )) : (
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)' }}>Sem SKU</span>
+            )}
           </div>
           {!preview.has_compatibilities && (
             <div style={{
