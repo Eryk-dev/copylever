@@ -3,20 +3,22 @@ import type { Seller } from '../lib/api';
 import SellerSelect from './SellerSelect';
 
 interface Props {
-  sellers: Seller[];
+  sourceSellers: Seller[];
+  destSellers: Seller[];
   onCopy: (source: string, destinations: string[], itemIds: string[]) => Promise<void>;
   onPreview: (itemId: string, seller: string) => Promise<void>;
   copying: boolean;
 }
 
-export default function CopyForm({ sellers, onCopy, onPreview, copying }: Props) {
+export default function CopyForm({ sourceSellers, destSellers, onCopy, onPreview, copying }: Props) {
   const [source, setSource] = useState('');
   const [destinations, setDestinations] = useState<string[]>([]);
   const [itemIdsText, setItemIdsText] = useState('');
   const [confirming, setConfirming] = useState(false);
 
-  const validSellers = sellers.filter(s => s.token_valid);
-  const availableDestinations = validSellers.filter(s => s.slug !== source);
+  const validSources = sourceSellers.filter(s => s.token_valid);
+  const validDests = destSellers.filter(s => s.token_valid);
+  const availableDestinations = validDests.filter(s => s.slug !== source);
 
   const itemIds = itemIdsText.split(/[\n,]+/).map(id => id.trim()).filter(id => id.length > 0);
   const canCopy = source && destinations.length > 0 && itemIds.length > 0 && !copying;
@@ -66,7 +68,7 @@ export default function CopyForm({ sellers, onCopy, onPreview, copying }: Props)
       {/* Step 1: Source */}
       <Field label="Seller de Origem" step={1} done={step1Done}>
         <SellerSelect
-          sellers={validSellers}
+          sellers={validSources}
           value={source}
           onChange={val => { setSource(val); setDestinations(prev => prev.filter(d => d !== val)); setConfirming(false); }}
           placeholder="Selecione o seller de origem"

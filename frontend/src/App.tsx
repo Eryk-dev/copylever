@@ -124,7 +124,7 @@ export default function App() {
       {/* Content */}
       <div className="animate-in">
         {activeView === 'copy' && (
-          <CopyPage sellers={auth.sellers} headers={auth.headers} />
+          <CopyPage sellers={auth.sellers} headers={auth.headers} user={auth.user} />
         )}
         {activeView === 'admin' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>

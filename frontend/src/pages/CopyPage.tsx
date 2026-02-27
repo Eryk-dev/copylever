@@ -1,14 +1,16 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { API_BASE, type Seller, type CopyResponse, type CopyLog, type ItemPreview } from '../lib/api';
+import type { AuthUser } from '../hooks/useAuth';
 import CopyForm from '../components/CopyForm';
 import CopyProgress from '../components/CopyProgress';
 
 interface Props {
   sellers: Seller[];
   headers: () => Record<string, string>;
+  user: AuthUser | null;
 }
 
-export default function CopyPage({ sellers, headers }: Props) {
+export default function CopyPage({ sellers, headers, user }: Props) {
   const [results, setResults] = useState<(CopyResponse & { source?: string }) | null>(null);
   const [copying, setCopying] = useState(false);
   const [logs, setLogs] = useState<CopyLog[]>([]);
@@ -64,9 +66,45 @@ export default function CopyPage({ sellers, headers }: Props) {
 
   if (!logsLoaded) loadLogs();
 
+  const isAdmin = user?.role === 'admin';
+  const sourceSellers = useMemo(() => {
+    if (!user || isAdmin) return sellers;
+    const allowed = new Set(user.permissions.filter(p => p.can_copy_from).map(p => p.seller_slug));
+    return sellers.filter(s => allowed.has(s.slug));
+  }, [sellers, user, isAdmin]);
+
+  const destSellers = useMemo(() => {
+    if (!user || isAdmin) return sellers;
+    const allowed = new Set(user.permissions.filter(p => p.can_copy_to).map(p => p.seller_slug));
+    return sellers.filter(s => allowed.has(s.slug));
+  }, [sellers, user, isAdmin]);
+
+  const hasAnySellers = sourceSellers.length > 0 && destSellers.length > 0;
+
+  if (!hasAnySellers) {
+    return (
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 'var(--space-3)',
+        padding: 'var(--space-8) var(--space-4)',
+        background: 'var(--surface)',
+        borderRadius: 8,
+        color: 'var(--ink-faint)',
+        textAlign: 'center',
+      }}>
+        <p style={{ fontSize: 'var(--text-sm)', fontWeight: 500 }}>
+          Nenhum seller disponivel. Peca ao admin para liberar acesso.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
-      <CopyForm sellers={sellers} onCopy={handleCopy} onPreview={handlePreview} copying={copying} />
+      <CopyForm sourceSellers={sourceSellers} destSellers={destSellers} onCopy={handleCopy} onPreview={handlePreview} copying={copying} />
 
       {previewLoading && (
         <Card title="Preview">
