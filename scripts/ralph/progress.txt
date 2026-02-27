@@ -11,7 +11,9 @@ Started: Fri Feb 27 11:46:39 -03 2026
 - All migrations use `IF NOT EXISTS` pattern
 - Python modules compile-checked with `python3 -m py_compile`
 - Frontend typecheck: `cd frontend && npx tsc --noEmit`
-- `require_admin` from `app.routers.auth` is imported by `auth_ml.py`, `copy.py`, `compat.py`
+- `require_admin` from `app.routers.auth` is imported by `auth_ml.py`, `copy.py`, `compat.py`, `admin_users.py`
+- Admin user CRUD router: `app/routers/admin_users.py` with prefix `/api/admin`
+- USER_FIELDS constant for safe select (excludes password_hash): `"id, username, role, can_run_compat, active, created_at, last_login_at"`
 
 ---
 
@@ -35,5 +37,32 @@ Started: Fri Feb 27 11:46:39 -03 2026
   - `require_user()` returns dict: {id, username, role, can_run_compat, permissions: [{seller_slug, can_copy_from, can_copy_to}]}
   - auth_ml.py imports require_admin — any signature change must be backward compatible
   - copy.py and compat.py use require_admin as router-level dependency (will change to require_user in US-006)
+
+---
+
+## 2026-02-27 - US-003
+- Added POST /api/auth/admin-promote endpoint to app/routers/auth.py
+- Endpoint accepts {username, password, master_password}
+- Creates new admin user or promotes existing user to admin
+- Logs action='admin_promote' to auth_logs table
+- Files changed: app/routers/auth.py
+- **Learnings for future iterations:**
+  - admin_master_password in config defaults to "" (empty string) — check with `not settings.admin_master_password`
+  - admin-promote endpoint is unauthenticated (no Depends) — it's the bootstrap mechanism
+  - Reuse `_hash_password()` helper already in auth.py for all password hashing
+
+---
+
+## 2026-02-27 - US-004
+- Created app/routers/admin_users.py with CRUD endpoints for user management
+- Registered router in app/main.py with prefix /api/admin
+- Endpoints: GET /api/admin/users, POST /api/admin/users, PUT /api/admin/users/{user_id}, DELETE /api/admin/users/{user_id}
+- All endpoints protected by require_admin dependency
+- Files changed: app/routers/admin_users.py (new), app/main.py
+- **Learnings for future iterations:**
+  - admin_users.py has its own `_hash_password()` (duplicated from auth.py) to keep the module self-contained
+  - USER_FIELDS constant excludes password_hash — use it for all user queries returned to clients
+  - Delete endpoint prevents self-deletion by comparing user_id param to authenticated user's id
+  - 409 status for duplicate username on create
 
 ---

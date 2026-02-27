@@ -56,7 +56,7 @@
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "notes": "This endpoint does NOT require authentication (it's the bootstrap mechanism). Add it to the auth router alongside login/logout. Use the same bcrypt hashing pattern from the login endpoint."
     },
     {
@@ -73,7 +73,7 @@
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": "Import require_admin from app/routers/auth. Use get_db() from app/db/supabase. Supabase client uses .table('users').select/insert/update/delete pattern. For password hashing use bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()."
     },
     {
