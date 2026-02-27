@@ -2,6 +2,7 @@
 Cliente para APIs do Mercado Livre.
 Supports per-seller ML app credentials with fallback to global settings.
 """
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -299,6 +300,37 @@ async def search_items_by_sku(seller_slug: str, sku: str) -> list[str]:
     return list(item_ids)
 
 
+_UP_COMPAT_BATCH = 200  # ML limit per request
+_RATE_LIMIT_RETRIES = 4
+_RATE_LIMIT_BASE_WAIT = 3  # seconds
+
+
+async def _post_with_retry(
+    client: httpx.AsyncClient, url: str, headers: dict, json: dict,
+) -> httpx.Response:
+    """POST with automatic retry on 429 Too Many Requests."""
+    for attempt in range(_RATE_LIMIT_RETRIES):
+        resp = await client.post(url, headers=headers, json=json)
+        if resp.status_code != 429:
+            return resp
+        wait = _RATE_LIMIT_BASE_WAIT * (2 ** attempt)
+        logger.warning("Rate-limited on %s — waiting %ds (attempt %d/%d)", url, wait, attempt + 1, _RATE_LIMIT_RETRIES)
+        await asyncio.sleep(wait)
+    return resp  # return last 429 response so caller can raise
+
+
+def _is_user_product_error(resp: httpx.Response) -> bool:
+    """Check if the response indicates a User Product compat fallback is needed."""
+    if resp.status_code not in (400, 403):
+        return False
+    try:
+        body = resp.json()
+    except Exception:
+        return False
+    msg = str(body.get("message") or body.get("error") or "")
+    return "User Product" in msg or "seller of the user product" in msg
+
+
 async def copy_item_compatibilities(
     seller_slug: str,
     new_item_id: str,
@@ -313,30 +345,23 @@ async def copy_item_compatibilities(
     caller with the source seller's token).
     """
     token = await _get_token(seller_slug)
+    headers = {"Authorization": f"Bearer {token}"}
     payload = {"item_to_copy": {"item_id": source_item_id, "extended_information": True}}
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            f"{ML_API}/items/{new_item_id}/compatibilities",
-            headers={"Authorization": f"Bearer {token}"},
-            json=payload,
+        resp = await _post_with_retry(
+            client, f"{ML_API}/items/{new_item_id}/compatibilities", headers, payload,
         )
         if resp.status_code == 404:
             return {}
 
         # If the target uses User Product compatibilities, retry via that endpoint
-        if resp.status_code == 400:
-            body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
-            msg = str(body.get("message") or body.get("error") or "")
-            if "User Product" in msg:
-                return await _copy_user_product_compatibilities(
-                    client, token, new_item_id, source_compat_products,
-                )
+        if _is_user_product_error(resp):
+            return await _copy_user_product_compatibilities(
+                client, token, new_item_id, source_compat_products,
+            )
 
         _raise_for_status(resp, "Mercado Livre API")
         return resp.json()
-
-
-_UP_COMPAT_BATCH = 200  # ML limit per request
 
 
 async def _copy_user_product_compatibilities(
@@ -383,19 +408,18 @@ async def _copy_user_product_compatibilities(
     if not products:
         return {}
 
-    # 3. POST in batches of 200
+    # 3. POST in batches of 200 with rate-limit retry
     logger.info(
         "Item %s is User Product %s — copying %d products via /user-products",
         item_id, user_product_id, len(products),
     )
     domain_id = products[0]["domain_id"]
+    url = f"{ML_API}/user-products/{user_product_id}/compatibilities"
     total_created = 0
     for i in range(0, len(products), _UP_COMPAT_BATCH):
         batch = products[i : i + _UP_COMPAT_BATCH]
-        resp = await client.post(
-            f"{ML_API}/user-products/{user_product_id}/compatibilities",
-            headers=headers,
-            json={"domain_id": domain_id, "products": batch},
+        resp = await _post_with_retry(
+            client, url, headers, {"domain_id": domain_id, "products": batch},
         )
         _raise_for_status(resp, "Mercado Livre API")
         total_created += resp.json().get("created_compatibilities_count", 0)
