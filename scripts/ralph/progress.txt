@@ -16,6 +16,12 @@ Started: Fri Feb 27 11:46:39 -03 2026
 - USER_FIELDS constant for safe select (excludes password_hash): `"id, username, role, can_run_compat, active, created_at, last_login_at"`
 - Supabase upsert with composite key: `.upsert(data, on_conflict="col1,col2")`
 - `copy_sellers` table has `slug` and `name` columns for seller identification
+- Permission check pattern: `_check_seller_permission(user, seller_slug, "from"|"to")` helper in copy.py
+- Admin bypass: always check `user["role"] == "admin"` before permission checks
+- `search_sku_all_sellers` accepts optional `allowed_sellers` param to filter sellers
+- Supabase join for username: `.select("*, users(username)")` then flatten `row.pop("users")["username"]`
+- Audit logging: wrap `auth_logs` inserts in try/except so logging failures don't break main operations
+- Log entry pattern: conditionally add `user_id` only if present (`if user_id: log_entry["user_id"] = user_id`)
 
 ---
 
@@ -81,5 +87,40 @@ Started: Fri Feb 27 11:46:39 -03 2026
   - Supabase upsert: `.upsert(data, on_conflict="col1,col2")` for composite unique constraints
   - Permissions GET returns `seller_name` from copy_sellers for display, not stored in user_permissions
   - PUT accepts `{permissions: [{seller_slug, can_copy_from, can_copy_to}]}` as request body
+
+---
+
+## 2026-02-27 - US-006
+- Replaced `require_admin` with `require_user` in copy.py and compat.py (per-endpoint, not router-level)
+- Added `_check_seller_permission(user, seller_slug, direction)` helper in copy.py for source/dest checks
+- POST /api/copy and POST /api/copy/with-dimensions: check can_copy_from for source, can_copy_to for each dest. Return 403 with specific seller names on denial
+- GET /api/copy/preview: require_user only (any authenticated user can preview)
+- GET /api/copy/logs and GET /api/compat/logs: require_user only
+- POST /api/compat/copy and GET /api/compat/preview: check user.can_run_compat, return 403 if not permitted
+- POST /api/compat/search-sku: filter sellers to can_copy_to via allowed_sellers param in search_sku_all_sellers
+- Modified search_sku_all_sellers in compat_copier.py to accept optional allowed_sellers parameter
+- auth_ml.py unchanged (keeps require_admin for seller management)
+- Files changed: app/routers/copy.py, app/routers/compat.py, app/services/compat_copier.py
+- **Learnings for future iterations:**
+  - Router-level `dependencies=[Depends(require_admin)]` was removed; each endpoint now has explicit `user: dict = Depends(require_user)` for granular control
+  - Admin bypass pattern: check `user["role"] == "admin"` before any permission check
+  - For seller permission checks, iterate `user["permissions"]` list matching seller_slug
+  - The `allowed_sellers=None` pattern means "all sellers" (admin), while a list filters (operator)
+
+---
+
+## 2026-02-27 - US-007
+- Added user_id to copy_logs insertion in item_copier.py (copy_items accepts user_id param)
+- Added user_id to compat_logs insertion in compat_copier.py (copy_compat_to_targets accepts user_id param)
+- Passed user["id"] from copy.py and compat.py routers to service functions
+- Added auth_logs entries in auth.py: login success (action='login'), login failure (action='login_failed'), logout (action='logout')
+- Updated GET /api/copy/logs: operators see only their logs (filter by user_id), admins see all. Includes username via Supabase join
+- Updated GET /api/compat/logs: same operator/admin filtering with username join
+- Files changed: app/routers/auth.py, app/routers/copy.py, app/routers/compat.py, app/services/item_copier.py, app/services/compat_copier.py
+- **Learnings for future iterations:**
+  - Supabase FK join syntax: `.select("*, users(username)")` returns `{"users": {"username": "..."}}` — flatten before returning
+  - Wrap audit log inserts in try/except to avoid breaking main operations on logging failure
+  - For compat background tasks (`bg.add_task`), pass user_id as positional arg after skus
+  - Login failure logging captures username even when user doesn't exist (user_id will be null)
 
 ---

@@ -106,7 +106,7 @@
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": "The require_user dependency from US-002 returns a dict with {id, username, role, can_run_compat, permissions:[{seller_slug, can_copy_from, can_copy_to}]}. To check permissions, iterate user['permissions'] looking for matching seller_slug. If user['role'] == 'admin', skip all checks. Helper function check_seller_permission(user, seller_slug, direction) could be useful."
     },
     {
@@ -123,7 +123,7 @@
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": "copy_logs insertion happens in app/services/item_copier.py (look for db.table('copy_logs').insert). Add user_id to the insert dict. compat_logs insertion is in app/services/compat_copier.py. For the logs endpoints, use .eq('user_id', user['id']) filter for operators. For username, either join or just store username alongside user_id at insert time."
     },
     {
