@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { API_BASE, type Seller, type CompatPreview, type CompatSearchResult, type CompatCopyResult } from '../lib/api';
 import { Card } from './CopyPage';
 
@@ -15,6 +15,7 @@ interface CompatLog {
   total_targets: number;
   success_count: number;
   error_count: number;
+  status?: string;
   created_at: string;
 }
 
@@ -62,6 +63,18 @@ export default function CompatPage({ sellers, headers }: Props) {
   useEffect(() => {
     if (!logsLoaded) loadLogs();
   }, [logsLoaded, loadLogs]);
+
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const hasInProgress = logs.some(l => l.status === 'in_progress');
+
+  useEffect(() => {
+    if (hasInProgress) {
+      pollRef.current = setInterval(loadLogs, 5000);
+    }
+    return () => {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    };
+  }, [hasInProgress, loadLogs]);
 
   const handlePreview = useCallback(async (raw: string) => {
     const itemId = parseItemId(raw);
@@ -138,14 +151,13 @@ export default function CompatPage({ sellers, headers }: Props) {
       setSearchResults([]);
       setSearchedSkus([]);
       setSkuInput('');
-      // Auto-refresh logs after a delay so the user sees progress
-      setTimeout(() => loadLogs(), 5000);
-      setTimeout(() => loadLogs(), 15000);
-      setTimeout(() => loadLogs(), 30000);
+      // Refresh logs after a short delay to pick up in_progress rows created by the backend
+      setTimeout(loadLogs, 1000);
     } catch (e) {
       setPreviewError(String(e));
     } finally {
       setCopying(false);
+      loadLogs();
     }
   }, [preview, searchResults, searchedSkus, headers, loadLogs]);
 
@@ -423,7 +435,7 @@ export default function CompatPage({ sellers, headers }: Props) {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-sm)' }}>
                 <thead>
                   <tr>
-                    {['Data', 'Origem', 'SKUs', 'Destinos', 'Sucesso', 'Erros'].map(h => (
+                    {['Data', 'Origem', 'SKUs', 'Status', 'Destinos', 'Sucesso', 'Erros'].map(h => (
                       <th key={h} style={{
                         textAlign: 'left',
                         padding: 'var(--space-2) var(--space-3)',
@@ -450,6 +462,7 @@ export default function CompatPage({ sellers, headers }: Props) {
                       <td style={{ ...td, fontSize: 'var(--text-xs)' }}>
                         {log.skus?.join(', ') || '-'}
                       </td>
+                      <td style={td}><CompatStatusBadge status={log.status} successCount={log.success_count} errorCount={log.error_count} /></td>
                       <td style={td}>{log.total_targets}</td>
                       <td style={{ ...td, color: 'var(--success)', fontWeight: 600 }}>{log.success_count}</td>
                       <td style={{ ...td, color: log.error_count > 0 ? 'var(--danger)' : 'var(--ink-faint)', fontWeight: 600 }}>
@@ -464,6 +477,33 @@ export default function CompatPage({ sellers, headers }: Props) {
         </Card>
       )}
     </div>
+  );
+}
+
+function CompatStatusBadge({ status, successCount, errorCount }: { status?: string; successCount: number; errorCount: number }) {
+  // Derive status from counts if not explicitly set (legacy rows)
+  const resolved = status || (errorCount > 0 && successCount > 0 ? 'partial' : errorCount > 0 ? 'error' : 'success');
+  const c: Record<string, string> = { success: 'var(--success)', error: 'var(--danger)', partial: 'var(--warning)', in_progress: 'var(--info, #3b82f6)' };
+  const bg: Record<string, string> = { success: 'rgba(16, 185, 129, 0.08)', error: 'rgba(239, 68, 68, 0.08)', partial: 'rgba(245, 158, 11, 0.08)', in_progress: 'rgba(59, 130, 246, 0.08)' };
+  const labels: Record<string, string> = { success: 'Sucesso', error: 'Erro', partial: 'Parcial', in_progress: 'Copiando...' };
+  const isInProgress = resolved === 'in_progress';
+  return (
+    <span style={{
+      color: c[resolved] || 'var(--ink-faint)',
+      fontWeight: 600,
+      fontSize: 'var(--text-xs)',
+      textTransform: 'uppercase',
+      background: bg[resolved] || 'transparent',
+      padding: '2px 8px',
+      borderRadius: 4,
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 6,
+      animation: isInProgress ? 'pulse-badge 1.5s ease-in-out infinite' : undefined,
+    }}>
+      {isInProgress && <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'currentColor', animation: 'pulse-dot 1.5s ease-in-out infinite' }} />}
+      {labels[resolved] || resolved}
+    </span>
   );
 }
 
