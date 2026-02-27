@@ -98,3 +98,17 @@ Started: Fri Feb 27 11:00:28 -03 2026
   - `navigator.clipboard.writeText()` works in modern browsers without fallback; returns a Promise but fire-and-forget is fine for UX
   - Using a single `copiedSku` state string works well for tracking which chip shows feedback — no need for a map/object when only one can be copied at a time
 ---
+
+## 2026-02-27 - US-007
+- Replaced `<SellerSelect>` dropdown for origin seller with checkbox-style buttons matching destination layout
+- Single-select behavior: clicking a seller selects it, clicking again deselects; when one is selected, others are visually disabled
+- Disabled sellers have `opacity: 0.4`, `cursor: not-allowed`, and muted color
+- Selected seller shows checkmark (✓) and ink/paper inverted style, same as destination chips
+- Removed `SellerSelect` import (no longer used in CopyForm)
+- Existing behavior preserved: selected origin seller is excluded from destination checkboxes
+- Files changed: `frontend/src/components/CopyForm.tsx`
+- **Learnings for future iterations:**
+  - The `chip-toggle` CSS class and the destination button styling pattern are the canonical way to render seller selectors — reuse for any new seller selection UI
+  - For single-select with visual disable: use `opacity: 0.4` + `cursor: not-allowed` + early return in onClick for disabled items
+  - `SellerSelect` component still exists in `frontend/src/components/SellerSelect.tsx` but is now unused — can be deleted in a future cleanup
+---

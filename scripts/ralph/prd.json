@@ -121,7 +121,7 @@
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": "CopyForm.tsx currently uses <SellerSelect> (a dropdown) for origin and checkbox-style buttons for destinations. Look at how destination sellers are rendered (the availableDestinations.map section) and replicate that pattern for origin, but with single-select: clicking one disables others visually. The key CSS: when a seller is not the selected one and source is set, apply opacity: 0.4, pointer-events: none or similar."
     }
   ]
