@@ -8,11 +8,13 @@ from typing import Any
 
 from app.db.supabase import get_db
 from app.services.ml_api import (
+    MlApiError,
     copy_item_compatibilities,
     get_item,
     get_item_compatibilities,
     search_items_by_sku,
 )
+from app.services.item_copier import _log_api_debug
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +137,19 @@ async def copy_compat_to_targets(
                 "error": str(exc),
             })
             error_count += 1
+            _log_api_debug(
+                action="copy_compat_to_target",
+                source_seller=source_seller,
+                dest_seller=target["seller_slug"],
+                source_item_id=source_item_id,
+                dest_item_id=target["item_id"],
+                copy_log_id=log_id,
+                api_method=exc.method if isinstance(exc, MlApiError) else None,
+                api_url=exc.url if isinstance(exc, MlApiError) else None,
+                response_status=exc.status_code if isinstance(exc, MlApiError) else None,
+                response_body=exc.payload if isinstance(exc, MlApiError) and isinstance(exc.payload, dict) else None,
+                error_message=str(exc),
+            )
 
     # Determine final status
     if error_count == 0:

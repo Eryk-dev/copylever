@@ -1,6 +1,7 @@
 """
 Core logic for copying ML listings from one seller to another.
 """
+import json
 import logging
 import re
 from typing import Any
@@ -18,6 +19,67 @@ from app.services.ml_api import (
 )
 
 logger = logging.getLogger(__name__)
+
+MAX_DEBUG_PAYLOAD_SIZE = 50_000  # 50 KB max for JSON payloads in debug logs
+
+
+def _truncate_json(data: Any, max_size: int = MAX_DEBUG_PAYLOAD_SIZE) -> Any:
+    """Truncate a JSON-serializable value if its serialized form exceeds max_size."""
+    if data is None:
+        return None
+    try:
+        raw = json.dumps(data, default=str)
+        if len(raw) <= max_size:
+            return data
+        return {"_truncated": True, "_size": len(raw), "_preview": raw[:2000]}
+    except Exception:
+        return {"_error": "unserializable"}
+
+
+def _log_api_debug(
+    action: str,
+    source_seller: str | None = None,
+    dest_seller: str | None = None,
+    source_item_id: str | None = None,
+    dest_item_id: str | None = None,
+    user_id: str | None = None,
+    copy_log_id: int | None = None,
+    api_method: str | None = None,
+    api_url: str | None = None,
+    request_payload: Any = None,
+    response_status: int | None = None,
+    response_body: Any = None,
+    error_message: str | None = None,
+    attempt_number: int = 1,
+    adjustments: list[str] | None = None,
+    resolved: bool = False,
+) -> None:
+    """Insert a debug log row into api_debug_logs. Never raises."""
+    try:
+        db = get_db()
+        row: dict[str, Any] = {
+            "action": action,
+            "source_seller": source_seller,
+            "dest_seller": dest_seller,
+            "source_item_id": source_item_id,
+            "dest_item_id": dest_item_id,
+            "api_method": api_method,
+            "api_url": api_url,
+            "request_payload": _truncate_json(request_payload),
+            "response_status": response_status,
+            "response_body": _truncate_json(response_body),
+            "error_message": str(error_message)[:2000] if error_message else None,
+            "attempt_number": attempt_number,
+            "adjustments": adjustments or [],
+            "resolved": resolved,
+        }
+        if user_id:
+            row["user_id"] = user_id
+        if copy_log_id:
+            row["copy_log_id"] = copy_log_id
+        db.table("api_debug_logs").insert(row).execute()
+    except Exception as e:
+        logger.warning("Failed to write api_debug_log: %s", e)
 
 # Attributes to exclude (read-only, auto-generated, or non-modifiable on create)
 EXCLUDED_ATTRIBUTES = {
@@ -240,6 +302,14 @@ def _extract_ml_error_fields(exc: MlApiError, marker: str) -> set[str]:
     return fields
 
 
+def _is_title_invalid_error(exc: MlApiError) -> bool:
+    invalid = _extract_ml_error_fields(exc, "invalid_fields")
+    if any(field.split(".", 1)[0] == "title" for field in invalid):
+        return True
+    text = str(exc).lower()
+    return "[title]" in text and "invalid" in text
+
+
 def _ensure_top_level_stock(payload: dict, item: dict) -> None:
     if "available_quantity" in payload:
         return
@@ -263,6 +333,8 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
     required_raw = _extract_ml_error_fields(exc, "required_fields")
     invalid_top = {field.split(".", 1)[0] for field in invalid_raw}
     required_top = {field.split(".", 1)[0] for field in required_raw}
+    if _is_title_invalid_error(exc):
+        invalid_top.add("title")
 
     if "shipping.methods" in invalid_raw and isinstance(adjusted.get("shipping"), dict):
         if "methods" in adjusted["shipping"]:
@@ -288,13 +360,20 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
         adjusted.pop("shipping", None)
         actions.append("removed shipping")
 
+    # When family_name is invalid, fall back to title (user_product → regular item flow)
+    if "family_name" in invalid_top and not adjusted.get("title"):
+        title = _clean_text(item.get("title"))
+        if title:
+            adjusted["title"] = title
+            actions.append("added title as family_name fallback")
+
     if "title" in invalid_top:
         family_name = _get_family_name(item)
         if family_name and not adjusted.get("family_name"):
             adjusted["family_name"] = family_name
             actions.append("added family_name from source")
 
-    if "family_name" in required_top and not adjusted.get("family_name"):
+    if "family_name" in required_top and not adjusted.get("family_name") and "family_name" not in invalid_top:
         family_name = _get_family_name(item)
         if family_name:
             adjusted["family_name"] = family_name
@@ -493,6 +572,8 @@ async def copy_single_item(
     dest_seller: str,
     item_id: str,
     user_email: str | None = None,
+    user_id: str | None = None,
+    copy_log_id: int | None = None,
 ) -> dict:
     """
     Copy a single item from source_seller to dest_seller.
@@ -530,15 +611,44 @@ async def copy_single_item(
 
         new_item: dict | None = None
         safe_mode_retry_used = False
+        force_no_title = False
         last_exc: Exception | None = None
 
-        for _ in range(4):
+        for attempt in range(1, 5):
+            if force_no_title and payload.get("title"):
+                payload = dict(payload)
+                payload.pop("title", None)
+                if not payload.get("family_name"):
+                    family_name = _get_family_name(item)
+                    if family_name:
+                        payload["family_name"] = family_name
             try:
                 new_item = await create_item(dest_seller, payload)
                 break
             except MlApiError as exc:
                 last_exc = exc
+                if _is_title_invalid_error(exc):
+                    force_no_title = True
                 adjusted_payload, actions = _adjust_payload_for_ml_error(payload, item, exc)
+
+                # Log every failed attempt to api_debug_logs
+                _log_api_debug(
+                    action="create_item",
+                    source_seller=source_seller,
+                    dest_seller=dest_seller,
+                    source_item_id=item_id,
+                    user_id=user_id,
+                    copy_log_id=copy_log_id,
+                    api_method=exc.method,
+                    api_url=exc.url,
+                    request_payload=payload,
+                    response_status=exc.status_code,
+                    response_body=exc.payload if isinstance(exc.payload, dict) else {"raw": str(exc.payload)},
+                    error_message=exc.detail,
+                    attempt_number=attempt,
+                    adjustments=actions if actions else None,
+                )
+
                 if actions and adjusted_payload != payload:
                     logger.warning(
                         "ML rejected payload for %s -> %s. Retrying with adjustments: %s. Error: %s",
@@ -555,6 +665,8 @@ async def copy_single_item(
                     family_name = _get_family_name(item)
                     if family_name and not safe_payload.get("family_name"):
                         safe_payload["family_name"] = family_name
+                    if force_no_title:
+                        safe_payload.pop("title", None)
                     if safe_payload != payload:
                         safe_mode_retry_used = True
                         logger.warning(
@@ -576,6 +688,16 @@ async def copy_single_item(
         result["dest_item_id"] = new_item_id
         logger.info(f"Item created: {new_item_id} on {dest_seller}")
 
+        # Mark previous debug logs as resolved if item was created after retries
+        if attempt > 1:
+            try:
+                db = get_db()
+                db.table("api_debug_logs").update({"resolved": True}).eq(
+                    "source_item_id", item_id
+                ).eq("dest_seller", dest_seller).eq("action", "create_item").execute()
+            except Exception:
+                pass
+
         # 5. POST description
         if plain_text:
             try:
@@ -583,6 +705,20 @@ async def copy_single_item(
                 logger.info(f"Description set for {new_item_id}")
             except Exception as e:
                 logger.warning(f"Failed to set description for {new_item_id}: {e}")
+                _log_api_debug(
+                    action="set_description",
+                    source_seller=source_seller,
+                    dest_seller=dest_seller,
+                    source_item_id=item_id,
+                    dest_item_id=new_item_id,
+                    user_id=user_id,
+                    copy_log_id=copy_log_id,
+                    api_method="POST" if isinstance(e, MlApiError) else None,
+                    api_url=e.url if isinstance(e, MlApiError) else None,
+                    response_status=e.status_code if isinstance(e, MlApiError) else None,
+                    response_body=e.payload if isinstance(e, MlApiError) and isinstance(e.payload, dict) else None,
+                    error_message=str(e),
+                )
 
         # 6. Copy compatibilities (using ML native copy)
         if has_compat:
@@ -591,6 +727,20 @@ async def copy_single_item(
                 logger.info(f"Compatibilities copied for {new_item_id} from {item_id}")
             except Exception as e:
                 logger.warning(f"Failed to copy compatibilities for {new_item_id}: {e}")
+                _log_api_debug(
+                    action="copy_compat",
+                    source_seller=source_seller,
+                    dest_seller=dest_seller,
+                    source_item_id=item_id,
+                    dest_item_id=new_item_id,
+                    user_id=user_id,
+                    copy_log_id=copy_log_id,
+                    api_method="POST" if isinstance(e, MlApiError) else None,
+                    api_url=e.url if isinstance(e, MlApiError) else None,
+                    response_status=e.status_code if isinstance(e, MlApiError) else None,
+                    response_body=e.payload if isinstance(e, MlApiError) and isinstance(e.payload, dict) else None,
+                    error_message=str(e),
+                )
 
         result["status"] = "success"
 
@@ -603,10 +753,33 @@ async def copy_single_item(
             logger.error(f"Failed to copy {item_id} to {dest_seller}: {e}")
             result["status"] = "error"
             result["error"] = str(e)
+        # Final error debug log (if not already logged in retry loop, e.g. get_item failures)
+        _log_api_debug(
+            action="copy_single_item_final",
+            source_seller=source_seller,
+            dest_seller=dest_seller,
+            source_item_id=item_id,
+            user_id=user_id,
+            copy_log_id=copy_log_id,
+            api_method=e.method,
+            api_url=e.url,
+            response_status=e.status_code,
+            response_body=e.payload if isinstance(e.payload, dict) else {"raw": str(e.payload)},
+            error_message=e.detail,
+        )
     except Exception as e:
         logger.error(f"Failed to copy {item_id} to {dest_seller}: {e}")
         result["status"] = "error"
         result["error"] = str(e)
+        _log_api_debug(
+            action="copy_single_item_final",
+            source_seller=source_seller,
+            dest_seller=dest_seller,
+            source_item_id=item_id,
+            user_id=user_id,
+            copy_log_id=copy_log_id,
+            error_message=str(e),
+        )
 
     return result
 
@@ -652,7 +825,10 @@ async def copy_items(
         item_errors = {}
 
         for dest_seller in dest_sellers:
-            result = await copy_single_item(source_seller, dest_seller, item_id, user_email)
+            result = await copy_single_item(
+                source_seller, dest_seller, item_id, user_email,
+                user_id=user_id, copy_log_id=log_id,
+            )
             all_results.append(result)
 
             if result["status"] == "success":
