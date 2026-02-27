@@ -194,30 +194,54 @@ async def fetch_user_info(access_token: str) -> dict:
 
 
 async def get_seller_official_store_id(seller_slug: str) -> int | None:
-    """Get the official_store_id for a brand seller by checking one of their existing items."""
+    """Get the official_store_id for a brand seller.
+
+    Checks cached value in copy_sellers first; if not cached, searches
+    the seller's items (up to 20) and caches the result.
+    """
     db = get_db()
-    seller = db.table("copy_sellers").select("ml_user_id").eq("slug", seller_slug).single().execute()
+    seller = db.table("copy_sellers").select("ml_user_id, official_store_id").eq("slug", seller_slug).single().execute()
     user_id = seller.data["ml_user_id"]
+
+    # Return cached value if available
+    cached = seller.data.get("official_store_id")
+    if cached:
+        return cached
 
     token = await _get_token(seller_slug)
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(
             f"{ML_API}/users/{user_id}/items/search",
             headers={"Authorization": f"Bearer {token}"},
-            params={"limit": "1"},
+            params={"status": "active", "limit": "5"},
         )
         if resp.status_code != 200:
+            logger.warning("Items search failed for %s (status %d)", seller_slug, resp.status_code)
             return None
         results = resp.json().get("results", [])
         if not results:
+            logger.warning("No active items found for seller %s — cannot resolve official_store_id", seller_slug)
             return None
-        item_resp = await client.get(
-            f"{ML_API}/items/{results[0]}",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        if item_resp.status_code != 200:
-            return None
-        return item_resp.json().get("official_store_id")
+
+        for item_id in results:
+            item_resp = await client.get(
+                f"{ML_API}/items/{item_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if item_resp.status_code != 200:
+                continue
+            osi = item_resp.json().get("official_store_id")
+            if osi:
+                # Cache in DB for future use
+                try:
+                    db.table("copy_sellers").update({"official_store_id": osi}).eq("slug", seller_slug).execute()
+                except Exception:
+                    pass
+                logger.info("Found official_store_id=%d for %s (from item %s)", osi, seller_slug, item_id)
+                return osi
+
+    logger.warning("No item with official_store_id found for %s (checked %d items)", seller_slug, len(results))
+    return None
 
 
 # ── Item operations ──────────────────────────────────────

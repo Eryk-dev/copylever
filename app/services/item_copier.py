@@ -688,6 +688,21 @@ async def copy_single_item(
                             if isinstance(adjusted_payload.get("shipping"), dict):
                                 adjusted_payload["shipping"]["free_shipping"] = True
                                 actions.append("forced free_shipping for brand account")
+                        else:
+                            raise MlApiError(
+                                service_name="Mercado Livre API",
+                                status_code=400,
+                                method=exc.method,
+                                url=exc.url,
+                                detail=(
+                                    f"Seller '{dest_seller}' é conta marca mas official_store_id "
+                                    f"não foi encontrado em nenhum dos seus anúncios. "
+                                    f"Verifique se o seller tem anúncios ativos."
+                                ),
+                                payload=exc.payload,
+                            )
+                    except MlApiError:
+                        raise
                     except Exception as osi_exc:
                         logger.warning("Failed to fetch official_store_id for %s: %s", dest_seller, osi_exc)
 
