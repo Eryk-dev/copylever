@@ -11,6 +11,10 @@ Started: Fri Feb 27 11:00:28 -03 2026
 - Migrations live in `app/db/migrations/` using plain SQL files with numeric prefixes
 - compat_logs table originally had no `status` column — added via migration 003
 - Use `python3` not `python` for CLI tools (mypy, ruff) on this machine
+- ML item SKU locations: `item.seller_custom_field`, `item.variations[].seller_custom_field`, `item.variations[].attributes[{id:"SELLER_SKU"}].value_name`
+- StatusBadge in CopyPage.tsx uses `c` (color) and `bg` (background) maps keyed by status string — add new statuses to both
+- Pulse animations (`pulse-badge`, `pulse-dot`) are defined in `index.css` — reuse for any in_progress indicator
+- In React hooks, define `useCallback` dependencies before consumers — no hoisting like regular functions
 
 ## 2026-02-27 - US-001
 - Implemented in_progress status for copy_logs in `copy_items()` function
@@ -36,4 +40,61 @@ Started: Fri Feb 27 11:00:28 -03 2026
   - The `copy_compat` endpoint creates the log row synchronously, then the background task updates it
   - `log_id` is passed as a keyword arg to the background task — FastAPI BackgroundTasks supports this
   - Kept legacy insert path in `copy_compat_to_targets` when `log_id` is None for backward compatibility
+---
+
+## 2026-02-27 - US-003
+- Added SKU extraction to `GET /api/compat/preview/{item_id}` endpoint
+- Extracts SKUs from: item-level `seller_custom_field`, variation-level `seller_custom_field`, and variation attributes where `id='SELLER_SKU'`
+- Returns deduplicated `skus` array (preserves order) in the response alongside existing fields
+- Returns empty array if no SKUs found
+- Files changed: `app/routers/compat.py`
+- **Learnings for future iterations:**
+  - ML API item structure: `item.seller_custom_field` for item-level SKU, `item.variations[].seller_custom_field` for variation SKU, `item.variations[].attributes` array with `{id: "SELLER_SKU", value_name: "..."}` for attribute-based SKU
+  - `get_item()` already returns full item data including variations — no extra API call needed
+  - Order-preserving deduplication: use a `seen` set + list instead of `list(set(...))` which loses order
+---
+
+## 2026-02-27 - US-004
+- Added in_progress status polling to CopyPage history table
+- StatusBadge now shows pulsing blue "Copiando..." badge with animated dot for in_progress rows
+- Added useEffect + useRef polling: setInterval every 5s while any row has status 'in_progress', auto-stops when none remain
+- Moved loadLogs() above handleCopy to fix TS block-scoped variable ordering
+- Added setTimeout(loadLogs, 1000) after copy submission to pick up in_progress rows mid-operation
+- Moved final loadLogs() call to `finally` block so it runs on both success and error
+- Added pulse-badge and pulse-dot keyframes to index.css
+- Files changed: `frontend/src/pages/CopyPage.tsx`, `frontend/src/index.css`
+- **Learnings for future iterations:**
+  - useCallback ordering matters in React — a callback referencing another must be defined after it (no hoisting like regular functions)
+  - StatusBadge component in CopyPage.tsx is shared for rendering all status types — add new statuses to both `c` and `bg` maps
+  - The copy POST is synchronous (awaited), so to show in_progress rows you need a setTimeout to refresh logs while the POST is pending
+  - CSS keyframes for pulse animations are in index.css: `pulse-badge` and `pulse-dot` — reuse these in CompatPage (US-005)
+---
+
+## 2026-02-27 - US-005
+- Added in_progress status polling to CompatPage history table
+- Added `status` field to CompatLog interface (optional for backward compat with legacy rows)
+- Created CompatStatusBadge component: derives status from explicit field or falls back to success/error/partial counts for legacy rows
+- Added useRef + useEffect polling: setInterval every 5s while any row has status 'in_progress', auto-stops when none remain
+- Replaced setTimeout-based refresh (5s/15s/30s) with immediate loadLogs() in finally + setTimeout(loadLogs, 1000) for picking up in_progress rows
+- Added 'Status' column to history table with pulsing blue "Copiando..." badge for in_progress rows
+- Reused pulse-badge and pulse-dot CSS animations from index.css (added in US-004)
+- Files changed: `frontend/src/pages/CompatPage.tsx`
+- **Learnings for future iterations:**
+  - CompatStatusBadge needs fallback logic for legacy compat_logs rows that don't have a `status` column — derive from success_count/error_count
+  - The compat copy endpoint returns synchronously (background task), so `loadLogs()` in `finally` picks up the in_progress row immediately
+  - Same polling pattern as CopyPage: useRef for interval, hasInProgress derived from logs, useEffect cleanup
+---
+
+## 2026-02-27 - US-006
+- Added `skus: string[]` to `CompatPreview` interface in `api.ts`
+- Added SKU chip display in CompatPage preview card with copy-to-clipboard buttons
+- Each SKU renders as a clickable chip with a copy icon (⧉); clicking copies to clipboard via `navigator.clipboard.writeText()`
+- After copying, shows a checkmark (✓) in green for 2 seconds as visual feedback
+- If no SKUs found, shows "Sem SKU" in muted text
+- Used `copiedSku` state with `setTimeout` to reset feedback after 2s
+- Files changed: `frontend/src/lib/api.ts`, `frontend/src/pages/CompatPage.tsx`
+- **Learnings for future iterations:**
+  - The `CompatPreview` type in `api.ts` must match backend response fields — `skus` was added in US-003 backend but type wasn't updated until now
+  - `navigator.clipboard.writeText()` works in modern browsers without fallback; returns a Promise but fire-and-forget is fine for UX
+  - Using a single `copiedSku` state string works well for tracking which chip shows feedback — no need for a map/object when only one can be copied at a time
 ---

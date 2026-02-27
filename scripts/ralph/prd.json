@@ -50,7 +50,7 @@
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "notes": "The item data from ML API has: item.seller_custom_field (item-level SKU) and item.variations[].seller_custom_field or item.variations[].attributes where id='SELLER_SKU'. Use get_item() which returns full item data including variations. Deduplicate with list(set(skus)) and filter out None/empty strings."
     },
     {
@@ -67,7 +67,7 @@
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": "CopyPage.tsx has a loadLogs() function and logs state. The history table is rendered around lines 94-139. Add a useEffect with setInterval for polling. Use a useRef to track the interval. Clear interval when no in_progress rows remain. For the visual indicator, consider a CSS @keyframes pulse animation on the status badge."
     },
     {
@@ -85,7 +85,7 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": "CompatPage.tsx currently has auto-refresh logic using setTimeout at 5s, 15s, 30s intervals. Replace that with a cleaner polling approach: setInterval every 5s while in_progress rows exist. Same visual pattern as CopyPage (US-004). Check how compat_logs are currently displayed and add the status field to the rendering."
     },
     {
@@ -103,7 +103,7 @@
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": "The preview API now returns a 'skus' field (array of strings) from US-003. The preview card is rendered in CompatPage.tsx. Use navigator.clipboard.writeText() for clipboard — no fallback needed for modern browsers. For the copy feedback, use a useState with setTimeout to reset after 2s."
     },
     {
