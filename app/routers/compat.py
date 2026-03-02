@@ -160,6 +160,8 @@ async def copy_compat(req: CopyRequest, bg: BackgroundTasks, user: dict = Depend
 @router.get("/logs")
 async def compat_logs(
     limit: int = Query(50, le=200),
+    offset: int = Query(0, ge=0),
+    status: str | None = Query(None),
     user: dict = Depends(require_user),
 ):
     """Get compat copy history. Operators see only their own logs; admins see all."""
@@ -169,7 +171,9 @@ async def compat_logs(
     )
     if user["role"] != "admin":
         query = query.eq("user_id", user["id"])
-    result = query.limit(limit).execute()
+    if status:
+        query = query.eq("status", status)
+    result = query.range(offset, offset + limit - 1).execute()
     # Flatten the joined username into each log entry
     logs = []
     for row in result.data or []:

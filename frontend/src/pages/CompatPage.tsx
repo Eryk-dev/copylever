@@ -51,21 +51,50 @@ export default function CompatPage({ sellers, headers }: Props) {
   const [logs, setLogs] = useState<CompatLog[]>([]);
   const [logsLoaded, setLogsLoaded] = useState(false);
   const [logsOpen, setLogsOpen] = useState(true);
+  const [compatStatusFilter, setCompatStatusFilter] = useState('');
+  const [hasMoreLogs, setHasMoreLogs] = useState(false);
 
   const [copiedSku, setCopiedSku] = useState<string | null>(null);
 
+  const COMPAT_PAGE_SIZE = 50;
   const firstSellerSlug = sellers[0]?.slug || '';
 
   const loadLogs = useCallback(async () => {
+    const params = new URLSearchParams({ limit: String(COMPAT_PAGE_SIZE), offset: '0' });
+    if (compatStatusFilter) params.set('status', compatStatusFilter);
     try {
-      const res = await fetch(`${API_BASE}/api/compat/logs?limit=50`, { headers: headers(), cache: 'no-store' });
-      if (res.ok) { setLogs(await res.json()); setLogsLoaded(true); }
+      const res = await fetch(`${API_BASE}/api/compat/logs?${params}`, { headers: headers(), cache: 'no-store' });
+      if (res.ok) {
+        const data: CompatLog[] = await res.json();
+        setLogs(data);
+        setHasMoreLogs(data.length === COMPAT_PAGE_SIZE);
+        setLogsLoaded(true);
+      }
     } catch (e) { console.error('Failed to load compat logs:', e); }
-  }, [headers]);
+  }, [headers, compatStatusFilter]);
+
+  const loadMoreLogs = useCallback(async () => {
+    const params = new URLSearchParams({ limit: String(COMPAT_PAGE_SIZE), offset: String(logs.length) });
+    if (compatStatusFilter) params.set('status', compatStatusFilter);
+    try {
+      const res = await fetch(`${API_BASE}/api/compat/logs?${params}`, { headers: headers(), cache: 'no-store' });
+      if (res.ok) {
+        const data: CompatLog[] = await res.json();
+        setLogs(prev => [...prev, ...data]);
+        setHasMoreLogs(data.length === COMPAT_PAGE_SIZE);
+      }
+    } catch (e) { console.error('Failed to load more compat logs:', e); }
+  }, [headers, compatStatusFilter, logs.length]);
 
   useEffect(() => {
     if (!logsLoaded) loadLogs();
   }, [logsLoaded, loadLogs]);
+
+  // Reset logs when filter changes
+  useEffect(() => {
+    setLogs([]);
+    setLogsLoaded(false);
+  }, [compatStatusFilter]);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hasInProgress = logs.some(l => l.status === 'in_progress');
@@ -479,59 +508,120 @@ export default function CompatPage({ sellers, headers }: Props) {
       )}
 
       {/* History */}
-      {logs.length > 0 && (
-        <Card
-          title={`Historico (${logs.length})`}
-          collapsible
-          open={logsOpen}
-          onToggle={() => setLogsOpen(!logsOpen)}
-        >
-          {logsOpen && (
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-sm)' }}>
-                <thead>
-                  <tr>
-                    {['Data', 'Origem', 'SKUs', 'Status', 'Destinos', 'Sucesso', 'Erros'].map(h => (
-                      <th key={h} style={{
-                        textAlign: 'left',
-                        padding: 'var(--space-2) var(--space-3)',
-                        color: 'var(--ink-faint)',
-                        fontWeight: 500,
-                        fontSize: 'var(--text-xs)',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.05em',
-                        borderBottom: '1px solid var(--line)',
-                        whiteSpace: 'nowrap',
-                      }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {logs.map(log => (
-                    <tr key={log.id} style={{ borderBottom: '1px solid var(--line)' }}>
-                      <td style={{ ...td, whiteSpace: 'nowrap' }}>
-                        {new Date(log.created_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
-                      </td>
-                      <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}>
-                        {log.source_item_id}
-                      </td>
-                      <td style={{ ...td, fontSize: 'var(--text-xs)' }}>
-                        {log.skus?.join(', ') || '-'}
-                      </td>
-                      <td style={td}><CompatStatusBadge status={log.status} successCount={log.success_count} errorCount={log.error_count} /></td>
-                      <td style={td}>{log.total_targets}</td>
-                      <td style={{ ...td, color: 'var(--success)', fontWeight: 600 }}>{log.success_count}</td>
-                      <td style={{ ...td, color: log.error_count > 0 ? 'var(--danger)' : 'var(--ink-faint)', fontWeight: 600 }}>
-                        {log.error_count}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+      <Card
+        title={`Historico (${logs.length}${hasMoreLogs ? '+' : ''})`}
+        collapsible
+        open={logsOpen}
+        onToggle={() => setLogsOpen(!logsOpen)}
+      >
+        {logsOpen && (
+          <>
+            {/* Status filter tabs */}
+            <div style={{
+              display: 'flex',
+              gap: 'var(--space-2)',
+              marginBottom: 'var(--space-3)',
+              flexWrap: 'wrap',
+            }}>
+              {[
+                { key: '', label: 'Todos' },
+                { key: 'success', label: 'Sucesso' },
+                { key: 'error', label: 'Erros' },
+                { key: 'partial', label: 'Parcial' },
+              ].map(tab => (
+                <button
+                  key={tab.key}
+                  onClick={() => setCompatStatusFilter(tab.key)}
+                  style={{
+                    padding: '4px 12px',
+                    borderRadius: 4,
+                    fontSize: 'var(--text-xs)',
+                    fontWeight: 600,
+                    background: compatStatusFilter === tab.key ? 'var(--ink)' : 'transparent',
+                    color: compatStatusFilter === tab.key ? 'var(--paper)' : 'var(--ink-faint)',
+                    border: `1px solid ${compatStatusFilter === tab.key ? 'var(--ink)' : 'var(--line)'}`,
+                    cursor: 'pointer',
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
-          )}
-        </Card>
-      )}
+
+            {logs.length === 0 && logsLoaded ? (
+              <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-sm)', textAlign: 'center', padding: 'var(--space-4)' }}>
+                Nenhum registro{compatStatusFilter ? ` com status "${compatStatusFilter}"` : ''}.
+              </p>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-sm)' }}>
+                  <thead>
+                    <tr>
+                      {['Data', 'Origem', 'SKUs', 'Status', 'Destinos', 'Sucesso', 'Erros'].map(h => (
+                        <th key={h} style={{
+                          textAlign: 'left',
+                          padding: 'var(--space-2) var(--space-3)',
+                          color: 'var(--ink-faint)',
+                          fontWeight: 500,
+                          fontSize: 'var(--text-xs)',
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.05em',
+                          borderBottom: '1px solid var(--line)',
+                          whiteSpace: 'nowrap',
+                        }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {logs.map(log => (
+                      <tr key={log.id} style={{ borderBottom: '1px solid var(--line)' }}>
+                        <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                          {new Date(log.created_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
+                        </td>
+                        <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}>
+                          {log.source_item_id}
+                        </td>
+                        <td style={{ ...td, fontSize: 'var(--text-xs)' }}>
+                          {log.skus?.join(', ') || '-'}
+                        </td>
+                        <td style={td}><CompatStatusBadge status={log.status} successCount={log.success_count} errorCount={log.error_count} /></td>
+                        <td style={td}>{log.total_targets}</td>
+                        <td style={{ ...td, color: 'var(--success)', fontWeight: 600 }}>{log.success_count}</td>
+                        <td style={{ ...td, color: log.error_count > 0 ? 'var(--danger)' : 'var(--ink-faint)', fontWeight: 600 }}>
+                          {log.error_count}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Load more */}
+            {hasMoreLogs && (
+              <button
+                onClick={loadMoreLogs}
+                style={{
+                  display: 'block',
+                  width: '100%',
+                  padding: 'var(--space-2)',
+                  marginTop: 'var(--space-3)',
+                  background: 'none',
+                  color: 'var(--ink-faint)',
+                  fontSize: 'var(--text-xs)',
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  border: '1px solid var(--line)',
+                  borderRadius: 6,
+                }}
+              >
+                Carregar mais...
+              </button>
+            )}
+          </>
+        )}
+      </Card>
     </div>
   );
 }

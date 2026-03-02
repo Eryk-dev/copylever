@@ -128,10 +128,83 @@ async def copy_with_dims(req: CopyWithDimensionsRequest, user: dict = Depends(re
     }
 
 
+class RetryDimensionsRequest(BaseModel):
+    log_id: int
+    dimensions: Dimensions
+
+
+@router.post("/retry-dimensions")
+async def retry_dimensions(req: RetryDimensionsRequest, user: dict = Depends(require_user)):
+    """Retry a dimension-failed copy from the logs history."""
+    db = get_db()
+
+    # 1. Fetch the original log entry
+    log_result = db.table("copy_logs").select("*").eq("id", req.log_id).execute()
+    if not log_result.data:
+        raise HTTPException(status_code=404, detail="Log nao encontrado")
+    log = log_result.data[0]
+
+    # 2. Verify it's a dimension error (new status or old error with dimension message)
+    is_dim_error = log["status"] == "needs_dimensions"
+    if not is_dim_error and log["status"] == "error" and log.get("error_details"):
+        details = log["error_details"]
+        if isinstance(details, dict):
+            is_dim_error = any(
+                isinstance(v, str) and ("dimenso" in v.lower() or "dimension" in v.lower())
+                for v in details.values()
+            )
+    if not is_dim_error:
+        raise HTTPException(status_code=400, detail="Este log nao e um erro de dimensoes")
+
+    # 3. Permission checks
+    source = log["source_seller"]
+    destinations = log["dest_sellers"]
+    if not _check_seller_permission(user, source, "from"):
+        raise HTTPException(status_code=403, detail=f"Sem permissao de origem para '{source}'")
+    denied = [d for d in destinations if not _check_seller_permission(user, d, "to")]
+    if denied:
+        raise HTTPException(status_code=403, detail=f"Sem permissao de destino para: {', '.join(denied)}")
+
+    dims = req.dimensions.model_dump(exclude_none=True)
+    if not dims:
+        raise HTTPException(status_code=400, detail="Pelo menos uma dimensao e necessaria")
+
+    # 4. Run copy with dimensions
+    results = await copy_with_dimensions(
+        source_seller=source,
+        dest_sellers=destinations,
+        item_id=log["source_item_id"],
+        dimensions=dims,
+    )
+
+    success_count = sum(1 for r in results if r["status"] == "success")
+    error_count = sum(1 for r in results if r["status"] == "error")
+
+    # 5. Update the original log row
+    dest_item_ids = {r["dest_seller"]: r["dest_item_id"] for r in results if r["status"] == "success"}
+    new_errors = {r["dest_seller"]: r["error"] for r in results if r["status"] != "success" and r.get("error")}
+    new_status = "success" if error_count == 0 else ("partial" if success_count > 0 else "error")
+
+    db.table("copy_logs").update({
+        "status": new_status,
+        "dest_item_ids": dest_item_ids or None,
+        "error_details": new_errors or None,
+    }).eq("id", req.log_id).execute()
+
+    return {
+        "log_id": req.log_id,
+        "total": len(results),
+        "success": success_count,
+        "errors": error_count,
+        "results": results,
+    }
+
+
 @router.get("/logs")
 async def copy_logs(
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
+    status: str | None = Query(None),
     user: dict = Depends(require_user),
 ):
     """Get copy history. Operators see only their own logs; admins see all."""
@@ -141,6 +214,8 @@ async def copy_logs(
     )
     if user["role"] != "admin":
         query = query.eq("user_id", user["id"])
+    if status:
+        query = query.eq("status", status)
     result = query.range(offset, offset + limit - 1).execute()
     # Flatten the joined username into each log entry
     logs = []

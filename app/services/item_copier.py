@@ -916,8 +916,8 @@ async def copy_items(
             logger.error(f"Failed to create in_progress log for {item_id}: {e}")
 
         dest_item_ids = {}
-        item_status = "success"
         item_errors = {}
+        has_needs_dimensions = False
 
         for dest_seller in dest_sellers:
             result = await copy_single_item(
@@ -928,9 +928,21 @@ async def copy_items(
 
             if result["status"] == "success":
                 dest_item_ids[dest_seller] = result["dest_item_id"]
-            else:
-                item_status = "partial" if dest_item_ids else "error"
+            elif result["status"] == "needs_dimensions":
+                has_needs_dimensions = True
                 item_errors[dest_seller] = result["error"]
+            else:
+                item_errors[dest_seller] = result["error"]
+
+        # Determine final status
+        if dest_item_ids and not item_errors:
+            item_status = "success"
+        elif has_needs_dimensions and not dest_item_ids:
+            item_status = "needs_dimensions"
+        elif dest_item_ids and item_errors:
+            item_status = "partial"
+        else:
+            item_status = "error"
 
         # Update the log entry with final results
         try:
