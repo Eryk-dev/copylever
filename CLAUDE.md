@@ -199,6 +199,53 @@ GET    /api/health                 # Health check
 - No test suite — relies on manual testing + PRD acceptance criteria
 - Frontend: TypeScript strict, React 19, Vite, no state management library
 
+## Error Debugging Playbook
+
+When the user reports an error, follow this exact sequence:
+
+### Step 1 — Check error-history.yaml first
+Read `error-history.yaml` → search `ml_error_codes` for the error code. If it's a known error, the fix is already documented. Skip to Step 5.
+
+### Step 2 — Query api_debug_logs (Supabase)
+```sql
+SELECT id, source_item_id, dest_seller, attempt_number, error_message,
+       response_body::text
+FROM api_debug_logs
+WHERE resolved = false
+ORDER BY id DESC LIMIT 10;
+```
+This gives the **exact ML API response** with `cause[]` array. Each cause has `type: "error"` (blocking) or `type: "warning"` (ignore). **Only focus on type="error" entries.**
+
+### Step 3 — Check the request payload
+```sql
+SELECT id, attempt_number, request_payload->'shipping' as shipping,
+       request_payload->'attributes' as attrs
+FROM api_debug_logs WHERE source_item_id = 'MLBxxxxxx' ORDER BY id;
+```
+Compare what we SENT vs what ML REJECTED. The payload shows the exact field causing the error.
+
+### Step 4 — Trace the code path
+The error almost always originates in one of these:
+- **`_build_item_payload()`** (line ~451) — payload construction, attribute filtering, shipping config
+- **`_adjust_payload_for_ml_error()`** (line ~364) — retry adjustments
+- **`copy_single_item()` retry loop** (line ~657) — retry logic, safe_mode rebuild
+- **Shipping block** (line ~536) — mode, local_pick_up, free_shipping
+- **EXCLUDED_ATTRIBUTES set** (line ~86) — which attributes are filtered out
+
+### Step 5 — Fix, document, deploy
+1. Apply the fix in the code
+2. Add entry to `error-history.yaml` (next ERR-XXX id + ml_error_codes if new code)
+3. Commit and push
+
+### Key principles learned:
+- **ML response `cause[]` mixes errors and warnings** — always check `type` field, ignore warnings
+- **ML error messages are inconsistent** — some use [brackets], some don't. Need multiple detection methods
+- **Retry rebuilds lose state** — when safe_mode rebuilds payload, carry over discovered fields (official_store_id)
+- **seller-specific fields can't be copied** — official_store_id, local_pick_up, shipping mode are per-seller
+- **User Products vs Regular Items** — different schemas, different endpoints, different SKU handling
+- **Check both the field AND the attribute** — ML stores data in two places (e.g., seller_custom_field vs SELLER_SKU attribute)
+- **Query the actual item via ML API** when the error is unclear — compare source vs dest item fields
+
 ## Error History (MANDATORY)
 
 **File:** `error-history.yaml` — Structured knowledge base of all errors and corrections.
