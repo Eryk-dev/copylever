@@ -19,7 +19,14 @@ export default function CopyForm({ sourceSellers, destSellers, onCopy, onPreview
   const validDests = destSellers.filter(s => s.token_valid);
   const availableDestinations = validDests.filter(s => s.slug !== source);
 
-  const itemIds = itemIdsText.split(/[\n,]+/).map(id => id.trim()).filter(id => id.length > 0);
+  const itemIds = itemIdsText.split(/[\n,]+/).map(id => {
+    const t = id.trim();
+    if (!t) return '';
+    const m = t.match(/MLB[-]?(\d+)/i);
+    if (m) return `MLB${m[1]}`;
+    if (/^\d+$/.test(t)) return `MLB${t}`;
+    return t;
+  }).filter(id => id.length > 0);
   const canCopy = source && destinations.length > 0 && itemIds.length > 0 && !copying;
   const totalOps = itemIds.length * destinations.length;
 

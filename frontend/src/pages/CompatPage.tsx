@@ -23,6 +23,7 @@ function parseItemId(input: string): string {
   const trimmed = input.trim();
   const match = trimmed.match(/MLB[-]?(\d+)/i);
   if (match) return `MLB${match[1]}`;
+  if (/^\d+$/.test(trimmed)) return `MLB${trimmed}`;
   return trimmed;
 }
 
