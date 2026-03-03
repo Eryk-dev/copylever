@@ -96,13 +96,17 @@ export default function CopyPage({ sellers, headers, user }: Props) {
     }
   }, [headers, loadLogs]);
 
-  const handlePreview = useCallback(async (itemId: string, seller: string) => {
-    if (!itemId.trim() || !seller) return;
+  const handlePreview = useCallback(async (rawId: string, seller: string) => {
+    let itemId = rawId.trim();
+    if (!itemId || !seller) return;
+    const m = itemId.match(/MLB[-]?(\d+)/i);
+    if (m) itemId = `MLB${m[1]}`;
+    else if (/^\d+$/.test(itemId)) itemId = `MLB${itemId}`;
     setPreviewLoading(true);
     setPreviewError('');
     setPreview(null);
     try {
-      const res = await fetch(`${API_BASE}/api/copy/preview/${itemId.trim()}?seller=${encodeURIComponent(seller)}`, { headers: headers(), cache: 'no-store' });
+      const res = await fetch(`${API_BASE}/api/copy/preview/${itemId}?seller=${encodeURIComponent(seller)}`, { headers: headers(), cache: 'no-store' });
       if (!res.ok) { const err = await res.json().catch(() => ({ detail: 'Item nao encontrado' })); setPreviewError(err.detail); return; }
       setPreview(await res.json());
     } catch (e) { setPreviewError(String(e)); }

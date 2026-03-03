@@ -1,6 +1,15 @@
 import { useState } from 'react';
 import type { Seller } from '../lib/api';
 
+function normalizeItemId(raw: string): string {
+  const t = raw.trim();
+  if (!t) return '';
+  const m = t.match(/MLB[-]?(\d+)/i);
+  if (m) return `MLB${m[1]}`;
+  if (/^\d+$/.test(t)) return `MLB${t}`;
+  return t;
+}
+
 interface Props {
   sourceSellers: Seller[];
   destSellers: Seller[];
@@ -19,14 +28,12 @@ export default function CopyForm({ sourceSellers, destSellers, onCopy, onPreview
   const validDests = destSellers.filter(s => s.token_valid);
   const availableDestinations = validDests.filter(s => s.slug !== source);
 
-  const itemIds = itemIdsText.split(/[\n,]+/).map(id => {
-    const t = id.trim();
-    if (!t) return '';
-    const m = t.match(/MLB[-]?(\d+)/i);
-    if (m) return `MLB${m[1]}`;
-    if (/^\d+$/.test(t)) return `MLB${t}`;
-    return t;
-  }).filter(id => id.length > 0);
+  const itemIds = itemIdsText.split(/[\n,]+/).map(normalizeItemId).filter(id => id.length > 0);
+
+  const normalizeAllIds = () => {
+    const normalized = itemIdsText.split(/[\n,]+/).map(normalizeItemId).filter(Boolean).join('\n');
+    if (normalized !== itemIdsText.trim()) setItemIdsText(normalized);
+  };
   const canCopy = source && destinations.length > 0 && itemIds.length > 0 && !copying;
   const totalOps = itemIds.length * destinations.length;
 
@@ -159,11 +166,12 @@ export default function CopyForm({ sourceSellers, destSellers, onCopy, onPreview
       </Field>
 
       {/* Step 3: Item IDs */}
-      <Field label="IDs dos Anuncios (MLB...)" step={3} done={step3Done}>
+      <Field label="IDs dos Anuncios" step={3} done={step3Done}>
         <textarea
           value={itemIdsText}
           onChange={e => { setItemIdsText(e.target.value); setConfirming(false); }}
-          placeholder={"MLB1234567890\nMLB9876543210"}
+          onBlur={normalizeAllIds}
+          placeholder={"1234567890\nMLB9876543210"}
           rows={4}
           className="input-base"
           style={{

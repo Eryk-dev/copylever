@@ -216,11 +216,23 @@ export default function CompatPage({ sellers, headers }: Props) {
           <input
             className="input-base"
             type="text"
-            placeholder="MLB1234567890 ou https://www.mercadolivre.com.br/..."
+            placeholder="1234567890 ou MLB1234567890"
             value={sourceInput}
             onChange={e => setSourceInput(e.target.value)}
-            onBlur={() => sourceInput && handlePreview(sourceInput)}
-            onKeyDown={e => { if (e.key === 'Enter') handlePreview(sourceInput); }}
+            onBlur={() => {
+              if (sourceInput) {
+                const normalized = parseItemId(sourceInput);
+                if (normalized !== sourceInput) setSourceInput(normalized);
+                handlePreview(sourceInput);
+              }
+            }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                const normalized = parseItemId(sourceInput);
+                if (normalized !== sourceInput) setSourceInput(normalized);
+                handlePreview(sourceInput);
+              }
+            }}
             style={{
               padding: 'var(--space-2) var(--space-3)',
               border: '1px solid var(--line)',
