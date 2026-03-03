@@ -423,9 +423,36 @@ error_history:
     file: app/services/item_copier.py
     lesson: "When ML says an attribute is 'not modifiable', add it to EXCLUDED_ATTRIBUTES immediately"
 
+  - id: ERR-019
+    date: "2026-03-03"
+    category: attributes
+    title: "SKU disappears from ML interface for User Product copies"
+    symptom: |
+      After copying a User Product item, the SKU appears initially but then
+      shows as empty/deleted in ML's listing editor after a few minutes.
+      API still returns seller_custom_field with the value, but ML interface
+      reads from the SELLER_SKU attribute, which is missing.
+    ml_error_code: null
+    root_cause: |
+      SELLER_SKU is in EXCLUDED_ATTRIBUTES, so it's filtered out during payload build.
+      The SKU value is placed in seller_custom_field (top-level field), but ML's
+      interface for User Products displays SKU from the SELLER_SKU attribute, not
+      from seller_custom_field.
+      Evidence: all existing items on net-air and netparts-sp have
+      seller_custom_field=None + attr SELLER_SKU=value. Cloned items had
+      seller_custom_field=value + NO SELLER_SKU attr.
+    fix: |
+      For User Product items (is_user_product), explicitly add SELLER_SKU attribute
+      to the payload using the extracted SKU value, in addition to seller_custom_field.
+    file: app/services/item_copier.py
+    lesson: |
+      ML has two places for SKU: seller_custom_field and SELLER_SKU attribute.
+      For User Products, ML interface reads from SELLER_SKU attribute.
+      Must send BOTH seller_custom_field AND SELLER_SKU attribute for User Products.
+
   # ---------- Compatibility Copy ----------
 
-  - id: ERR-019
+  - id: ERR-020
     date: "2025-11"
     category: compat
     commit: ce4be4ec
@@ -447,7 +474,7 @@ error_history:
       - Regular: POST /items/{id}/compatibilities (copies by reference)
       - User Product: POST /user-products/{id}/compatibilities (needs full product data)
 
-  - id: ERR-020
+  - id: ERR-021
     date: "2025-12"
     category: compat
     commit: 447ba255
@@ -463,7 +490,7 @@ error_history:
     file: app/services/ml_api.py
     lesson: "Always implement exponential backoff for ML API — rate limits are common"
 
-  - id: ERR-021
+  - id: ERR-022
     date: "2025-12"
     category: compat
     commit: 389bf271
@@ -475,7 +502,7 @@ error_history:
     file: app/services/compat_copier.py, app/services/ml_api.py
     lesson: "Pace ML API calls at ~1 req/sec for batch operations"
 
-  - id: ERR-022
+  - id: ERR-023
     date: "2026-02"
     category: compat
     commit: 8299406f
@@ -495,7 +522,7 @@ error_history:
 
   # ---------- Seller / Search ----------
 
-  - id: ERR-023
+  - id: ERR-024
     date: "2026-02"
     category: search
     commit: 2c962874
@@ -509,7 +536,7 @@ error_history:
 
   # ---------- Frontend / UI ----------
 
-  - id: ERR-024
+  - id: ERR-025
     date: "2025-12"
     category: frontend
     commit: 142d5e0f
@@ -530,7 +557,7 @@ error_history:
 
   # ---------- Infrastructure ----------
 
-  - id: ERR-025
+  - id: ERR-026
     date: "2025-11"
     category: infra
     commit: 4ac18db2
@@ -591,6 +618,11 @@ patterns:
       - "item.attributes[SELLER_SKU]"
       - "variation.seller_custom_field"
       - "variation.attributes[SELLER_SKU]"
+    sku_write_rules:
+      - "Always set seller_custom_field at top level"
+      - "For User Products: ALSO add SELLER_SKU attribute — ML interface reads from attribute, not field"
+      - "For variations: set seller_custom_field per variation"
+      - "ML interface displays SELLER_SKU attribute for User Products, seller_custom_field for regular items"
 
   ml_api_shipping:
     description: "Shipping configuration rules"

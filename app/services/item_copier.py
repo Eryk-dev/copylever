@@ -507,6 +507,15 @@ def _build_item_payload(item: dict, safe_mode: bool = False) -> dict:
         if attrs:
             payload["attributes"] = attrs
 
+    # For User Products: add SELLER_SKU attribute so ML interface shows the SKU.
+    # seller_custom_field alone is not displayed by ML for User Products.
+    if is_user_product and seller_custom_field:
+        if "attributes" not in payload:
+            payload["attributes"] = []
+        has_sku_attr = any(a.get("id") == "SELLER_SKU" for a in payload["attributes"])
+        if not has_sku_attr:
+            payload["attributes"].append({"id": "SELLER_SKU", "value_name": seller_custom_field})
+
     # Sale terms
     if item.get("sale_terms"):
         terms = []
