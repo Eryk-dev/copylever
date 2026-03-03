@@ -592,25 +592,36 @@ error_history:
     date: "2026-03-03"
     category: preview
     commit: dc7b395
-    title: "Copy preview 403 when item belongs to different seller"
+    title: "Copy preview fails when item belongs to different seller"
     symptom: "Copy preview returns 404 when user selects seller X but item belongs to seller Y"
-    ml_error_code: "403 Forbidden on GET /items/{id}"
-    root_cause: "get_item() uses seller's token; if item belongs to another seller, ML returns 403"
-    fix: "Catch MlApiError 403, resolve actual owner via public API, retry with correct token"
+    ml_error_code: "403 Forbidden on GET /items/{id} OR PA_UNAUTHORIZED_RESULT_FROM_POLICIES"
+    root_cause: "get_item() uses seller's token; policy-restricted items return 403 even with valid auth from non-owner"
+    fix: "v1: public API resolve (failed for policy-restricted items). v2: try all connected sellers' tokens until one succeeds"
     file: app/routers/copy.py
-    lesson: "Items may belong to a different seller than the one selected in the UI — always auto-detect on 403"
+    lesson: "Public ML API returns 403 for policy-restricted items — must use authenticated fallback through all sellers"
 
   - id: ERR-029
     date: "2026-03-03"
     category: preview
     commit: 21d7d8b
-    title: "Compat preview 403 when item belongs to different seller"
+    title: "Compat preview fails when item belongs to different seller"
     symptom: "Compat preview returns 404 for items not owned by the selected seller (e.g. 141air)"
-    ml_error_code: "403 Forbidden on GET /items/{id}"
-    root_cause: "Same as ERR-028 but in compat preview endpoint — no auto-detect logic"
-    fix: "Added same MlApiError 403 catch + _resolve_item_seller() auto-detect to compat preview"
+    ml_error_code: "403 Forbidden on GET /items/{id} OR PA_UNAUTHORIZED_RESULT_FROM_POLICIES"
+    root_cause: "Same as ERR-028 — policy-restricted items can only be read by owner's token"
+    fix: "v1: public API resolve (failed). v2: try all connected sellers' tokens until one succeeds"
     file: app/routers/compat.py
-    lesson: "Both preview endpoints (copy + compat) must handle cross-seller item lookups"
+    lesson: "Both preview endpoints must handle cross-seller lookups via authenticated fallback"
+
+  - id: ERR-030
+    date: "2026-03-03"
+    category: preview
+    title: "Public ML API fails for policy-restricted items (PA_UNAUTHORIZED_RESULT_FROM_POLICIES)"
+    symptom: "_resolve_item_seller via public API returns 403 for items with ML policy restrictions"
+    ml_error_code: "PA_UNAUTHORIZED_RESULT_FROM_POLICIES (403)"
+    root_cause: "ML policy agent blocks unauthenticated access to certain items; public API cannot resolve seller_id"
+    fix: "Replaced public API approach with authenticated brute-force: try all connected sellers' tokens"
+    file: app/routers/copy.py, app/routers/compat.py
+    lesson: "NEVER rely on public ML API for item resolution — some items require auth. Always use authenticated fallback."
 
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.
