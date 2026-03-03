@@ -1,6 +1,7 @@
 """
 Copy endpoints — POST /api/copy, GET /api/copy/logs, GET /api/copy/preview
 """
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,23 +17,35 @@ router = APIRouter(prefix="/api/copy", tags=["copy"])
 
 
 async def _resolve_item_seller(item_id: str, skip_seller: str | None = None) -> tuple[str | None, dict | None]:
-    """Try all connected sellers to find one that can fetch the item.
+    """Try all connected sellers IN PARALLEL to find one that can fetch the item.
 
-    Returns (seller_slug, item_data) or (None, None).
+    Returns (seller_slug, item_data) from the first seller that succeeds, or (None, None).
     """
     db = get_db()
     sellers = db.table("copy_sellers").select("slug").eq("active", True).execute()
     if not sellers.data:
         return None, None
-    for row in sellers.data:
-        slug = row["slug"]
-        if slug == skip_seller:
-            continue
+
+    slugs = [r["slug"] for r in sellers.data if r["slug"] != skip_seller]
+    if not slugs:
+        return None, None
+
+    async def _try(slug: str) -> tuple[str, dict]:
+        item = await get_item(slug, item_id)
+        return slug, item
+
+    tasks = [asyncio.create_task(_try(s)) for s in slugs]
+
+    # Return the first successful result, cancel the rest
+    for coro in asyncio.as_completed(tasks):
         try:
-            item = await get_item(slug, item_id)
+            slug, item = await coro
+            for t in tasks:
+                t.cancel()
             return slug, item
         except Exception:
             continue
+
     return None, None
 
 
