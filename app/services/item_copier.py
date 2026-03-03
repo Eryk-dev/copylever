@@ -94,6 +94,7 @@ EXCLUDED_ATTRIBUTES = {
     "SHIPMENT_PACKING",     # auto-calculated shipping type
     "CATALOG_TITLE",        # catalog-managed title
     "PRODUCT_FEATURES",     # catalog-managed features
+    "HAS_COMPATIBILITIES",  # read-only, ML ignores it
 }
 
 # Top-level fields to NOT copy (auto-generated)
@@ -491,8 +492,8 @@ def _build_item_payload(item: dict, safe_mode: bool = False) -> dict:
     if item.get("attributes"):
         attrs = []
         for attr in item["attributes"]:
-            attr_id = attr.get("id", "")
-            if attr_id in EXCLUDED_ATTRIBUTES:
+            attr_id = attr.get("id") or ""
+            if not attr_id or attr_id in EXCLUDED_ATTRIBUTES:
                 continue
             value_id, value_name = _extract_value_pair(attr)
             if not value_id and not value_name:
@@ -751,6 +752,9 @@ async def copy_single_item(
                             title = _clean_text(item.get("title"))
                             if title:
                                 safe_payload["title"] = title
+                    # Preserve official_store_id discovered in earlier retries
+                    if payload.get("official_store_id") and not safe_payload.get("official_store_id"):
+                        safe_payload["official_store_id"] = payload["official_store_id"]
                     if safe_payload != payload:
                         safe_mode_retry_used = True
                         logger.warning(
