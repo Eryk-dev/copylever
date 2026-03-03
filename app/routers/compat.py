@@ -3,16 +3,34 @@ Compat endpoints — preview, search-sku, copy, logs for vehicle compatibilities
 """
 import logging
 
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.db.supabase import get_db
 from app.routers.auth import require_user
 from app.services.compat_copier import copy_compat_to_targets, search_sku_all_sellers
-from app.services.ml_api import get_item, get_item_compatibilities
+from app.services.ml_api import MlApiError, get_item, get_item_compatibilities
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/compat", tags=["compat"])
+
+
+async def _resolve_item_seller(item_id: str) -> str | None:
+    """Fetch item publicly to find its seller_id, then match to a connected seller."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"https://api.mercadolibre.com/items/{item_id}")
+            if resp.status_code != 200:
+                return None
+            seller_id = resp.json().get("seller_id")
+            if not seller_id:
+                return None
+        db = get_db()
+        row = db.table("copy_sellers").select("slug").eq("ml_user_id", str(seller_id)).eq("active", True).maybe_single().execute()
+        return row.data["slug"] if row.data else None
+    except Exception:
+        return None
 
 
 @router.get("/preview/{item_id}")
@@ -31,6 +49,19 @@ async def preview_item(item_id: str, seller: str = Query(None), user: dict = Dep
 
     try:
         item = await get_item(seller, item_id)
+    except MlApiError as e:
+        if e.status_code == 403:
+            resolved_seller = await _resolve_item_seller(item_id)
+            if resolved_seller and resolved_seller != seller:
+                seller = resolved_seller
+                try:
+                    item = await get_item(seller, item_id)
+                except Exception as e2:
+                    raise HTTPException(status_code=404, detail=f"Item not found: {e2}")
+            else:
+                raise HTTPException(status_code=404, detail=f"Item not found: {e}")
+        else:
+            raise HTTPException(status_code=404, detail=f"Item not found: {e}")
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"Item not found: {e}")
 
@@ -80,6 +111,7 @@ async def preview_item(item_id: str, seller: str = Query(None), user: dict = Dep
         "has_compatibilities": has_compatibilities,
         "compat_count": compat_count,
         "skus": unique_skus,
+        "seller": seller,
     }
 
 

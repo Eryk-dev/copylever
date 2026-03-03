@@ -588,6 +588,30 @@ error_history:
     file: app/main.py, app/routers/auth_ml.py
     lesson: "Add route aliases when deploying behind reverse proxies"
 
+  - id: ERR-028
+    date: "2026-03-03"
+    category: preview
+    commit: pending
+    title: "Copy preview 403 when item belongs to different seller"
+    symptom: "Copy preview returns 404 when user selects seller X but item belongs to seller Y"
+    ml_error_code: "403 Forbidden on GET /items/{id}"
+    root_cause: "get_item() uses seller's token; if item belongs to another seller, ML returns 403"
+    fix: "Catch MlApiError 403, resolve actual owner via public API, retry with correct token"
+    file: app/routers/copy.py
+    lesson: "Items may belong to a different seller than the one selected in the UI — always auto-detect on 403"
+
+  - id: ERR-029
+    date: "2026-03-03"
+    category: preview
+    commit: pending
+    title: "Compat preview 403 when item belongs to different seller"
+    symptom: "Compat preview returns 404 for items not owned by the selected seller (e.g. 141air)"
+    ml_error_code: "403 Forbidden on GET /items/{id}"
+    root_cause: "Same as ERR-028 but in compat preview endpoint — no auto-detect logic"
+    fix: "Added same MlApiError 403 catch + _resolve_item_seller() auto-detect to compat preview"
+    file: app/routers/compat.py
+    lesson: "Both preview endpoints (copy + compat) must handle cross-seller item lookups"
+
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.
 patterns:
