@@ -591,7 +591,7 @@ error_history:
   - id: ERR-028
     date: "2026-03-03"
     category: preview
-    commit: pending
+    commit: dc7b395
     title: "Copy preview 403 when item belongs to different seller"
     symptom: "Copy preview returns 404 when user selects seller X but item belongs to seller Y"
     ml_error_code: "403 Forbidden on GET /items/{id}"
@@ -603,7 +603,7 @@ error_history:
   - id: ERR-029
     date: "2026-03-03"
     category: preview
-    commit: pending
+    commit: 21d7d8b
     title: "Compat preview 403 when item belongs to different seller"
     symptom: "Compat preview returns 404 for items not owned by the selected seller (e.g. 141air)"
     ml_error_code: "403 Forbidden on GET /items/{id}"
