@@ -534,11 +534,12 @@ def _build_item_payload(item: dict, safe_mode: bool = False) -> dict:
             payload["sale_terms"] = terms
 
     # Shipping — always use me2; me1 (Full) is seller-specific
+    # local_pick_up forced false — multi-warehouse sellers reject it
     if item.get("shipping"):
         ship = item["shipping"]
         payload["shipping"] = {
             "mode": "me2",
-            "local_pick_up": ship.get("local_pick_up", False),
+            "local_pick_up": False,
             "free_shipping": ship.get("free_shipping", False),
         }
 

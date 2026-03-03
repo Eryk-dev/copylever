@@ -59,6 +59,12 @@ ml_error_codes:
       severity: blocking
       notes: ML doesn't use [brackets] in this message, so regex extraction fails
 
+    item.shipping.local_pick_up.not_allowed:
+      message: "local pick up not allowed for multi warehouse seller"
+      cause: Source item has local_pick_up=true but dest seller is multi-warehouse
+      fix_applied: Force local_pick_up=false always (seller-specific physical setting)
+      severity: blocking
+
     item.channels.invalid:
       message: "user is not allowed to use this channel"
       cause: Source item has channels (e.g. marketplace) that dest seller can't use
@@ -555,9 +561,22 @@ error_history:
     file: frontend/src/pages/CompatPage.tsx
     lesson: "Always verify DB migrations are applied. Separate error states for different UI actions."
 
+  - id: ERR-026
+    date: "2026-03-03"
+    category: item_copy
+    title: "local_pick_up rejected for multi-warehouse sellers"
+    symptom: "Copy net-air → netparts-sp fails: 'local pick up not allowed for multi warehouse seller'"
+    ml_error_code: item.shipping.local_pick_up.not_allowed
+    root_cause: |
+      Source item (net-air) has local_pick_up: true. Code copied this value to the payload.
+      Destination seller (netparts-sp) is multi-warehouse and rejects local_pick_up.
+    fix: "Force local_pick_up: false always — it's a seller-specific physical setting that can't be copied"
+    file: app/services/item_copier.py
+    lesson: "local_pick_up depends on the seller's physical setup, not the item. Always set false on copy."
+
   # ---------- Infrastructure ----------
 
-  - id: ERR-026
+  - id: ERR-027
     date: "2025-11"
     category: infra
     commit: 4ac18db2
