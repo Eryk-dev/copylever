@@ -198,3 +198,16 @@ GET    /api/health                 # Health check
 - Error messages in Portuguese (user-facing), English (logs/code)
 - No test suite — relies on manual testing + PRD acceptance criteria
 - Frontend: TypeScript strict, React 19, Vite, no state management library
+
+## Error History (MANDATORY)
+
+**File:** `error-history.yaml` — Structured knowledge base of all errors and corrections.
+
+**RULE: Every time you fix a bug or handle a new ML API error, you MUST:**
+1. Add a new entry to `error-history.yaml` under `error_history` with the next ERR-XXX id
+2. If it involves a new ML error code, add it to `ml_error_codes`
+3. If it reveals a new pattern, update the `patterns` section
+4. Update `unresolved` section if applicable (add new or mark as fixed)
+5. Update this CLAUDE.md if the fix changes any documented behavior (e.g., new excluded attributes, new retry logic, new API patterns)
+
+**This file is the primary source of truth for AI-assisted debugging.** Before investigating any error, consult `error-history.yaml` first — the fix may already be documented.

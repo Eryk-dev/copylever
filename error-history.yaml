@@ -1,0 +1,657 @@
+# ============================================================================
+# ERROR HISTORY & CORRECTIONS — Copy Anuncios ML
+# ============================================================================
+# Structured knowledge base for AI-assisted debugging.
+# Each entry documents a real production error, its root cause, and the fix.
+#
+# HOW TO USE THIS FILE:
+# 1. When a new ML API error appears, search ml_error_codes for the code
+# 2. Check if the error matches an existing pattern in error_history
+# 3. If it's new, add an entry following the same structure
+# 4. The retry_system section documents how the auto-retry loop works
+#
+# Last updated: 2026-03-03
+# ============================================================================
+
+# ── Quick reference: ML API error codes we've encountered ──────────────────
+# Use this as a lookup table when diagnosing new errors.
+ml_error_codes:
+  # BLOCKING ERRORS (type: "error") — these cause HTTP 400 and must be fixed
+  errors:
+    item.attribute.invalid:
+      message: "Attribute id cannot be null or empty for attribute with name: unnamed"
+      cause: Source item has attributes with null/empty id field
+      fix_applied: Filter out attrs where id is null/empty in _build_item_payload
+      severity: blocking
+
+    item.attribute.name.invalid:
+      message: "Name of attribute null was not provided and couldn't be resolved"
+      cause: Same root — attribute with null id gets sent, ML can't resolve its name
+      fix_applied: Same filter as item.attribute.invalid
+      severity: blocking
+
+    item.official_store_id.invalid:
+      message: "Users type brand have to provide a official store id"
+      cause: Destination seller is a brand account (conta marca) and needs official_store_id
+      fix_applied: Auto-detect error → fetch official_store_id from dest seller's active items → cache in DB
+      severity: blocking
+      notes: Each brand account has its own unique official_store_id
+
+    body.required_fields_family_name:
+      ml_code: "body.required_fields"
+      message: "The body does not contain [family_name]"
+      cause: Dest seller expects User Product format but payload has title instead
+      fix_applied: Auto-detect → add family_name from source item
+      severity: blocking
+
+    body.invalid_fields_title:
+      ml_code: "body.invalid_fields"
+      message: "The fields [title] are invalid for requested call"
+      cause: Item is User Product type — title not accepted, needs family_name
+      fix_applied: Remove title → add family_name as fallback
+      severity: blocking
+
+    body.invalid_fields_family_name:
+      ml_code: "body.invalid_fields"
+      message: "The field family name is invalid"
+      cause: Destination is regular account — family_name not accepted, needs title
+      fix_applied: Remove family_name → fall back to title
+      severity: blocking
+      notes: ML doesn't use [brackets] in this message, so regex extraction fails
+
+    item.channels.invalid:
+      message: "user is not allowed to use this channel"
+      cause: Source item has channels (e.g. marketplace) that dest seller can't use
+      fix_applied: safe_mode strips channels field
+      severity: blocking
+
+    item.attribute.missing.seller.package.dimensions:
+      message: "The attributes [seller_package_height, width, length, weight] are all required"
+      cause: Item has no shipping dimensions — ML requires them for certain categories
+      fix_applied: Detect error → return needs_dimensions status → prompt user for dimensions
+      severity: blocking
+      notes: User must provide dimensions manually via /api/copy/with-dimensions
+
+  # WARNINGS (type: "warning") — ML returns HTTP 400 but these are NOT blocking
+  # They appear alongside real errors but do NOT cause the failure
+  warnings:
+    shipping.lost_me1_by_user:
+      message: "User has not mode me1"
+      cause: Dest seller doesn't have Mercado Envios Full (me1). We already send mode=me2.
+      action: Ignore — not blocking, just informational
+
+    item.shipping.mandatory_free_shipping:
+      message: "Mandatory free shipping added"
+      cause: ML auto-adds free shipping for certain price ranges or categories
+      action: Ignore — ML handles it automatically
+
+    item.available_quantity.ignored:
+      message: "available_quantity field is ignored for multi warehouse seller"
+      cause: Dest seller uses multi-warehouse — stock managed per warehouse, not per item
+      action: Ignore — ML handles it automatically
+
+    item.attributes.ignored:
+      message: "Attribute [X] ignored because it is not modifiable"
+      cause: Read-only attribute was included in payload (e.g. HAS_COMPATIBILITIES)
+      action: Add to EXCLUDED_ATTRIBUTES set to keep payload clean
+
+# ── Retry system documentation ─────────────────────────────────────────────
+retry_system:
+  location: "app/services/item_copier.py → copy_single_item()"
+  max_attempts: 4
+  flow:
+    attempt_1: "Normal payload from _build_item_payload()"
+    attempt_2: "Adjusted payload — _adjust_payload_for_ml_error() strips/adds fields based on error"
+    attempt_3: "Safe mode payload — _build_item_payload(safe_mode=True) strips channels, non-SKU variation attrs"
+    attempt_4: "Safe mode + adjustments — last chance"
+  adjustments_available:
+    - "Remove invalid top-level fields (title, family_name, variations, channels, etc.)"
+    - "Add family_name when title is rejected (User Product flow)"
+    - "Add title when family_name is rejected (regular item flow)"
+    - "Add official_store_id when brand account error detected"
+    - "Force free_shipping for brand accounts"
+    - "Remove shipping.methods if invalid"
+  known_pitfall: |
+    When safe_mode rebuilds the payload from scratch, it loses any fields
+    added by earlier retry adjustments (e.g. official_store_id). Must explicitly
+    carry over discovered values. Fixed in commit 687d4b8b.
+
+# ── Error history — chronological ──────────────────────────────────────────
+error_history:
+
+  # ---------- OAuth / Authentication ----------
+
+  - id: ERR-001
+    date: "2025-11"
+    category: oauth
+    commit: abd3ab26
+    title: "Missing refresh_token crashes OAuth callback"
+    symptom: "KeyError on token_data['refresh_token'] during ML OAuth exchange"
+    ml_error_code: null
+    root_cause: |
+      ML OAuth response may not include refresh_token depending on app configuration.
+      Code used direct dict key access (token_data["refresh_token"]) which crashes on missing key.
+    fix: "Use .get() for safe access instead of direct key indexing"
+    file: app/routers/auth_ml.py
+    lesson: "Never assume optional fields exist in OAuth responses — always use .get()"
+
+  - id: ERR-002
+    date: "2025-11"
+    category: oauth
+    commit: 94e89cdb
+    title: "Token refresh silently loses refresh_token"
+    symptom: "After token refresh, refresh_token becomes NULL in DB — next refresh fails permanently"
+    ml_error_code: null
+    root_cause: |
+      Token refresh response from ML sometimes omits refresh_token (only returns access_token).
+      Code was overwriting DB with None, destroying the valid refresh_token.
+    fix: |
+      - Callback rejects with 502 if initial exchange has no refresh_token (fail fast)
+      - Token refresh preserves existing refresh_token if response omits it
+    file: app/routers/auth_ml.py, app/services/ml_api.py
+    lesson: "Preserve existing tokens when refresh response omits them"
+
+  - id: ERR-003
+    date: "2025-12"
+    category: oauth
+    commit: 394fd251
+    title: "OAuth token exchange uses wrong endpoint and content type"
+    symptom: "Token exchange returns 400 or missing refresh_token"
+    ml_error_code: null
+    root_cause: |
+      ML OAuth /oauth/token endpoint expects JSON body (not form-encoded).
+      Also, the endpoint should be api.mercadopago.com for token operations.
+    fix: |
+      - Switch to JSON body instead of form-encoded
+      - Use api.mercadopago.com endpoint
+      - Clear tokens on 400/401 refresh failure
+      - Always persist new refresh_token
+    file: app/services/ml_api.py
+    lesson: "ML uses api.mercadopago.com for OAuth tokens, with JSON body"
+
+  - id: ERR-004
+    date: "2025-12"
+    category: oauth
+    commit: 073bbe3b
+    title: "Seller re-auth lockout after disconnect"
+    symptom: "After disconnecting a seller and re-authenticating, the OAuth callback can't find the seller record"
+    ml_error_code: null
+    root_cause: |
+      The .or_() query to find existing sellers was fragile. Soft-deleted sellers
+      weren't found on re-authentication, so a new row was created with conflicts.
+    fix: |
+      - Use explicit ml_user_id + slug lookups instead of .or_()
+      - Preserve existing refresh_token on re-auth
+      - Update seller name on re-auth
+      - Add active status check in _get_token
+    file: app/routers/auth_ml.py, app/services/ml_api.py
+    lesson: "Soft-deleted records must be findable for re-authentication flows"
+
+  # ---------- Item Copy — Payload Building ----------
+
+  - id: ERR-005
+    date: "2025-11"
+    category: item_copy
+    commit: 3d1814ed
+    title: "family_name missing from item creation payload"
+    symptom: "User Product items fail to create — ML requires family_name"
+    ml_error_code: body.required_fields
+    root_cause: "family_name field was not included in _build_item_payload at all"
+    fix: "Add family_name to payload when source item has it or is User Product type"
+    file: app/services/item_copier.py
+    lesson: "User Product items (tag: user_product_listing) require family_name, not title"
+
+  - id: ERR-006
+    date: "2025-11"
+    category: item_copy
+    commit: 83a8aa13
+    title: "User Product payload incompatible with regular item format"
+    symptom: "Items with user_product_listing tag fail on create — title rejected, family_name required"
+    ml_error_code: body.invalid_fields
+    root_cause: |
+      User Products use a different payload schema than regular items.
+      They need family_name instead of title, and don't accept variations on create.
+    fix: |
+      - Detect User Product items via tags or family_name presence
+      - Skip title for User Products, use family_name
+      - Skip variations for User Products on create
+      - Add adaptive retry that toggles between title/family_name
+    file: app/services/item_copier.py, app/services/ml_api.py
+    lesson: |
+      ML has two item types with different schemas:
+      - Regular items: use title, accept variations
+      - User Products: use family_name, no variations on create
+
+  - id: ERR-007
+    date: "2025-12"
+    category: item_copy
+    commit: 2c5cdba1
+    title: "Retry loop re-adds invalid family_name"
+    symptom: "After ML rejects family_name, retry adds it back — infinite loop of same error"
+    ml_error_code: body.invalid_fields
+    root_cause: |
+      When ML says family_name is invalid, the adjustment logic was adding it back
+      because it was also detected as a required field.
+    fix: "Track force_no_family_name flag to prevent re-adding after rejection"
+    file: app/services/item_copier.py
+    lesson: "Retry adjustments must track what was already tried to avoid loops"
+
+  - id: ERR-008
+    date: "2025-12"
+    category: item_copy
+    commit: 4552fb2e
+    title: "family_name invalid error not detected (no brackets in ML message)"
+    symptom: "ML says 'The field family name is invalid' but retry doesn't detect it as family_name error"
+    ml_error_code: body.invalid_fields
+    root_cause: |
+      The regex-based field extraction (_extract_fields_from_text) looks for [brackets]
+      but ML says "family name" without brackets in this specific error message.
+    fix: "Add dedicated _is_family_name_invalid_error() that checks for 'family name' + 'invalid' in text"
+    file: app/services/item_copier.py
+    lesson: "ML error messages are inconsistent — some use [brackets], some don't. Need multiple detection methods."
+
+  - id: ERR-009
+    date: "2025-11"
+    category: item_copy
+    commit: 62ca15b0
+    title: "Opaque ML error messages — can't debug failures"
+    symptom: "Copy fails with generic error, no way to see what payload was sent or what ML returned"
+    ml_error_code: various
+    root_cause: "Error handling only captured status_code, not the full response body or request payload"
+    fix: |
+      - Add detailed MlApiError with status_code, method, url, detail, payload
+      - Add resilient payload building that strips problematic fields
+    file: app/services/item_copier.py, app/services/ml_api.py
+    lesson: "Always capture full request/response for API errors — essential for debugging"
+
+  - id: ERR-010
+    date: "2026-01"
+    category: item_copy
+    commit: 545b652f
+    title: "No persistent debug logs for failed API calls"
+    symptom: "Errors are logged to stdout but lost on container restart — can't analyze patterns"
+    ml_error_code: various
+    root_cause: "Only had ephemeral logging, no persistent storage of API failures"
+    fix: |
+      - Created api_debug_logs Supabase table (migration 005)
+      - Stores: action, sellers, item_ids, method, url, request_payload, response_body,
+        status_code, error_message, attempt_number, adjustments, resolved flag
+      - Wired into item_copier retry loop, description, and compat operations
+    file: app/db/migrations/005_api_debug_logs.sql, app/services/item_copier.py
+    lesson: "Persistent debug logs are critical — store full request/response JSONB for every failure"
+
+  # ---------- Item Copy — Brand Accounts (official_store_id) ----------
+
+  - id: ERR-011
+    date: "2025-12"
+    category: brand_account
+    commit: e369df6a
+    title: "Brand accounts need official_store_id in payload"
+    symptom: "Copy to brand sellers (autofy, 141air) fails with 'Users type brand have to provide a official store id'"
+    ml_error_code: item.official_store_id.invalid
+    root_cause: |
+      Brand-type ML accounts require official_store_id in the item creation payload.
+      The field was in SKIP_FIELDS (excluded from copy) because it's seller-specific.
+    fix: |
+      - Detect official_store_id error in retry loop
+      - Auto-fetch dest seller's official_store_id via GET /users/me
+      - Add to payload and retry
+    file: app/services/item_copier.py, app/services/ml_api.py
+    lesson: "official_store_id is per-seller — must be fetched from destination, not copied from source"
+
+  - id: ERR-012
+    date: "2025-12"
+    category: brand_account
+    commit: a9dce53d
+    title: "GET /users/me doesn't return official_store_id"
+    symptom: "After ERR-011 fix, official_store_id still null — /users/me doesn't have it"
+    ml_error_code: item.official_store_id.invalid
+    root_cause: |
+      The ML /users/me endpoint does NOT return official_store_id.
+      It's only available on individual item responses.
+    fix: |
+      - Fetch via /users/{id}/items/search → get an existing item → read its official_store_id
+      - Also force free_shipping=true for brand accounts (mandatory_free_shipping requirement)
+    file: app/services/item_copier.py, app/services/ml_api.py
+    lesson: "official_store_id is on items, not on /users/me. Fetch from seller's existing items."
+
+  - id: ERR-013
+    date: "2026-02"
+    category: brand_account
+    commit: 11cd2385
+    title: "official_store_id lookup fails — searches inactive items"
+    symptom: "Copy to 141air fails — searched 1 item but it was inactive/paused with no official_store_id"
+    ml_error_code: item.official_store_id.invalid
+    root_cause: |
+      get_seller_official_store_id searched items without filtering by status.
+      Inactive/paused items may not have official_store_id populated.
+    fix: |
+      - Filter search to status=active items only
+      - Search up to 5 items instead of 1
+      - Cache result in copy_sellers.official_store_id column (new migration 006)
+      - Fail fast with clear error if not found after checking all items
+    file: app/services/ml_api.py, app/db/migrations/006_seller_official_store_id.sql
+    lesson: "Always filter for active items when searching for seller metadata"
+
+  - id: ERR-014
+    date: "2026-03-03"
+    category: brand_account
+    commit: 687d4b8b
+    title: "Safe mode rebuild loses official_store_id"
+    symptom: |
+      Retry attempt 1 discovers official_store_id, attempt 2 has it, but attempt 3
+      (safe mode) loses it because _build_item_payload rebuilds from scratch.
+      Error cycles: found → lost → found → lost.
+    ml_error_code: item.official_store_id.invalid
+    root_cause: |
+      Safe mode retry at line 742 calls _build_item_payload(item, safe_mode=True)
+      which creates a fresh payload. official_store_id (discovered during attempt 1)
+      is not in the source item data, so it's lost.
+    fix: "Carry over payload.get('official_store_id') to safe_payload before retry"
+    file: app/services/item_copier.py
+    lesson: "When rebuilding payloads for retry, preserve dynamically discovered fields"
+
+  # ---------- Item Copy — Attribute Filtering ----------
+
+  - id: ERR-015
+    date: "2025-11"
+    category: attributes
+    commit: bab5edb4
+    title: "SKU attribute variants not handled in item copy"
+    symptom: "Copied items lose their SKU or have incorrect SKU format"
+    ml_error_code: null
+    root_cause: |
+      ML stores SKU in multiple places and formats:
+      - item.seller_custom_field (top-level)
+      - item.attributes with id=SELLER_SKU (nested values structure)
+      - variation.seller_custom_field
+      - variation.attributes with id=SELLER_SKU
+      Code only checked some of these locations.
+    fix: "Add comprehensive SKU extraction: _extract_value_pair handles nested values + value_struct"
+    file: app/services/item_copier.py
+    lesson: |
+      ML attribute values can be in 3 formats:
+      1. Direct: {value_id, value_name}
+      2. Nested: {values: [{id, name}]}
+      3. Struct: {value_struct: {number, unit}}
+
+  - id: ERR-016
+    date: "2025-12"
+    category: attributes
+    commit: 474debd6
+    title: "SKU not extracted from item-level attributes"
+    symptom: "Items without variations have no SKU after copy — SKU search can't find them"
+    ml_error_code: null
+    root_cause: |
+      _get_item_seller_custom_field only checked seller_custom_field (top-level)
+      and variation attributes. For items without variations, SKU lives in
+      item.attributes with id=SELLER_SKU.
+    fix: "Add check for SELLER_SKU in item.attributes (root level) as second fallback"
+    file: app/routers/compat.py
+    lesson: "SKU extraction order: seller_custom_field → item attributes → variation fields"
+
+  - id: ERR-017
+    date: "2026-03-03"
+    category: attributes
+    commit: 687d4b8b
+    title: "Attributes with null id pass through filter"
+    symptom: |
+      Source items have {"id": null, "value_name": "2010 2011..."} attribute.
+      ML rejects: "Attribute id cannot be null or empty for attribute with name: unnamed"
+    ml_error_code: item.attribute.invalid
+    root_cause: |
+      _build_item_payload used attr.get("id", "") which returns None when JSON has "id": null.
+      None is not in EXCLUDED_ATTRIBUTES set, so it passes through.
+      The resulting payload has {"id": null, "value_name": "..."} which ML rejects.
+    fix: |
+      Changed to: attr_id = attr.get("id") or ""
+      Added: if not attr_id → continue (skip empty/null ids)
+    file: app/services/item_copier.py
+    lesson: |
+      JSON null becomes Python None, not "". Always use `or ""` pattern when
+      you need to treat None and "" the same way. Then check `if not attr_id`.
+
+  - id: ERR-018
+    date: "2026-03-03"
+    category: attributes
+    commit: 687d4b8b
+    title: "HAS_COMPATIBILITIES not in excluded attributes list"
+    symptom: "ML returns warning: 'Attribute [HAS_COMPATIBILITIES] ignored because it is not modifiable'"
+    ml_error_code: item.attributes.ignored
+    root_cause: "HAS_COMPATIBILITIES was not in EXCLUDED_ATTRIBUTES set — sent to ML and ignored"
+    fix: "Added 'HAS_COMPATIBILITIES' to EXCLUDED_ATTRIBUTES"
+    file: app/services/item_copier.py
+    lesson: "When ML says an attribute is 'not modifiable', add it to EXCLUDED_ATTRIBUTES immediately"
+
+  # ---------- Compatibility Copy ----------
+
+  - id: ERR-019
+    date: "2025-11"
+    category: compat
+    commit: ce4be4ec
+    title: "User Product items reject POST /items/{id}/compatibilities"
+    symptom: "Compat copy fails with 400 for User Product items"
+    ml_error_code: null
+    root_cause: |
+      User Product items use a different compatibility endpoint:
+      /user-products/{user_product_id}/compatibilities
+      instead of /items/{item_id}/compatibilities.
+    fix: |
+      - Detect 400 error on regular endpoint
+      - Resolve user_product_id from item
+      - Pre-fetch source compats with source seller token
+      - POST to /user-products/{up_id}/compatibilities in batches of 200
+    file: app/services/ml_api.py, app/services/compat_copier.py
+    lesson: |
+      ML has two compatibility endpoints:
+      - Regular: POST /items/{id}/compatibilities (copies by reference)
+      - User Product: POST /user-products/{id}/compatibilities (needs full product data)
+
+  - id: ERR-020
+    date: "2025-12"
+    category: compat
+    commit: 447ba255
+    title: "429 rate limit kills compat copy with no retry"
+    symptom: "Compat copy fails mid-batch with 429 Too Many Requests"
+    ml_error_code: null
+    root_cause: "No retry logic for 429 responses — request fails immediately"
+    fix: |
+      - Add _post_with_retry with exponential backoff (3s, 6s, 12s, 24s)
+      - Respect Retry-After header
+      - Max 5 retries
+      - Also detect 403 "seller of the user product" as User Product trigger
+    file: app/services/ml_api.py
+    lesson: "Always implement exponential backoff for ML API — rate limits are common"
+
+  - id: ERR-021
+    date: "2025-12"
+    category: compat
+    commit: 389bf271
+    title: "Compat copy hits rate limit on batch operations"
+    symptom: "Multiple 429 errors when copying compats across many targets"
+    ml_error_code: null
+    root_cause: "No pacing between requests — fires all requests as fast as possible"
+    fix: "Add 1-second delay between each target and between each batch POST"
+    file: app/services/compat_copier.py, app/services/ml_api.py
+    lesson: "Pace ML API calls at ~1 req/sec for batch operations"
+
+  - id: ERR-022
+    date: "2026-02"
+    category: compat
+    commit: 8299406f
+    title: "Compat copy fails for User Product items during item copy flow"
+    symptom: "Item copies successfully but compat copy fails with 'no source compat products were provided'"
+    ml_error_code: null
+    root_cause: |
+      copy_single_item copies compats after creating the item, but for User Products
+      the compat flow needs source_compat_products pre-fetched with the source seller's token.
+      This parameter wasn't being passed through.
+    fix: |
+      - Pre-fetch source compat products before calling copy_item_compatibilities
+      - Pass source_compat_products parameter through
+      - Fix has_compat check: verify products list is non-empty (not just bool(dict))
+    file: app/services/item_copier.py
+    lesson: "User Product compat requires source data pre-fetched — can't copy by reference"
+
+  # ---------- Seller / Search ----------
+
+  - id: ERR-023
+    date: "2026-02"
+    category: search
+    commit: 2c962874
+    title: "SKU search crashes on inactive sellers"
+    symptom: "Search by SKU crashes when iterating sellers — one inactive seller breaks the whole search"
+    ml_error_code: null
+    root_cause: "Seller list included inactive/disconnected sellers whose tokens are invalid"
+    fix: "Filter to active sellers only + wrap each seller search in try/except"
+    file: app/services/compat_copier.py
+    lesson: "Always filter for active=true when iterating sellers, and handle per-seller errors gracefully"
+
+  # ---------- Frontend / UI ----------
+
+  - id: ERR-024
+    date: "2025-12"
+    category: frontend
+    commit: 142d5e0f
+    title: "Compat copy fails silently — missing DB column"
+    symptom: "Compat copy button does nothing — no error shown, no results"
+    ml_error_code: null
+    root_cause: |
+      Two issues:
+      1. compat_logs table was missing 'status' column (migration 003 never applied)
+         causing INSERT to fail silently
+      2. Errors were shown in Preview card instead of near the copy button
+    fix: |
+      - Applied ALTER TABLE to add status column + backfilled existing rows
+      - Added dedicated copyError state for copy/search errors
+      - Preview card only shows preview-related errors
+    file: frontend/src/pages/CompatPage.tsx
+    lesson: "Always verify DB migrations are applied. Separate error states for different UI actions."
+
+  # ---------- Infrastructure ----------
+
+  - id: ERR-025
+    date: "2025-11"
+    category: infra
+    commit: 4ac18db2
+    title: "OAuth and health routes not accessible behind proxy"
+    symptom: "OAuth callback and health check fail when behind Easypanel reverse proxy"
+    ml_error_code: null
+    root_cause: "Proxy expects routes at different paths than what FastAPI was serving"
+    fix: "Add route aliases for /oauth/* and /health for proxy compatibility"
+    file: app/main.py, app/routers/auth_ml.py
+    lesson: "Add route aliases when deploying behind reverse proxies"
+
+# ── Patterns & Rules ───────────────────────────────────────────────────────
+# High-level lessons extracted from the error history above.
+patterns:
+
+  ml_api_item_types:
+    description: "ML has two fundamentally different item types"
+    regular_item:
+      identification: "No user_product_listing tag, no family_name"
+      title_field: title
+      accepts_variations: true
+      compat_endpoint: "POST /items/{id}/compatibilities"
+    user_product:
+      identification: "Has user_product_listing tag OR family_name"
+      title_field: family_name (max 120 chars)
+      accepts_variations: false (on create)
+      compat_endpoint: "POST /user-products/{up_id}/compatibilities"
+
+  ml_api_brand_accounts:
+    description: "Brand accounts (conta marca) have extra requirements"
+    requirements:
+      - "official_store_id must be in create payload"
+      - "free_shipping must be true"
+    official_store_id_resolution:
+      - "NOT available via GET /users/me"
+      - "Fetch from seller's active items: GET /users/{id}/items/search?status=active"
+      - "Read from any item response: item.official_store_id"
+      - "Cache in copy_sellers.official_store_id for future use"
+    known_brand_sellers:
+      - "141air (official_store_id: 84644)"
+
+  ml_api_attribute_handling:
+    description: "Rules for cleaning attributes before sending to ML"
+    must_exclude:
+      - "Attributes with null/empty id (source data quality issue)"
+      - "ITEM_CONDITION — set via condition field"
+      - "GTIN — catalog/barcode, not modifiable"
+      - "PACKAGE_* — auto-calculated by ML"
+      - "SHIPMENT_PACKING — auto-calculated"
+      - "CATALOG_TITLE, PRODUCT_FEATURES — catalog-managed"
+      - "HAS_COMPATIBILITIES — read-only"
+    value_extraction_order:
+      - "Direct: value_id / value_name"
+      - "Nested: values[0].id / values[0].name"
+      - "Struct: value_struct.number + value_struct.unit"
+    sku_extraction_order:
+      - "item.seller_custom_field"
+      - "item.attributes[SELLER_SKU]"
+      - "variation.seller_custom_field"
+      - "variation.attributes[SELLER_SKU]"
+
+  ml_api_shipping:
+    description: "Shipping configuration rules"
+    rules:
+      - "Always use mode: me2 (Mercado Envios standard)"
+      - "Never use me1 (Full) — it's seller-specific enrollment"
+      - "Brand accounts need free_shipping: true"
+      - "shipping.lost_me1_by_user is a WARNING, not an error"
+      - "item.shipping.mandatory_free_shipping is a WARNING, ML auto-handles it"
+
+  ml_api_rate_limits:
+    description: "Rate limiting behavior and mitigation"
+    behavior: "429 Too Many Requests with optional Retry-After header"
+    mitigation:
+      - "Exponential backoff: 3s base, doubles each retry, max 5 retries"
+      - "1-second pacing between sequential API calls"
+      - "Batch compat products in groups of 200"
+
+  retry_loop_rules:
+    description: "Rules for the auto-retry system"
+    rules:
+      - "Track what was tried (force_no_title, force_no_family_name, safe_mode_retry_used)"
+      - "Never re-add a field that was explicitly removed due to error"
+      - "When rebuilding payload (safe_mode), preserve dynamically discovered fields (official_store_id)"
+      - "Log every attempt to api_debug_logs with full request/response"
+      - "Mark debug logs as resolved when item is successfully created after retries"
+
+  ml_api_error_parsing:
+    description: "How to parse ML API error responses"
+    response_structure: |
+      {
+        "error": "validation_error",
+        "status": 400,
+        "message": "Validation error",
+        "cause": [
+          {"code": "...", "type": "error"|"warning", "message": "...", "cause_id": N}
+        ]
+      }
+    important: |
+      The cause array mixes errors and warnings. Only items with type="error" are blocking.
+      Warnings (type="warning") are informational and do NOT cause the failure.
+      Always check cause[].type before treating an issue as the root cause.
+
+  oauth_token_rules:
+    description: "Rules for ML OAuth token handling"
+    rules:
+      - "Token exchange endpoint: api.mercadopago.com (NOT api.mercadolibre.com)"
+      - "Use JSON body (NOT form-encoded)"
+      - "refresh_token may be absent — use .get() and preserve existing on refresh"
+      - "Reject auth if initial exchange has no refresh_token (fail fast)"
+      - "Token auto-refresh on expiry via _get_token() in ml_api.py"
+
+# ── Currently unresolved errors ────────────────────────────────────────────
+unresolved:
+  - type: "dimension_errors"
+    description: "8 items blocked by missing seller_package dimensions"
+    action: "User must provide dimensions via /api/copy/with-dimensions"
+    auto_fixable: false
+
+  - type: "user_product_compat_no_source"
+    description: "~12 compat copies failed: 'User Product but no source compat products were provided'"
+    action: "These occurred before ERR-022 fix (commit 8299406f) — should not recur"
+    auto_fixable: true
+    fixed_by: ERR-022
