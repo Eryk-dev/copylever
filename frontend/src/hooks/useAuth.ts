@@ -81,24 +81,27 @@ export function useAuth() {
     }
   }, [fetchMe]);
 
-  const signup = useCallback(async (email: string, password: string, companyName: string): Promise<boolean> => {
+  const signup = useCallback(async (email: string, password: string, companyName: string): Promise<{success: boolean, error?: string}> => {
     try {
       const res = await fetch(`${API_BASE}/api/auth/signup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password, company_name: companyName }),
       });
-      if (!res.ok) return false;
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        return { success: false, error: data?.detail || 'Erro ao criar conta' };
+      }
       const data = await res.json();
       const newToken = data.token;
       setToken(newToken);
       localStorage.setItem(TOKEN_KEY, newToken);
       const me = await fetchMe(newToken);
-      if (!me) return false;
+      if (!me) return { success: false, error: 'Erro ao criar conta' };
       setUser(me);
-      return true;
+      return { success: true };
     } catch {
-      return false;
+      return { success: false, error: 'Erro de conexao' };
     }
   }, [fetchMe]);
 

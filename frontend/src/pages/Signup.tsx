@@ -1,7 +1,7 @@
 import { useState } from 'react';
 
 interface Props {
-  onSignup: (email: string, password: string, companyName: string) => Promise<boolean>;
+  onSignup: (email: string, password: string, companyName: string) => Promise<{success: boolean, error?: string}>;
   onNavigateToLogin: () => void;
 }
 
@@ -21,12 +21,17 @@ export default function Signup({ onSignup, onNavigateToLogin }: Props) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email.trim() || !password.trim() || !companyName.trim()) return;
+    if (password.length < 6) {
+      setError('Senha deve ter pelo menos 6 caracteres');
+      triggerShake();
+      return;
+    }
     setLoading(true);
     setError('');
 
-    const success = await onSignup(email.trim(), password, companyName.trim());
-    if (!success) {
-      setError('Erro ao criar conta. Verifique os dados e tente novamente.');
+    const result = await onSignup(email.trim(), password, companyName.trim());
+    if (!result.success) {
+      setError(result.error || 'Erro ao criar conta');
       triggerShake();
     }
     setLoading(false);
