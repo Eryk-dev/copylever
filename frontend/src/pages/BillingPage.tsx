@@ -144,6 +144,14 @@ export default function BillingPage({ headers }: Props) {
             {actionLoading ? 'Abrindo...' : 'Gerenciar Assinatura'}
           </button>
         ) : (
+          <>
+          <p style={{
+            fontSize: 'var(--text-sm)',
+            color: 'var(--ink-muted)',
+            fontWeight: 600,
+          }}>
+            Plano mensal — R$ 349,90/mês
+          </p>
           <button
             onClick={handleSubscribe}
             disabled={actionLoading}
@@ -160,6 +168,7 @@ export default function BillingPage({ headers }: Props) {
             {actionLoading && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--paper)' }} />}
             {actionLoading ? 'Redirecionando...' : 'Assinar'}
           </button>
+          </>
         )}
       </div>
     </Card>

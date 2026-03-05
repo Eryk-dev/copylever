@@ -179,6 +179,15 @@ export default function App() {
               Para usar o Copy Anuncios, ative sua assinatura.
             </p>
           </div>
+          <p style={{
+            fontSize: 'var(--text-sm)',
+            color: 'var(--ink-muted)',
+            fontWeight: 600,
+            marginBottom: 'var(--space-4)',
+            textAlign: 'center',
+          }}>
+            Plano mensal — R$ 349,90/mês
+          </p>
           {billingMessage && (
             <p style={{
               color: 'var(--ink-muted)',
