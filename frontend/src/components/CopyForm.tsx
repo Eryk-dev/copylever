@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import type { Seller } from '../lib/api';
+import { useState, useCallback, useRef, useEffect } from 'react';
+import { API_BASE, type Seller } from '../lib/api';
 
 function normalizeItemId(raw: string): string {
   const t = raw.trim();
@@ -10,32 +10,114 @@ function normalizeItemId(raw: string): string {
   return t;
 }
 
+export interface CopyGroup {
+  source: string;
+  itemIds: string[];
+}
+
 interface Props {
   sourceSellers: Seller[];
   destSellers: Seller[];
-  onCopy: (source: string, destinations: string[], itemIds: string[]) => Promise<void>;
+  headers: () => Record<string, string>;
+  onCopy: (groups: CopyGroup[], destinations: string[]) => Promise<void>;
   onPreview: (itemId: string, seller: string) => Promise<void>;
   copying: boolean;
 }
 
-export default function CopyForm({ sourceSellers, destSellers, onCopy, onPreview, copying }: Props) {
-  const [source, setSource] = useState('');
-  const [destinations, setDestinations] = useState<string[]>([]);
+export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, onPreview, copying }: Props) {
   const [itemIdsText, setItemIdsText] = useState('');
+  // {item_id: seller_slug}
+  const [resolvedSources, setResolvedSources] = useState<Record<string, string>>({});
+  const [unresolvedIds, setUnresolvedIds] = useState<string[]>([]);
+  const [resolving, setResolving] = useState(false);
+  const [resolveError, setResolveError] = useState('');
+  const [destinations, setDestinations] = useState<string[]>([]);
   const [confirming, setConfirming] = useState(false);
-
-  const validSources = sourceSellers.filter(s => s.token_valid);
-  const validDests = destSellers.filter(s => s.token_valid);
-  const availableDestinations = validDests.filter(s => s.slug !== source);
+  const lastResolvedKey = useRef('');
 
   const itemIds = itemIdsText.split(/[\n,]+/).map(normalizeItemId).filter(id => id.length > 0);
 
-  const normalizeAllIds = () => {
+  // Derive source slugs from resolved items
+  const sourceSlugs = [...new Set(Object.values(resolvedSources))];
+  const validDests = destSellers.filter(s => s.token_valid && !sourceSlugs.includes(s.slug));
+
+  // Group resolved items by source
+  const sourceGroups: Record<string, string[]> = {};
+  for (const [itemId, slug] of Object.entries(resolvedSources)) {
+    (sourceGroups[slug] ||= []).push(itemId);
+  }
+
+  const resolveAll = useCallback(async (ids: string[]) => {
+    if (!ids.length) return;
+    const key = ids.join(',');
+    if (key === lastResolvedKey.current) return;
+    lastResolvedKey.current = key;
+    setResolving(true);
+    setResolveError('');
+    setResolvedSources({});
+    setUnresolvedIds([]);
+    setDestinations([]);
+    setConfirming(false);
+    try {
+      const res = await fetch(`${API_BASE}/api/copy/resolve-sellers`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ item_ids: ids }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Erro ao detectar sellers' }));
+        setResolveError(err.detail);
+        return;
+      }
+      const data: {
+        results: { item_id: string; seller_slug: string }[];
+        errors: { item_id: string; error: string }[];
+      } = await res.json();
+
+      const sources: Record<string, string> = {};
+      const deniedSlugs: string[] = [];
+      for (const r of data.results) {
+        const hasPermission = sourceSellers.some(s => s.slug === r.seller_slug);
+        if (hasPermission) {
+          sources[r.item_id] = r.seller_slug;
+        } else if (!deniedSlugs.includes(r.seller_slug)) {
+          deniedSlugs.push(r.seller_slug);
+        }
+      }
+      setResolvedSources(sources);
+      setUnresolvedIds(data.errors.map(e => e.item_id));
+
+      if (deniedSlugs.length > 0) {
+        setResolveError(`Sem permissao de copia a partir do(s) seller(s): ${deniedSlugs.join(', ')}`);
+      }
+    } catch (e) {
+      setResolveError(String(e));
+    } finally {
+      setResolving(false);
+    }
+  }, [headers, sourceSellers]);
+
+  const normalizeAndResolve = useCallback(() => {
     const normalized = itemIdsText.split(/[\n,]+/).map(normalizeItemId).filter(Boolean).join('\n');
     if (normalized !== itemIdsText.trim()) setItemIdsText(normalized);
-  };
-  const canCopy = source && destinations.length > 0 && itemIds.length > 0 && !copying;
-  const totalOps = itemIds.length * destinations.length;
+    const ids = normalized.split('\n').filter(Boolean);
+    if (ids.length > 0) resolveAll(ids);
+  }, [itemIdsText, resolveAll]);
+
+  // Clear state when IDs are cleared
+  useEffect(() => {
+    if (!itemIdsText.trim()) {
+      setResolvedSources({});
+      setUnresolvedIds([]);
+      setResolveError('');
+      lastResolvedKey.current = '';
+      setDestinations([]);
+    }
+  }, [itemIdsText]);
+
+  const resolvedCount = Object.keys(resolvedSources).length;
+  const canCopy = resolvedCount > 0 && destinations.length > 0 && !copying;
+  const totalOps = resolvedCount * destinations.length;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,7 +127,8 @@ export default function CopyForm({ sourceSellers, destSellers, onCopy, onPreview
       return;
     }
     setConfirming(false);
-    await onCopy(source, destinations, itemIds);
+    const groups: CopyGroup[] = Object.entries(sourceGroups).map(([source, ids]) => ({ source, itemIds: ids }));
+    await onCopy(groups, destinations);
   };
 
   const toggleDest = (slug: string) => {
@@ -54,16 +137,20 @@ export default function CopyForm({ sourceSellers, destSellers, onCopy, onPreview
   };
 
   const selectAllDests = () => {
-    const allSlugs = availableDestinations.map(s => s.slug);
+    const allSlugs = validDests.map(s => s.slug);
     const allSelected = allSlugs.every(s => destinations.includes(s));
     setDestinations(allSelected ? [] : allSlugs);
     setConfirming(false);
   };
 
-  // Step completion
-  const step1Done = !!source;
+  const allSellers = [...sourceSellers, ...destSellers];
+  const sellerName = (slug: string) => allSellers.find(s => s.slug === slug)?.name || slug;
+
+  const step1Done = resolvedCount > 0;
   const step2Done = destinations.length > 0;
-  const step3Done = itemIds.length > 0;
+
+  // For preview, use the first resolved item's seller
+  const firstResolved = Object.entries(resolvedSources)[0];
 
   return (
     <form onSubmit={handleSubmit} className="card" style={{
@@ -78,45 +165,69 @@ export default function CopyForm({ sourceSellers, destSellers, onCopy, onPreview
         Copiar Anuncios
       </h3>
 
-      {/* Step 1: Source */}
-      <Field label="Seller de Origem" step={1} done={step1Done}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
-          {validSources.map(seller => {
-            const selected = source === seller.slug;
-            const disabled = !!source && !selected;
-            return (
-              <button
-                key={seller.slug}
-                type="button"
-                onClick={() => {
-                  if (disabled) return;
-                  const next = selected ? '' : seller.slug;
-                  setSource(next);
-                  setDestinations(prev => prev.filter(d => d !== next));
-                  setConfirming(false);
-                }}
-                className="chip-toggle"
-                style={{
-                  padding: '6px 12px',
-                  fontSize: 'var(--text-xs)',
-                  fontWeight: selected ? 600 : 400,
-                  background: selected ? 'var(--ink)' : 'var(--paper)',
-                  color: selected ? 'var(--paper)' : disabled ? 'var(--ink-faint)' : 'var(--ink-muted)',
-                  border: `1px solid ${selected ? 'var(--ink)' : 'var(--line)'}`,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '4px',
-                  opacity: disabled ? 0.4 : 1,
-                  cursor: disabled ? 'not-allowed' : 'pointer',
-                  transition: 'opacity 0.2s, background 0.2s, color 0.2s',
-                }}
-              >
-                {selected && <span style={{ fontSize: 10 }}>{'\u2713'}</span>}
-                {seller.name || seller.slug}
-              </button>
-            );
-          })}
-        </div>
+      {/* Step 1: Item IDs + auto-detect sources */}
+      <Field label="IDs dos Anuncios" step={1} done={step1Done}>
+        <textarea
+          value={itemIdsText}
+          onChange={e => { setItemIdsText(e.target.value); setConfirming(false); }}
+          onBlur={normalizeAndResolve}
+          placeholder={"Cole os IDs dos anuncios (um por linha)\n1234567890\nMLB9876543210"}
+          rows={4}
+          className="input-base"
+          style={{
+            width: '100%',
+            padding: 'var(--space-3) var(--space-4)',
+            background: 'var(--paper)',
+            border: '1px solid var(--line)',
+            borderRadius: 6,
+            color: 'var(--ink)',
+            resize: 'vertical',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 'var(--text-sm)',
+            lineHeight: 'var(--leading-normal)',
+          }}
+        />
+        {resolving && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginTop: 'var(--space-2)', color: 'var(--ink-faint)', fontSize: 'var(--text-xs)' }}>
+            <span className="spinner spinner-sm" />
+            Detectando seller(s) de origem...
+          </div>
+        )}
+        {resolveError && (
+          <p style={{ color: 'var(--danger)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-2)', fontWeight: 500 }}>
+            {resolveError}
+          </p>
+        )}
+        {resolvedCount > 0 && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--space-2)',
+            marginTop: 'var(--space-2)',
+            fontSize: 'var(--text-xs)',
+            color: 'var(--ink-faint)',
+            flexWrap: 'wrap',
+          }}>
+            {sourceSlugs.length === 1 ? 'Origem:' : 'Origens:'}
+            {sourceSlugs.map(slug => (
+              <span key={slug} style={{
+                padding: '2px 8px',
+                background: 'var(--ink)',
+                color: 'var(--paper)',
+                borderRadius: 4,
+                fontWeight: 600,
+              }}>
+                {sellerName(slug)} ({sourceGroups[slug].length})
+              </span>
+            ))}
+            <span>{resolvedCount} anuncio(s)</span>
+          </div>
+        )}
+        {unresolvedIds.length > 0 && (
+          <p style={{ color: 'var(--warning)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-1)', fontWeight: 500 }}>
+            {unresolvedIds.length} ID(s) nao encontrado(s): {unresolvedIds.join(', ')}
+          </p>
+        )}
       </Field>
 
       {/* Step 2: Destinations */}
@@ -124,20 +235,20 @@ export default function CopyForm({ sourceSellers, destSellers, onCopy, onPreview
         label="Sellers de Destino"
         step={2}
         done={step2Done}
-        action={availableDestinations.length > 0 && source ? (
+        action={validDests.length > 0 && resolvedCount > 0 ? (
           <button
             type="button"
             onClick={selectAllDests}
             style={{ background: 'none', color: 'var(--positive)', fontSize: 'var(--text-xs)', fontWeight: 500, padding: 0 }}
           >
-            {availableDestinations.every(s => destinations.includes(s.slug)) ? 'Desmarcar todos' : 'Selecionar todos'}
+            {validDests.every(s => destinations.includes(s.slug)) ? 'Desmarcar todos' : 'Selecionar todos'}
           </button>
         ) : undefined}
       >
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
-          {source ? (
-            availableDestinations.length > 0 ? (
-              availableDestinations.map(seller => {
+          {resolvedCount > 0 ? (
+            validDests.length > 0 ? (
+              validDests.map(seller => {
                 const on = destinations.includes(seller.slug);
                 return (
                   <button key={seller.slug} type="button" onClick={() => toggleDest(seller.slug)} className="chip-toggle" style={{
@@ -160,36 +271,14 @@ export default function CopyForm({ sourceSellers, destSellers, onCopy, onPreview
               <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)' }}>Nenhum outro seller disponivel</p>
             )
           ) : (
-            <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)' }}>Selecione a origem primeiro</p>
+            <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)' }}>
+              {itemIds.length > 0 ? 'Aguardando deteccao dos sellers de origem...' : 'Cole os IDs acima para detectar os sellers de origem'}
+            </p>
           )}
         </div>
-      </Field>
-
-      {/* Step 3: Item IDs */}
-      <Field label="IDs dos Anuncios" step={3} done={step3Done}>
-        <textarea
-          value={itemIdsText}
-          onChange={e => { setItemIdsText(e.target.value); setConfirming(false); }}
-          onBlur={normalizeAllIds}
-          placeholder={"1234567890\nMLB9876543210"}
-          rows={4}
-          className="input-base"
-          style={{
-            width: '100%',
-            padding: 'var(--space-3) var(--space-4)',
-            background: 'var(--paper)',
-            border: '1px solid var(--line)',
-            borderRadius: 6,
-            color: 'var(--ink)',
-            resize: 'vertical',
-            fontFamily: 'var(--font-mono)',
-            fontSize: 'var(--text-sm)',
-            lineHeight: 'var(--leading-normal)',
-          }}
-        />
-        {itemIds.length > 0 && (
-          <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-1)' }}>
-            {itemIds.length} anuncio(s) {destinations.length > 0 && <>x {destinations.length} destino(s) = <b style={{ color: 'var(--ink)' }}>{totalOps} copia(s)</b></>}
+        {destinations.length > 0 && resolvedCount > 0 && (
+          <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-2)' }}>
+            {resolvedCount} anuncio(s) x {destinations.length} destino(s) = <b style={{ color: 'var(--ink)' }}>{totalOps} copia(s)</b>
           </p>
         )}
       </Field>
@@ -230,11 +319,11 @@ export default function CopyForm({ sourceSellers, destSellers, onCopy, onPreview
           gap: 'var(--space-2)',
         }}>
           {copying && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--paper)' }} />}
-          {copying ? 'Copiando...' : confirming ? 'Confirmar' : `Copiar${itemIds.length > 0 ? ` (${totalOps})` : ''}`}
+          {copying ? 'Copiando...' : confirming ? 'Confirmar' : `Copiar${totalOps > 0 ? ` (${totalOps})` : ''}`}
         </button>
 
-        {itemIds.length > 0 && source && (
-          <button type="button" onClick={() => onPreview(itemIds[0], source)} className="btn-ghost" style={{
+        {firstResolved && (
+          <button type="button" onClick={() => onPreview(firstResolved[0], firstResolved[1])} className="btn-ghost" style={{
             padding: 'var(--space-3) var(--space-4)',
             fontSize: 'var(--text-xs)',
           }}>

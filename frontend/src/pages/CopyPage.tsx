@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { API_BASE, type Seller, type CopyResponse, type CopyLog, type ItemPreview } from '../lib/api';
 import type { AuthUser } from '../hooks/useAuth';
-import CopyForm from '../components/CopyForm';
+import CopyForm, { type CopyGroup } from '../components/CopyForm';
 import CopyProgress from '../components/CopyProgress';
 import DimensionForm, { type Dimensions } from '../components/DimensionForm';
 
@@ -70,30 +70,51 @@ export default function CopyPage({ sellers, headers, user }: Props) {
     setRetryLogId(null);
   }, [statusFilter]);
 
-  const handleCopy = useCallback(async (source: string, destinations: string[], itemIds: string[]) => {
+  const handleCopy = useCallback(async (groups: CopyGroup[], destinations: string[]) => {
     setCopying(true);
     setResults(null);
     // Refresh logs after a short delay to pick up in_progress rows created by the backend
     setTimeout(loadLogs, 1000);
-    try {
-      const res = await fetch(`${API_BASE}/api/copy`, {
-        method: 'POST',
-        headers: headers(),
-        body: JSON.stringify({ source, destinations, item_ids: itemIds }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: 'Erro desconhecido' }));
-        setResults({ total: 0, success: 0, errors: 1, results: [{ source_item_id: '', dest_seller: '', status: 'error', dest_item_id: null, error: err.detail }] });
-        return;
+
+    const allResults: CopyResponse['results'] = [];
+    let totalSuccess = 0;
+    let totalErrors = 0;
+    let totalDims = 0;
+
+    for (const group of groups) {
+      try {
+        const res = await fetch(`${API_BASE}/api/copy`, {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({ source: group.source, destinations, item_ids: group.itemIds }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: 'Erro desconhecido' }));
+          allResults.push(...group.itemIds.map(id => ({ source_item_id: id, dest_seller: '', status: 'error' as const, dest_item_id: null, error: err.detail })));
+          totalErrors += group.itemIds.length;
+          continue;
+        }
+        const data: CopyResponse = await res.json();
+        allResults.push(...data.results);
+        totalSuccess += data.success;
+        totalErrors += data.errors;
+        totalDims += data.needs_dimensions ?? 0;
+      } catch (e) {
+        allResults.push(...group.itemIds.map(id => ({ source_item_id: id, dest_seller: '', status: 'error' as const, dest_item_id: null, error: String(e) })));
+        totalErrors += group.itemIds.length;
       }
-      const data: CopyResponse = await res.json();
-      setResults({ ...data, source });
-    } catch (e) {
-      setResults({ total: 0, success: 0, errors: 1, results: [{ source_item_id: '', dest_seller: '', status: 'error', dest_item_id: null, error: String(e) }] });
-    } finally {
-      setCopying(false);
-      loadLogs();
     }
+
+    setResults({
+      total: allResults.length,
+      success: totalSuccess,
+      errors: totalErrors,
+      needs_dimensions: totalDims,
+      results: allResults,
+      source: groups[0]?.source,
+    });
+    setCopying(false);
+    loadLogs();
   }, [headers, loadLogs]);
 
   const handlePreview = useCallback(async (rawId: string, seller: string) => {
@@ -191,7 +212,7 @@ export default function CopyPage({ sellers, headers, user }: Props) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
-      <CopyForm sourceSellers={sourceSellers} destSellers={destSellers} onCopy={handleCopy} onPreview={handlePreview} copying={copying} />
+      <CopyForm sourceSellers={sourceSellers} destSellers={destSellers} headers={headers} onCopy={handleCopy} onPreview={handlePreview} copying={copying} />
 
       {previewLoading && (
         <Card title="Preview">

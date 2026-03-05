@@ -3,6 +3,7 @@ Copy endpoints — POST /api/copy, GET /api/copy/logs, GET /api/copy/preview
 """
 import asyncio
 import logging
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -329,3 +330,63 @@ async def preview_item(item_id: str, seller: str = Query(...), user: dict = Depe
         "channels": item.get("channels", []),
         "seller": seller,
     }
+
+
+def _normalize_item_id(raw: str) -> str:
+    """Normalize an item ID to MLB format."""
+    clean = raw.strip()
+    m = re.match(r"MLB[-]?(\d+)", clean, re.IGNORECASE)
+    if m:
+        return f"MLB{m.group(1)}"
+    if clean.isdigit():
+        return f"MLB{clean}"
+    return clean
+
+
+async def _resolve_items_sellers(item_ids: list[str]) -> dict[str, str]:
+    """Resolve source seller for multiple items in parallel.
+
+    Returns {item_id: seller_slug} for items that were found.
+    """
+
+    async def _resolve_one(item_id: str) -> tuple[str, str | None]:
+        slug, _ = await _resolve_item_seller(item_id)
+        return item_id, slug
+
+    tasks = await asyncio.gather(
+        *[_resolve_one(iid) for iid in item_ids],
+        return_exceptions=True,
+    )
+
+    result: dict[str, str] = {}
+    for t in tasks:
+        if isinstance(t, Exception):
+            continue
+        item_id, slug = t
+        if slug:
+            result[item_id] = slug
+    return result
+
+
+class ResolveSellersRequest(BaseModel):
+    item_ids: list[str]
+
+
+@router.post("/resolve-sellers")
+async def resolve_sellers_endpoint(req: ResolveSellersRequest, user: dict = Depends(require_user)):
+    """Bulk-resolve which seller owns each item."""
+    clean_ids = [_normalize_item_id(iid) for iid in req.item_ids if iid.strip()]
+    if not clean_ids:
+        return {"results": [], "errors": []}
+
+    resolved = await _resolve_items_sellers(clean_ids)
+
+    results = []
+    errors = []
+    for iid in clean_ids:
+        if iid in resolved:
+            results.append({"item_id": iid, "seller_slug": resolved[iid]})
+        else:
+            errors.append({"item_id": iid, "error": "Item nao encontrado em nenhum seller conectado"})
+
+    return {"results": results, "errors": errors}
