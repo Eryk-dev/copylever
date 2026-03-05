@@ -223,7 +223,7 @@
         "Typecheck passes"
       ],
       "priority": 13,
-      "passes": false,
+      "passes": true,
       "notes": "In list_users() at line ~48, add .eq('org_id', user['org_id']). In create_user() at line ~57, add 'org_id': user['org_id'] to new_user dict. For uniqueness check, change .eq('username', req.username) to also .eq('org_id', user['org_id']). In update_user()/delete_user(), first fetch the target user and verify target_user['org_id'] == user['org_id'], return 404 if not. In get_user_permissions(), the sellers query at line ~133 should add .eq('org_id', user['org_id'])."
     },
     {

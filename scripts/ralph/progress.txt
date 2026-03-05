@@ -150,3 +150,17 @@ Started: Thu Mar  5 10:43:47 -03 2026
   - _resolve_item_seller in copy.py and compat.py are duplicates — both need same org_id change
   - retry_dimensions must also scope the log lookup by org_id to prevent cross-org access
 ---
+
+## 2026-03-05 - US-013
+- Org-scoped admin_users.py: all CRUD + permission endpoints now scoped by org_id
+- list_users() filters by org_id
+- create_user() checks username uniqueness within org, includes org_id in insert
+- update_user() and delete_user() verify target user belongs to same org before operating
+- get_user_permissions() scopes copy_sellers query by org_id
+- update_user_permissions() includes org_id in upsert dict
+- USER_FIELDS now includes email and org_id
+- Files changed: app/routers/admin_users.py
+- **Learnings for future iterations:**
+  - update_user/delete_user pattern: fetch target first, compare org_id, return 404 if mismatch
+  - user_permissions upsert uses on_conflict="user_id,seller_slug" — org_id is extra data, not part of conflict key
+---
