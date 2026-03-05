@@ -144,15 +144,33 @@ async def copy_with_dims(req: CopyWithDimensionsRequest, user: dict = Depends(re
     if denied_dests:
         raise HTTPException(status_code=403, detail=f"Sem permissão de destino para o(s) seller(s): {', '.join(denied_dests)}")
 
+    item_id = req.item_id.strip()
     results = await copy_with_dimensions(
         source_seller=req.source,
         dest_sellers=req.destinations,
-        item_id=req.item_id.strip(),
+        item_id=item_id,
         dimensions=dims,
     )
 
     success_count = sum(1 for r in results if r["status"] == "success")
     error_count = sum(1 for r in results if r["status"] == "error")
+
+    # Update any existing needs_dimensions log entries for this item
+    if success_count > 0:
+        db = get_db()
+        dest_item_ids = {r["dest_seller"]: r["dest_item_id"] for r in results if r["status"] == "success"}
+        new_errors = {r["dest_seller"]: r["error"] for r in results if r["status"] != "success" and r.get("error")}
+        new_status = "success" if error_count == 0 else "partial"
+        try:
+            db.table("copy_logs").update({
+                "status": new_status,
+                "dest_item_ids": dest_item_ids or None,
+                "error_details": new_errors or None,
+            }).eq("source_item_id", item_id).eq(
+                "source_seller", req.source
+            ).eq("status", "needs_dimensions").execute()
+        except Exception as e:
+            logger.warning(f"Failed to update needs_dimensions logs for {item_id}: {e}")
 
     return {
         "total": len(results),
