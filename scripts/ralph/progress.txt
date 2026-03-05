@@ -107,3 +107,18 @@ Started: Thu Mar  5 10:43:47 -03 2026
   - copy_compat_to_targets has 2 log paths: update existing log_id, or insert new row — both need org_id
   - _log_api_debug is imported from item_copier, already has org_id param from US-008
 ---
+
+## 2026-03-05 - US-010
+- Org-scoped auth_ml.py: install(), callback(), list_sellers(), disconnect_seller()
+- install() now requires auth (Depends(require_user)), encodes org_id in state as `org_{org_id}`, returns JSON `{redirect_url}` instead of RedirectResponse
+- callback() parses org_id from state parameter, scopes all copy_sellers queries by org_id, includes org_id in insert/update
+- list_sellers() changed from require_admin to require_user, scoped by org_id
+- disconnect_seller() scoped by org_id to prevent cross-org deletion
+- Removed unused RedirectResponse and require_admin imports
+- Files changed: app/routers/auth_ml.py
+- **Learnings for future iterations:**
+  - install() returns JSON now — frontend must fetch with auth headers and redirect manually
+  - callback() does NOT require auth (it's a redirect from ML), org_id comes from state param
+  - Same ML user can be connected by different orgs — scoping by org_id in callback is critical
+  - list_sellers now uses require_user (not require_admin) so operators can see sellers too
+---

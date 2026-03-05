@@ -172,7 +172,7 @@
         "Typecheck passes"
       ],
       "priority": 10,
-      "passes": false,
+      "passes": true,
       "notes": "Current install() at line ~21 returns RedirectResponse. Change to return JSON: {redirect_url: url}. The frontend will open this URL. Add 'from app.routers.auth import require_user' if not already imported. In callback() at line ~36, parse state: if state.startswith('org_'): org_id = state[4:]. The existing seller lookup by ml_user_id needs .eq('org_id', org_id) because the same ML user could be connected by different orgs. The callback does NOT require auth (it's a redirect from ML). list_sellers currently uses require_admin — change to require_user so operators can also see sellers."
     },
     {
