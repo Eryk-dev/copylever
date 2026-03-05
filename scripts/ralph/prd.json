@@ -143,7 +143,7 @@
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "notes": "Create new file app/services/email.py. Use smtplib.SMTP(settings.smtp_host, settings.smtp_port) with starttls() and login(). Build email with email.mime.text.MIMEText. In the forgot-password endpoint in auth.py, import and call send_reset_email after inserting the token. The call must be in a try/except so email failures don't break the endpoint. Check settings.smtp_host before attempting to send."
     }
   ]

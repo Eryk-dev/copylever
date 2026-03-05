@@ -14,6 +14,7 @@ Started: Thu Mar  5 13:47:37 -03 2026
 - Auth pages (Login, Signup, ForgotPassword, ResetPassword) share identical card layout: centered flex, --surface bg, 380px max-width, animate-in class
 - AuthView type in App.tsx controls which auth page renders: 'login' | 'signup' | 'forgot' | 'reset'
 - Password reset tokens stored in `password_reset_tokens` table with 1h expiry, token via `secrets.token_urlsafe(32)`
+- Email service (`app/services/email.py`) checks `settings.smtp_host` — empty means not configured, gracefully skips
 ---
 
 ## 2026-03-05 - US-001
@@ -99,4 +100,19 @@ Started: Thu Mar  5 13:47:37 -03 2026
   - Use lazy initializer for useState when checking URL params (avoids useEffect for initial state)
   - When navigating from ResetPassword back to login, clean up the ?reset_token= URL param with replaceState
   - The onNavigateToForgotPassword prop on Login is optional (same pattern as onNavigateToSignup)
+---
+
+## 2026-03-05 - US-008
+- Created `app/services/email.py` with `send_reset_email(to_email, reset_token)` function
+- Uses Python `smtplib` with STARTTLS for sending, `email.mime.text.MIMEText` for building message
+- If `smtp_host` is empty, logs warning and returns without error (graceful degradation)
+- Added SMTP config fields to `app/config.py`: smtp_host, smtp_port (587), smtp_user, smtp_password, smtp_from
+- Integrated email sending in forgot-password endpoint in `app/routers/auth.py` — wrapped in try/except so failures don't break the endpoint
+- Email subject: "Copy Anuncios — Redefinir senha", body has reset link and 1h expiry notice
+- Files changed: `app/config.py`, `app/services/email.py` (new), `app/routers/auth.py`
+- **Learnings for future iterations:**
+  - SMTP config uses empty string defaults — check `settings.smtp_host` truthiness to detect if configured
+  - Email service re-raises exceptions so the caller (auth.py) can catch and log — the endpoint always returns 200
+  - The `smtp_from` falls back to `smtp_user` if not set
+  - Env vars needed for email: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM
 ---

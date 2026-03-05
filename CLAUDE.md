@@ -1,6 +1,10 @@
 # Copy Anuncios ML
 
-Plataforma para copiar anúncios e compatibilidades veiculares entre contas do Mercado Livre.
+Plataforma multi-tenant (SaaS) para copiar anúncios e compatibilidades veiculares entre contas do Mercado Livre.
+
+## Documentação Completa da API
+
+**Referência detalhada:** [`docs/API.md`](docs/API.md) — documentação minuciosa de todos os endpoints, schemas, fluxos e erros.
 
 ## Tech Stack
 
@@ -9,6 +13,7 @@ Plataforma para copiar anúncios e compatibilidades veiculares entre contas do M
 - **Database**: Supabase (PostgreSQL) com service_role key (bypass RLS)
 - **HTTP Client**: httpx (async)
 - **Auth**: bcrypt (senhas) + session tokens (7 dias TTL)
+- **Billing**: Stripe (checkout, portal, webhooks)
 - **Deploy**: Docker multi-stage (Node build → Python runtime) no Easypanel
 
 ## Project Structure
@@ -19,17 +24,20 @@ app/
 ├── config.py            # Pydantic Settings (env vars)
 ├── db/
 │   ├── supabase.py      # Supabase client singleton (get_db())
-│   └── migrations/      # SQL migrations (001-005)
+│   └── migrations/      # SQL migrations (001-009)
 ├── routers/
-│   ├── auth.py          # Login/logout/me/admin-promote + require_user/require_admin deps
+│   ├── auth.py          # Login/signup/logout/me/admin-promote + require_user/require_admin/require_super_admin/require_active_org deps
 │   ├── auth_ml.py       # OAuth2 ML (install → callback → token exchange)
+│   ├── billing.py       # Stripe checkout, portal, webhook, status
 │   ├── copy.py          # POST /api/copy, /api/copy/with-dimensions, GET /api/copy/logs
 │   ├── compat.py        # POST /api/compat/copy, /search-sku, GET /api/compat/logs
-│   └── admin_users.py   # CRUD users + permissions (admin only)
+│   ├── admin_users.py   # CRUD users + permissions (admin only)
+│   └── super_admin.py   # Platform-wide org management (super_admin only)
 └── services/
     ├── ml_api.py         # MercadoLivre API client (token mgmt, error handling)
     ├── item_copier.py    # Core copy logic (~850 lines, retry, payload transform)
-    └── compat_copier.py  # Compatibility copy orchestration (background tasks)
+    ├── compat_copier.py  # Compatibility copy orchestration (background tasks)
+    └── email.py          # SMTP email service (password reset emails)
 
 frontend/
 ├── src/
@@ -39,6 +47,9 @@ frontend/
 │   ├── hooks/useAuth.ts  # Auth state + methods (token in localStorage)
 │   └── lib/api.ts        # API types + constants
 └── dist/                 # Built SPA (mounted by FastAPI at /)
+
+docs/
+└── API.md               # Documentação completa da API (referência definitiva)
 ```
 
 ## Running Locally
@@ -63,41 +74,57 @@ ML_SECRET_KEY          # OAuth app secret
 ML_REDIRECT_URI        # OAuth callback (https://copy.levermoney.com.br/api/ml/callback)
 SUPABASE_URL           # Supabase project URL
 SUPABASE_SERVICE_ROLE_KEY  # Service role key (REQUIRED — bypasses RLS)
+SUPABASE_KEY           # Supabase anon key (alternative)
 ADMIN_MASTER_PASSWORD  # One-time admin setup password
-BASE_URL               # Public URL for OAuth redirects
-CORS_ORIGINS           # Comma-separated allowed origins
+STRIPE_SECRET_KEY      # Stripe API secret key
+STRIPE_WEBHOOK_SECRET  # Stripe webhook signing secret
+STRIPE_PRICE_ID        # Stripe subscription price ID
+BASE_URL               # Public URL for OAuth redirects (default: http://localhost:8000)
+CORS_ORIGINS           # Comma-separated allowed origins (default: http://localhost:5173,http://localhost:3000)
+SMTP_HOST              # SMTP server host (optional — for password reset emails)
+SMTP_PORT              # SMTP server port (default: 587)
+SMTP_USER              # SMTP username
+SMTP_PASSWORD          # SMTP password
+SMTP_FROM              # From address for emails (falls back to SMTP_USER)
 ```
 
 ## Database Schema (Supabase)
 
 **Project:** parts-catalogs (ID: `wrbrbhuhsaaupqsimkqz`, region: sa-east-1)
 
+**Multi-tenant:**
+- `orgs` — id, name, email, active, payment_active, stripe_customer_id, stripe_subscription_id, created_at, updated_at
+
 **Auth:**
-- `users` — id, username, password_hash, role (admin|operator), can_run_compat, active
-- `user_sessions` — token (32-byte URL-safe), expires_at (7 days)
+- `users` — id, email, username, password_hash, role (admin|operator), is_super_admin, can_run_compat, active, org_id (FK→orgs), last_login_at
+- `user_sessions` — token (32-byte URL-safe), user_id, expires_at (7 days)
 - `user_permissions` — user_id + seller_slug → can_copy_from, can_copy_to
-- `auth_logs` — login, logout, login_failed, admin_promote
+- `auth_logs` — user_id, username, org_id, action (login|logout|login_failed|signup|admin_promote)
 
 **Operations:**
-- `copy_sellers` — slug, ml_user_id, ml_access_token, ml_refresh_token, ml_token_expires_at
-- `copy_logs` — user_id, source_seller, dest_sellers[], source_item_id, status
-- `compat_logs` — user_id, source_item_id, skus[], targets (JSONB), success/error counts, status
+- `copy_sellers` — slug, ml_user_id, ml_access_token, ml_refresh_token, ml_token_expires_at, org_id (FK→orgs), active
+- `copy_logs` — user_id, org_id, source_seller, dest_sellers[], source_item_id, status
+- `compat_logs` — user_id, org_id, source_item_id, skus[], targets (JSONB), success/error counts, status
 
 **Debug:**
 - `api_debug_logs` — full request/response for failed ML API calls (payload JSONB, resolved flag)
 
-Migrations: `app/db/migrations/001_compat_logs.sql` through `005_api_debug_logs.sql`
+Migrations: `app/db/migrations/001_compat_logs.sql` through `008_backfill_org_data.sql`
 
 ## Authentication & Authorization
 
 **Auth flow:**
-1. POST `/api/auth/login` → bcrypt verify → session token via `X-Auth-Token` header
-2. `require_user()` dependency validates token on every protected route
-3. `require_admin()` extends require_user with role check
-4. First admin created via POST `/api/auth/admin-promote` with ADMIN_MASTER_PASSWORD
+1. POST `/api/auth/signup` → create org + admin user → session token (self-service onboarding)
+2. POST `/api/auth/login` → bcrypt verify → session token via `X-Auth-Token` header
+3. `require_user()` dependency validates token on every protected route
+4. `require_admin()` extends require_user with role check
+5. `require_super_admin()` extends require_user with is_super_admin check
+6. `require_active_org()` extends require_user + verifies org is active (super_admins bypass)
+7. First admin created via POST `/api/auth/admin-promote` with ADMIN_MASTER_PASSWORD
 
 **RBAC:**
-- `admin` — full access, bypasses all permission checks
+- `super_admin` — platform-wide access, manages all orgs, bypasses org checks
+- `admin` — full access within own org, manages users and permissions, manages billing
 - `operator` — access filtered by per-seller permissions (can_copy_from, can_copy_to)
 - `can_run_compat` — boolean flag on user for compatibility features
 
@@ -109,27 +136,34 @@ Migrations: `app/db/migrations/001_compat_logs.sql` through `005_api_debug_logs.
 ## API Routes
 
 ```
-POST   /api/auth/login              # Login (username + password)
+# Auth
+POST   /api/auth/signup             # Self-service signup (creates org + admin user)
+POST   /api/auth/login              # Login (email/username + password)
 POST   /api/auth/logout             # Invalidate session
-GET    /api/auth/me                 # Current user + permissions
-POST   /api/auth/admin-promote      # First admin setup
+GET    /api/auth/me                 # Current user + permissions + org context
+POST   /api/auth/admin-promote      # First admin setup (master password)
 
+# MercadoLivre OAuth
 GET    /api/ml/install              # OAuth2 redirect to ML
 GET    /api/ml/callback             # OAuth2 callback
 
-GET    /api/sellers                 # List connected ML sellers
+# Sellers
+GET    /api/sellers                 # List connected ML sellers (org-scoped)
 DELETE /api/sellers/{slug}          # Disconnect seller
 
+# Copy
 POST   /api/copy                   # Bulk copy listings
 POST   /api/copy/with-dimensions   # Copy with custom dimensions
 GET    /api/copy/preview/{item_id} # Preview item before copy
-GET    /api/copy/logs              # Copy history
+GET    /api/copy/logs              # Copy history (org-scoped)
 
+# Compatibility
 POST   /api/compat/copy            # Copy vehicle compatibilities
 POST   /api/compat/search-sku      # Find items by SKU across sellers
 GET    /api/compat/preview/{id}    # Preview compatibility info
-GET    /api/compat/logs            # Compat history
+GET    /api/compat/logs            # Compat history (org-scoped)
 
+# Admin (org-scoped)
 GET    /api/admin/users            # List users (admin)
 POST   /api/admin/users            # Create user (admin)
 PUT    /api/admin/users/{id}       # Update user (admin)
@@ -137,7 +171,19 @@ DELETE /api/admin/users/{id}       # Delete user (admin)
 GET    /api/admin/users/{id}/permissions
 PUT    /api/admin/users/{id}/permissions
 
-GET    /api/health                 # Health check
+# Billing (Stripe)
+POST   /api/billing/create-checkout  # Create Stripe Checkout session (admin)
+POST   /api/billing/create-portal    # Create Stripe Customer Portal (admin)
+POST   /api/billing/webhook          # Stripe webhook handler (public)
+GET    /api/billing/status           # Billing status for current org
+
+# Super Admin (platform-wide)
+GET    /api/super/orgs              # List all orgs with usage stats
+PUT    /api/super/orgs/{org_id}     # Toggle org active/payment status
+
+# System
+GET    /api/health                  # Health check
+GET    /api/debug/env               # Check env vars (super_admin only, values masked)
 ```
 
 ## MercadoLivre API Patterns
@@ -193,7 +239,7 @@ GET    /api/health                 # Health check
 
 - Python: async FastAPI handlers, sync Supabase calls via `get_db()`
 - Routers: `APIRouter(prefix="/api/...", tags=[...])` with Pydantic request models
-- Dependencies: `Depends(require_user)` / `Depends(require_admin)` for auth
+- Dependencies: `Depends(require_user)` / `Depends(require_admin)` / `Depends(require_super_admin)` / `Depends(require_active_org)` for auth
 - Logging: `logger = logging.getLogger(__name__)` per module
 - Error messages in Portuguese (user-facing), English (logs/code)
 - No test suite — relies on manual testing + PRD acceptance criteria
