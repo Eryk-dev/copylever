@@ -54,7 +54,6 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
     if (!ids.length) return;
     const key = ids.join(',');
     if (key === lastResolvedKey.current) return;
-    lastResolvedKey.current = key;
     setResolving(true);
     setResolveError('');
     setResolvedSources({});
@@ -88,6 +87,7 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
         }
       }
       setResolvedSources(sources);
+      lastResolvedKey.current = key;
       setUnresolvedIds(data.errors.map(e => e.item_id));
 
       if (deniedSlugs.length > 0) {
@@ -219,9 +219,19 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
           </div>
         )}
         {resolveError && (
-          <p style={{ color: 'var(--danger)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-2)', fontWeight: 500 }}>
-            {resolveError}
-          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginTop: 'var(--space-2)' }}>
+            <p style={{ color: 'var(--danger)', fontSize: 'var(--text-xs)', fontWeight: 500, margin: 0 }}>
+              {resolveError}
+            </p>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => { lastResolvedKey.current = ''; normalizeAndResolve(); }}
+              style={{ fontSize: 'var(--text-xs)', padding: '2px 8px', whiteSpace: 'nowrap' }}
+            >
+              Tentar novamente
+            </button>
+          </div>
         )}
         {resolvedCount > 0 && (
           <div style={{
