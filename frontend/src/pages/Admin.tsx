@@ -31,7 +31,7 @@ export default function Admin({ sellers, loadSellers, disconnectSeller, headers 
       }
       const data = await res.json();
       if (data.redirect_url) {
-        window.open(data.redirect_url, '_blank');
+        window.location.href = data.redirect_url;
       }
     } catch {
       toast('Erro de conexao ao iniciar autorizacao.');
