@@ -12,7 +12,11 @@ export interface UserPermission {
 export interface AuthUser {
   id: string;
   username: string;
+  email: string;
   role: 'admin' | 'operator';
+  org_id: string;
+  org_name: string;
+  is_super_admin: boolean;
   can_run_compat: boolean;
   permissions: UserPermission[];
 }
@@ -62,6 +66,27 @@ export function useAuth() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      const newToken = data.token;
+      setToken(newToken);
+      localStorage.setItem(TOKEN_KEY, newToken);
+      const me = await fetchMe(newToken);
+      if (!me) return false;
+      setUser(me);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [fetchMe]);
+
+  const signup = useCallback(async (email: string, password: string, companyName: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, company_name: companyName }),
       });
       if (!res.ok) return false;
       const data = await res.json();
@@ -151,6 +176,7 @@ export function useAuth() {
     token,
     user,
     login,
+    signup,
     logout,
     sellers,
     loadingSellers,
