@@ -4,9 +4,10 @@ import { API_BASE } from '../lib/api';
 interface Props {
   onLogin: (email: string, password: string) => Promise<boolean>;
   onNavigateToSignup?: () => void;
+  onNavigateToForgotPassword?: () => void;
 }
 
-export default function Login({ onLogin, onNavigateToSignup }: Props) {
+export default function Login({ onLogin, onNavigateToSignup, onNavigateToForgotPassword }: Props) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [masterPassword, setMasterPassword] = useState('');
@@ -173,6 +174,31 @@ export default function Login({ onLogin, onNavigateToSignup }: Props) {
             {loading ? 'Entrando...' : 'Entrar'}
           </button>
         </form>
+
+        {onNavigateToForgotPassword && (
+          <p style={{
+            textAlign: 'center',
+            marginTop: 'var(--space-4)',
+            fontSize: 'var(--text-sm)',
+            color: 'var(--ink-muted)',
+          }}>
+            <button
+              type="button"
+              onClick={onNavigateToForgotPassword}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--accent)',
+                fontSize: 'var(--text-sm)',
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                padding: 0,
+              }}
+            >
+              Esqueci minha senha
+            </button>
+          </p>
+        )}
 
         <button
           type="button"

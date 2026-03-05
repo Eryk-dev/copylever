@@ -9,16 +9,26 @@ import UsersPage from './pages/UsersPage';
 import CompatPage from './pages/CompatPage';
 import SuperAdminPage from './pages/SuperAdminPage';
 import BillingPage from './pages/BillingPage';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
 
 type View = 'copy' | 'admin' | 'compat' | 'super';
 type AdminSubView = 'sellers' | 'users' | 'billing';
-type AuthView = 'login' | 'signup';
+type AuthView = 'login' | 'signup' | 'forgot' | 'reset';
 
 export default function App() {
   const auth = useAuth();
   const [view, setView] = useState<View>('copy');
   const [adminSubView, setAdminSubView] = useState<AdminSubView>('sellers');
-  const [authView, setAuthView] = useState<AuthView>('login');
+  const [authView, setAuthView] = useState<AuthView>(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('reset_token')) return 'reset';
+    return 'login';
+  });
+  const [resetToken, setResetToken] = useState<string>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('reset_token') || '';
+  });
   const [billingAvailable, setBillingAvailable] = useState(false);
   const [paymentActive, setPaymentActive] = useState(true);
   const [billingMessage, setBillingMessage] = useState<string | null>(null);
@@ -124,10 +134,30 @@ export default function App() {
         />
       );
     }
+    if (authView === 'forgot') {
+      return (
+        <ForgotPassword
+          onNavigateToLogin={() => setAuthView('login')}
+        />
+      );
+    }
+    if (authView === 'reset' && resetToken) {
+      return (
+        <ResetPassword
+          token={resetToken}
+          onNavigateToLogin={() => {
+            setAuthView('login');
+            setResetToken('');
+            window.history.replaceState(null, '', window.location.pathname);
+          }}
+        />
+      );
+    }
     return (
       <Login
         onLogin={auth.login}
         onNavigateToSignup={() => setAuthView('signup')}
+        onNavigateToForgotPassword={() => setAuthView('forgot')}
       />
     );
   }

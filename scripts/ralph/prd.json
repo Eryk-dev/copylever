@@ -1,94 +1,150 @@
 {
-  "project": "COPY ANUNCIOS — Multi-Tenant Fixes",
-  "branchName": "ralph/multi-tenant-saas",
-  "description": "Post-review fixes for the multi-tenant SaaS migration. Fix crashes, cross-tenant security holes, broken UI, and missing validations identified during code review.",
+  "project": "COPY ANUNCIOS — Customer Experience",
+  "branchName": "ralph/customer-experience",
+  "description": "Improve customer onboarding and payment flow: auto-detect payment after Stripe, show pricing, first-use guide, better signup page, and forgot password.",
   "userStories": [
     {
-      "id": "US-FIX-001",
-      "title": "Fix admin-promote crash: missing org_id on user creation",
-      "description": "As a developer, I want admin-promote to work after the multi-tenant migration so that bootstrap admin creation does not crash.",
+      "id": "US-001",
+      "title": "Auto-detect payment after Stripe return",
+      "description": "As a customer returning from Stripe checkout, I want the app to detect my payment automatically so I don't get stuck on the paywall.",
       "acceptanceCriteria": [
-        "In app/routers/auth.py, the admin-promote endpoint's new user insert dict includes org_id set to the Lever Money UUID '00000000-0000-0000-0000-000000000001'",
-        "The new user insert dict also includes email set to req.username (so the user can log in via the email-based login flow)",
-        "When promoting an existing user (user already exists path), the logic remains unchanged",
+        "In App.tsx: on mount, check URL for ?billing=success param",
+        "When ?billing=success is present, start polling GET /api/billing/status every 2 seconds (max 10 attempts)",
+        "When payment_active returns true during polling, update paymentActive state to true (paywall disappears)",
+        "If after 10 attempts payment_active is still false, show message 'Pagamento em processamento. Atualize a pagina em alguns segundos.' on the paywall screen",
+        "After processing, remove ?billing=success from URL using window.history.replaceState (no page reload)",
+        "When ?billing=cancel is in URL, show message 'Assinatura cancelada' on the paywall screen and remove the param",
+        "Polling cleanup: clear interval on unmount or when payment detected",
         "Typecheck passes"
       ],
       "priority": 1,
       "passes": true,
-      "notes": "The insert is at app/routers/auth.py around line 368-375. The new_user dict needs 'org_id': '00000000-0000-0000-0000-000000000001' and 'email': req.username. The Lever Money UUID is the deterministic one from migration 008. Do NOT change the promote path (when user already exists) — only fix the create path."
+      "notes": "In frontend/src/App.tsx: Add a useEffect that checks window.location.search for billing=success on mount. Use setInterval for polling. The existing billing status fetch (line ~25-38) already calls GET /api/billing/status — reuse the same pattern. When polling detects payment_active=true, call setPaymentActive(true) which will cause the paywall conditional to pass. Use window.history.replaceState(null, '', window.location.pathname) to clean the URL. For billing=cancel, just show a one-time message and clean URL."
     },
     {
-      "id": "US-FIX-002",
-      "title": "Fix cross-org permission access in admin_users.py",
-      "description": "As a platform owner, I want user permission endpoints to verify org membership so that admins cannot read or modify permissions for users in other organizations.",
+      "id": "US-002",
+      "title": "Show pricing on paywall and billing page",
+      "description": "As a customer on the paywall screen, I want to see the subscription price so I know how much I'll pay before clicking subscribe.",
       "acceptanceCriteria": [
-        "GET /api/admin/users/{user_id}/permissions fetches the target user and verifies target_user['org_id'] == user['org_id'] before returning data. Returns 404 if mismatch.",
-        "PUT /api/admin/users/{user_id}/permissions fetches the target user and verifies target_user['org_id'] == user['org_id'] before upserting. Returns 404 if mismatch.",
-        "Use the same pattern already used in update_user() and delete_user() in the same file (fetch target, compare org_id, raise 404)",
+        "In App.tsx paywall screen: add text 'Plano mensal — R$ 349,90/mes' between the warning box and the BillingPage component",
+        "Style: fontSize var(--text-sm), color var(--ink-muted), fontWeight 600, centered",
+        "In BillingPage.tsx: when payment_active is false, show 'Plano mensal — R$ 349,90/mes' above the 'Assinar' button",
         "Typecheck passes"
       ],
       "priority": 2,
       "passes": true,
-      "notes": "In app/routers/admin_users.py: get_user_permissions is at ~line 141. It already fetches sellers by org_id (line 148-151), but does NOT verify the target user_id belongs to the same org. Add a check at the top: fetch user by id, verify org_id matches. Same for update_user_permissions at ~line 175 — line 185 checks user exists but does not check org_id. Follow the exact pattern from update_user (~line 99) and delete_user (~line 132) which already do this correctly."
+      "notes": "In frontend/src/App.tsx: the paywall block is the section starting with 'if (billingAvailable && !paymentActive && !auth.user?.is_super_admin)'. Add a <p> element with the pricing text right before the <BillingPage> component. In frontend/src/pages/BillingPage.tsx: add the same pricing text inside the !payment_active branch, above the 'Assinar' button (around line 147)."
     },
     {
-      "id": "US-FIX-003",
-      "title": "Fix cross-org copy_logs update in copy.py",
-      "description": "As a platform owner, I want copy log updates to be org-scoped so that one org's dimension retry cannot affect another org's log entries.",
+      "id": "US-003",
+      "title": "First-use onboarding guide",
+      "description": "As a new customer who just paid, I want to see a quick guide so I know how to start using the system.",
       "acceptanceCriteria": [
-        "In copy_with_dims() endpoint: the copy_logs update that sets needs_dimensions status (around line 169-175) adds .eq('org_id', org_id) to the query",
-        "In retry_dimensions() endpoint: the final copy_logs update (around line 250-254) adds .eq('org_id', org_id) to the query",
+        "In App.tsx: after the header and before the content area, show a welcome card if localStorage key 'onboarding-done' is not set",
+        "The card has title 'Bem-vindo ao Copy Anuncios!' and 3 numbered steps:",
+        "Step 1: 'Conecte sua conta do Mercado Livre na aba Admin > Sellers'",
+        "Step 2: 'Cole os IDs dos anuncios que deseja copiar'",
+        "Step 3: 'Selecione origem e destino e clique Copiar'",
+        "The card has a button 'Entendi' that sets localStorage 'onboarding-done' to 'true' and hides the card",
+        "Card uses same design system: Card-like styling with var(--surface) background, rounded corners, padding",
+        "Only shows for non-super-admin users",
         "Typecheck passes"
       ],
       "priority": 3,
       "passes": true,
-      "notes": "In app/routers/copy.py: The first update is around line 169: db.table('copy_logs').update({...}).eq('source_item_id', item_id).eq('source_seller', req.source).eq('status', 'needs_dimensions').execute() — add .eq('org_id', org_id) before .execute(). The second update is around line 250: db.table('copy_logs').update({...}).eq('id', req.log_id).execute() — add .eq('org_id', org_id) before .execute(). The org_id variable is already available in both functions."
+      "notes": "In frontend/src/App.tsx: add a state `const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('onboarding-done'))`. Render the card between the header and the {/* Content */} section, only when showOnboarding && !auth.user?.is_super_admin. On 'Entendi' click: localStorage.setItem('onboarding-done', 'true') and setShowOnboarding(false). Use inline styles matching the existing design system (var(--surface), var(--space-*), var(--text-*), rounded corners)."
     },
     {
-      "id": "US-FIX-004",
-      "title": "Fix OAuth install button blocked by popup blocker",
-      "description": "As an org admin, I want the ML authorization button to work reliably so that I can connect Mercado Livre accounts without popup blockers interfering.",
+      "id": "US-004",
+      "title": "Improve signup page with product info and pricing",
+      "description": "As a visitor on the signup page, I want to understand what the product does so I feel confident creating an account.",
       "acceptanceCriteria": [
-        "In Admin.tsx handleInstall(): replace window.open(data.redirect_url, '_blank') with window.location.href = data.redirect_url",
-        "Before redirecting, the function works the same: fetch with auth headers, parse JSON, handle errors with toast",
-        "If the fetch fails (401, network error), show toast error and do NOT redirect",
+        "In Signup.tsx: below the existing subtitle 'Crie sua conta para comecar', add a new subtitle: 'Copie anuncios e compatibilidades entre contas do Mercado Livre'",
+        "Below that subtitle, add 3 bullet points with checkmark prefix: 'Copia em massa entre contas', 'Compatibilidades veiculares automaticas', 'Gerenciamento multi-conta'",
+        "Below the form (before the 'Ja tem conta?' link), add text: 'Plano mensal: R$ 349,90/mes'",
+        "Bullet points use fontSize var(--text-xs), color var(--ink-muted), left-aligned within the card",
+        "Pricing text uses fontSize var(--text-xs), color var(--ink-faint), centered",
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": "In frontend/src/pages/Admin.tsx, handleInstall() is at ~line 20. The only change needed is line 34: replace `window.open(data.redirect_url, '_blank')` with `window.location.href = data.redirect_url`. The rest of the function (fetch, error handling, loading state) stays the same. Do NOT add a confirmation dialog — just redirect directly like the old flow did."
+      "passes": true,
+      "notes": "In frontend/src/pages/Signup.tsx: The subtitle is at ~line 74-81. Add the product description below it (before the <form>). For bullet points, use a simple div with 3 <p> elements, each with a checkmark character. For pricing, add a <p> between the </form> and the 'Ja tem conta?' button (~line 139). Keep the same styling patterns used in the file."
     },
     {
-      "id": "US-FIX-005",
-      "title": "Show specific signup error messages from backend",
-      "description": "As a new user signing up, I want to see the specific reason my signup failed so that I can fix the problem and try again.",
+      "id": "US-005",
+      "title": "Forgot password — database migration",
+      "description": "As a developer, I want a password_reset_tokens table so that reset tokens can be stored and validated.",
       "acceptanceCriteria": [
-        "In useAuth.ts: signup() return type changes from Promise<boolean> to Promise<{success: boolean, error?: string}>",
-        "On API error, signup() parses the response JSON and returns {success: false, error: data.detail || 'Erro ao criar conta'}",
-        "On network error, signup() returns {success: false, error: 'Erro de conexao'}",
-        "On success, signup() returns {success: true}",
-        "In Signup.tsx: the handleSubmit reads the error field from signup() result and displays it",
-        "In Signup.tsx: add client-side validation before submit — if password.length < 6, show 'Senha deve ter pelo menos 6 caracteres' without calling the API",
+        "Create migration file app/db/migrations/009_password_reset_tokens.sql",
+        "Table password_reset_tokens with columns: id SERIAL PRIMARY KEY, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, token TEXT UNIQUE NOT NULL, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ DEFAULT now()",
+        "Create index idx_password_reset_tokens_token ON password_reset_tokens(token)",
+        "Create index idx_password_reset_tokens_user ON password_reset_tokens(user_id)",
+        "Use IF NOT EXISTS for CREATE TABLE and CREATE INDEX",
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": "In frontend/src/hooks/useAuth.ts: signup() is at ~line 84. Currently returns boolean. Change to: on !res.ok, parse error with `const data = await res.json().catch(() => null)` and return `{success: false, error: data?.detail || 'Erro ao criar conta'}`. On success return `{success: true}`. On catch return `{success: false, error: 'Erro de conexao'}`. In frontend/src/pages/Signup.tsx: handleSubmit at ~line 21 currently does `const success = await onSignup(...)`. Change to `const result = await onSignup(...)`. If !result.success, setError(result.error || 'Erro ao criar conta'). The onSignup prop type changes from `(e,p,c) => Promise<boolean>` to `(e,p,c) => Promise<{success: boolean, error?: string}>`. Add password length check before calling onSignup."
+      "passes": true,
+      "notes": "Follow the existing migration pattern in app/db/migrations/ (files 001-008 exist). Use IF NOT EXISTS for idempotency. The user_id FK references users(id) with ON DELETE CASCADE so tokens are cleaned up when a user is deleted."
     },
     {
-      "id": "US-FIX-006",
-      "title": "Protect debug endpoint with super-admin auth",
-      "description": "As a platform owner, I want the debug environment endpoint to require authentication so that server configuration is not exposed publicly.",
+      "id": "US-006",
+      "title": "Forgot password — backend endpoints",
+      "description": "As a developer, I want forgot-password and reset-password endpoints so that customers can recover their accounts.",
       "acceptanceCriteria": [
-        "The /api/debug/env endpoint in app/main.py uses Depends(require_super_admin) as a parameter",
-        "Import require_super_admin from app.routers.auth",
-        "Unauthenticated requests get 401",
-        "Non-super-admin users get 403",
+        "Add POST /api/auth/forgot-password endpoint in app/routers/auth.py",
+        "ForgotPasswordRequest model with field: email (str)",
+        "Endpoint looks up user by email. If found, generates token via secrets.token_urlsafe(32), inserts into password_reset_tokens with expires_at = now + 1 hour",
+        "Always returns 200 with {message: 'Se o email existir, enviaremos instrucoes'} regardless of whether user exists (security)",
+        "Add POST /api/auth/reset-password endpoint in app/routers/auth.py",
+        "ResetPasswordRequest model with fields: token (str), new_password (str)",
+        "Validates new_password >= 6 chars, returns 400 if too short",
+        "Looks up token in password_reset_tokens, checks not expired, returns 400 'Link expirado ou invalido' if invalid",
+        "Updates user password_hash using existing _hash_password(), deletes the token row, returns 200 {message: 'Senha alterada com sucesso'}",
+        "Both endpoints are public (no auth required)",
         "Typecheck passes"
       ],
       "priority": 6,
+      "passes": true,
+      "notes": "In app/routers/auth.py: add two new endpoints after the existing /logout endpoint. Use the same patterns: Pydantic BaseModel for request, get_db() for queries, _hash_password() for hashing. The forgot-password endpoint must NOT reveal whether the email exists. For token lookup: db.table('password_reset_tokens').select('*').eq('token', req.token).execute(). Check expires_at > now(utc). After successful reset, delete token: db.table('password_reset_tokens').delete().eq('id', token_row['id']).execute(). No email sending in this story — that's US-008."
+    },
+    {
+      "id": "US-007",
+      "title": "Forgot password — frontend pages",
+      "description": "As a customer who forgot their password, I want a flow in the login screen to reset it.",
+      "acceptanceCriteria": [
+        "In Login.tsx: add link 'Esqueci minha senha' below the submit button, styled like the 'Ainda nao tem conta?' link",
+        "Clicking it calls an onNavigateToForgotPassword callback prop (optional, same pattern as onNavigateToSignup)",
+        "Create frontend/src/pages/ForgotPassword.tsx: same card layout as Login.tsx, with email input and 'Enviar link' button",
+        "On submit, POST /api/auth/forgot-password. Always show message 'Se o email existir, enviaremos instrucoes de redefinicao.' with a 'Voltar ao login' link",
+        "Create frontend/src/pages/ResetPassword.tsx: same card layout, with 'Nova senha' and 'Confirmar senha' inputs and 'Redefinir' button",
+        "Validates passwords match before submit. If mismatch, show 'Senhas nao conferem'",
+        "On submit, POST /api/auth/reset-password with {token, new_password}. On success show 'Senha alterada com sucesso' with 'Ir para login' button. On error show 'Link expirado. Solicite um novo.'",
+        "In App.tsx: add authView states 'forgot' and 'reset'. Check URL for ?reset_token=xxx on mount — if present, show ResetPassword with that token",
+        "Wire all navigation callbacks in App.tsx (login->forgot, forgot->login, reset->login)",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": "In frontend/src/App.tsx: extend AuthView type to 'login' | 'signup' | 'forgot' | 'reset'. Add useEffect to check for ?reset_token= in URL on mount. The ForgotPassword and ResetPassword pages follow the exact same pattern as Login.tsx and Signup.tsx: same card, same inputStyle, same button styles. ForgotPassword props: {onSubmit: (email) => Promise<void>, onNavigateToLogin: () => void}. ResetPassword props: {token: string, onNavigateToLogin: () => void}. In ResetPassword, the component handles the API call internally since it needs to show success/error states."
+    },
+    {
+      "id": "US-008",
+      "title": "Send password reset email via SMTP",
+      "description": "As the system, I want to send an email with the reset link so the customer can actually reset their password.",
+      "acceptanceCriteria": [
+        "Add SMTP config to app/config.py: smtp_host: str = '', smtp_port: int = 587, smtp_user: str = '', smtp_password: str = '', smtp_from: str = ''",
+        "Create app/services/email.py with function send_reset_email(to_email: str, reset_token: str)",
+        "The function builds the reset link: f'{settings.base_url}?reset_token={reset_token}'",
+        "Email subject: 'Copy Anuncios — Redefinir senha'",
+        "Email body (plain text): 'Voce solicitou a redefinicao de senha.\\n\\nClique no link abaixo:\\n{link}\\n\\nEste link expira em 1 hora.\\n\\nSe voce nao solicitou, ignore este email.'",
+        "Uses Python smtplib with STARTTLS for sending",
+        "If smtp_host is empty, log warning 'Email not configured, skipping reset email' and return without error",
+        "In app/routers/auth.py forgot-password endpoint: after creating the token, call send_reset_email(). Wrap in try/except — if email fails, log error but still return 200",
+        "Typecheck passes"
+      ],
+      "priority": 8,
       "passes": false,
-      "notes": "In app/main.py at ~line 56: change `async def debug_env():` to `async def debug_env(user: dict = Depends(require_super_admin)):`. Add imports at top: `from fastapi import Depends` (may already be imported) and `from app.routers.auth import require_super_admin`. The function body stays the same."
+      "notes": "Create new file app/services/email.py. Use smtplib.SMTP(settings.smtp_host, settings.smtp_port) with starttls() and login(). Build email with email.mime.text.MIMEText. In the forgot-password endpoint in auth.py, import and call send_reset_email after inserting the token. The call must be in a try/except so email failures don't break the endpoint. Check settings.smtp_host before attempting to send."
     }
   ]
 }

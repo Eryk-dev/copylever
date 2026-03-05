@@ -1,38 +1,102 @@
 # Ralph Progress Log
-Started: Thu Mar  5 11:37:38 -03 2026
+Started: Thu Mar  5 13:47:37 -03 2026
 ---
 
 ## Codebase Patterns
-- admin-promote endpoint creates users in `users` table — must include `org_id` and `email` for multi-tenant schema
-- Lever Money bootstrap org UUID: `00000000-0000-0000-0000-000000000001` (from migration 008)
-- Frontend typecheck: `cd frontend && npx tsc --noEmit`
-- All admin endpoints with `user_id` path param must verify org membership: fetch target user, compare org_id, raise 404 on mismatch
-- Every Supabase UPDATE/DELETE on multi-tenant tables must include `.eq("org_id", org_id)` — audit all write queries
+- In App.tsx, billing status is fetched via `GET /api/billing/status` with `auth.headers()` — reuse this pattern for any billing checks
+- Paywall block is the conditional `if (billingAvailable && !paymentActive && !auth.user?.is_super_admin)` in App.tsx
+- URL param cleanup uses `window.history.replaceState(null, '', window.location.pathname)`
+- Design system vars: `--ink`, `--ink-muted`, `--surface`, `--space-*`, `--text-sm`, `--text-xs` etc.
+- AuthView type controls which auth page is shown (login/signup)
+- Migrations use `IF NOT EXISTS` for idempotency (tables and indexes)
+- Migration files follow naming pattern: `NNN_description.sql` in `app/db/migrations/`
+- Public auth endpoints (forgot/reset password) omit the `Depends()` param — no special decorator needed
+- Auth pages (Login, Signup, ForgotPassword, ResetPassword) share identical card layout: centered flex, --surface bg, 380px max-width, animate-in class
+- AuthView type in App.tsx controls which auth page renders: 'login' | 'signup' | 'forgot' | 'reset'
+- Password reset tokens stored in `password_reset_tokens` table with 1h expiry, token via `secrets.token_urlsafe(32)`
 ---
 
-## 2026-03-05 - US-FIX-001
-- Added `org_id` and `email` fields to the new_user insert dict in admin-promote endpoint
-- Files changed: `app/routers/auth.py` (line 368-376)
+## 2026-03-05 - US-001
+- Implemented auto-detect payment after Stripe return
+- Added `billingMessage` state for showing status messages on the paywall
+- Added useEffect that checks URL for `?billing=success` (starts polling) and `?billing=cancel` (shows message)
+- Polling: every 2s, max 10 attempts, clears interval on success or max reached
+- URL cleanup via `window.history.replaceState` after processing
+- Files changed: `frontend/src/App.tsx`
 - **Learnings for future iterations:**
-  - The admin-promote endpoint has two paths: promote existing user vs create new user. Only the create path needed fixing.
-  - `email` is set to `req.username` because after multi-tenant migration, login is email-based
-  - The `org_id` must be set to the Lever Money UUID for bootstrap admin
+  - The paywall screen is between lines ~92-170 in App.tsx — add UI elements there for paywall-related features
+  - `billingMessage` state is now available on the paywall for displaying any status messages
+  - The billing status polling pattern can be reused for other async operations
 ---
 
-## 2026-03-05 - US-FIX-002
-- Added org_id verification to `get_user_permissions` and `update_user_permissions` endpoints
-- Files changed: `app/routers/admin_users.py` (lines 146-149, 189-192)
+## 2026-03-05 - US-002
+- Added pricing text "Plano mensal — R$ 349,90/mês" to the paywall screen in App.tsx (between warning box and BillingPage)
+- Added same pricing text in BillingPage.tsx above the "Assinar" button when payment is inactive
+- Files changed: `frontend/src/App.tsx`, `frontend/src/pages/BillingPage.tsx`
 - **Learnings for future iterations:**
-  - All admin endpoints that take a `user_id` path param must verify the target user belongs to the same org
-  - The org_id check pattern is: fetch target user with `select("id, org_id")`, compare `target.data[0]["org_id"] != user["org_id"]`, raise 404
-  - `update_user_permissions` previously only checked user existence, not org membership — always check both
+  - BillingPage uses a fragment (`<>...</>`) wrapper when adding multiple elements in the ternary inactive branch
+  - The paywall card in App.tsx has billingMessage display area between warning box and BillingPage — insert new elements around there
 ---
 
-## 2026-03-05 - US-FIX-003
-- Added `.eq("org_id", org_id)` to two copy_logs update queries in `copy_with_dims` and `retry_dimensions`
-- Files changed: `app/routers/copy.py` (lines 175, 254)
+## 2026-03-05 - US-003
+- Added first-use onboarding guide card in App.tsx between header and Payment Banner
+- Card shows 3 numbered steps for new users, hidden for super_admin
+- 'Entendi' button sets localStorage 'onboarding-done' and hides the card
+- Files changed: `frontend/src/App.tsx`
 - **Learnings for future iterations:**
-  - Every Supabase update/delete query on a multi-tenant table must include `.eq("org_id", org_id)` to prevent cross-org data modification
-  - The `org_id` variable is already available in all copy endpoints via `user["org_id"]`
-  - Read queries (SELECT) may already be scoped by user_id or explicit org_id check, but write queries are the critical ones to audit
+  - Onboarding card is rendered between header and Payment Banner sections in App.tsx
+  - `showOnboarding` state uses lazy initializer with localStorage check
+  - The main content layout has gap var(--space-8) between sections — new cards inserted there get automatic spacing
+---
+
+## 2026-03-05 - US-004
+- Added product description subtitle "Copie anuncios e compatibilidades entre contas do Mercado Livre" below existing subtitle
+- Added 3 bullet points with checkmark prefix (Copia em massa, Compatibilidades veiculares, Gerenciamento multi-conta)
+- Added pricing text "Plano mensal: R$ 349,90/mes" between form and "Ja tem conta?" link
+- Files changed: `frontend/src/pages/Signup.tsx`
+- **Learnings for future iterations:**
+  - Signup.tsx follows same card layout as Login.tsx — centered card with --surface background, 380px max width
+  - Use `&#10003;` for checkmark character in JSX
+  - Signup page sections order: title → subtitle → description → bullets → form → pricing → login link
+---
+
+## 2026-03-05 - US-005
+- Created migration file `app/db/migrations/009_password_reset_tokens.sql`
+- Table: password_reset_tokens with id (SERIAL PK), user_id (UUID FK→users), token (TEXT UNIQUE), expires_at (TIMESTAMPTZ), created_at
+- Indexes: idx_password_reset_tokens_token, idx_password_reset_tokens_user
+- All use IF NOT EXISTS for idempotency
+- Files changed: `app/db/migrations/009_password_reset_tokens.sql`
+- **Learnings for future iterations:**
+  - Existing migrations use UUID PKs with gen_random_uuid(), but SERIAL is fine for non-referenced tables
+  - The password_reset_tokens table will be used by US-006 (backend endpoints) and US-008 (email sending)
+  - ON DELETE CASCADE ensures tokens are cleaned up when users are deleted
+---
+
+## 2026-03-05 - US-006
+- Added POST /api/auth/forgot-password endpoint: looks up user by email, generates token via secrets.token_urlsafe(32), stores in password_reset_tokens with 1h expiry, always returns 200
+- Added POST /api/auth/reset-password endpoint: validates password >= 6 chars, looks up token, checks expiry, updates password_hash, deletes used token
+- Both endpoints are public (no auth dependency)
+- Added ForgotPasswordRequest and ResetPasswordRequest Pydantic models
+- Files changed: `app/routers/auth.py`
+- **Learnings for future iterations:**
+  - Public endpoints in auth.py just omit the `Depends(require_user)` parameter — no special config needed
+  - Token lookup pattern: `db.table('password_reset_tokens').select('*').eq('token', value).execute()`
+  - Expiry check pattern: parse ISO string if needed, compare with `datetime.now(timezone.utc)`
+  - The forgot-password endpoint deliberately doesn't reveal if the email exists (security best practice)
+  - US-008 will add email sending to the forgot-password endpoint — the token creation is already in place
+---
+
+## 2026-03-05 - US-007
+- Created ForgotPassword.tsx: email input, POST /api/auth/forgot-password, shows confirmation message after submit, "Voltar ao login" link
+- Created ResetPassword.tsx: password + confirm password inputs, validates match, POST /api/auth/reset-password, shows success/error states with navigation
+- Added 'Esqueci minha senha' link to Login.tsx below submit button via onNavigateToForgotPassword callback prop
+- Extended AuthView type in App.tsx to include 'forgot' | 'reset' states
+- Added lazy initializer for authView and resetToken state to detect ?reset_token= in URL on mount
+- Wired all navigation: login->forgot, forgot->login, reset->login (cleans URL param on navigate back)
+- Files changed: `frontend/src/pages/ForgotPassword.tsx` (new), `frontend/src/pages/ResetPassword.tsx` (new), `frontend/src/pages/Login.tsx`, `frontend/src/App.tsx`
+- **Learnings for future iterations:**
+  - Auth pages (Login, Signup, ForgotPassword, ResetPassword) all share the same card layout pattern: centered, --surface bg, 380px max, animate-in class
+  - Use lazy initializer for useState when checking URL params (avoids useEffect for initial state)
+  - When navigating from ResetPassword back to login, clean up the ?reset_token= URL param with replaceState
+  - The onNavigateToForgotPassword prop on Login is optional (same pattern as onNavigateToSignup)
 ---
