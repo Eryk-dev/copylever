@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useAuth } from './hooks/useAuth';
 import { API_BASE } from './lib/api';
+import LandingPage from './pages/LandingPage';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import CopyPage from './pages/CopyPage';
@@ -14,7 +15,7 @@ import ResetPassword from './pages/ResetPassword';
 
 type View = 'copy' | 'admin' | 'compat' | 'super';
 type AdminSubView = 'sellers' | 'users' | 'billing';
-type AuthView = 'login' | 'signup' | 'forgot' | 'reset';
+type AuthView = 'landing' | 'login' | 'signup' | 'forgot' | 'reset';
 
 export default function App() {
   const auth = useAuth();
@@ -23,7 +24,7 @@ export default function App() {
   const [authView, setAuthView] = useState<AuthView>(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('reset_token')) return 'reset';
-    return 'login';
+    return 'landing';
   });
   const [resetToken, setResetToken] = useState<string>(() => {
     const params = new URLSearchParams(window.location.search);
@@ -34,6 +35,13 @@ export default function App() {
   const [billingMessage, setBillingMessage] = useState<string | null>(null);
   const [paywallLoading, setPaywallLoading] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('onboarding-done'));
+
+  // Reset to landing page on logout
+  useEffect(() => {
+    if (!auth.isAuthenticated && authView !== 'reset') {
+      setAuthView('landing');
+    }
+  }, [auth.isAuthenticated]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!auth.isAuthenticated) return;
@@ -127,6 +135,14 @@ export default function App() {
     : visibleTabs[0] ?? 'copy';
 
   if (!auth.isAuthenticated) {
+    if (authView === 'landing') {
+      return (
+        <LandingPage
+          onNavigateToLogin={() => setAuthView('login')}
+          onNavigateToSignup={() => setAuthView('signup')}
+        />
+      );
+    }
     if (authView === 'signup') {
       return (
         <Signup
