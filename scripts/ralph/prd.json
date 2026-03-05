@@ -206,7 +206,7 @@
         "Typecheck passes"
       ],
       "priority": 12,
-      "passes": false,
+      "passes": true,
       "notes": "Same pattern as US-011 for copy.py. The _resolve_item_seller() in compat.py is a duplicate of the one in copy.py — both need the same change. preview_item() at line ~52 has a fallback: db.table('copy_sellers').select('slug').limit(1).execute() — add .eq('org_id', org_id) and .eq('active', True) to this. copy_compat() at line ~161 inserts into compat_logs — add org_id to log_insert dict."
     },
     {

@@ -108,6 +108,20 @@ Started: Thu Mar  5 10:43:47 -03 2026
   - _log_api_debug is imported from item_copier, already has org_id param from US-008
 ---
 
+## 2026-03-05 - US-012
+- Org-scoped compat.py router: all endpoints now use org_id from user context
+- _resolve_item_seller() accepts org_id, scopes copy_sellers query and get_item calls
+- preview_item() scopes first-seller fallback by org_id and active, passes org_id to get_item and get_item_compatibilities
+- search_sku() passes org_id to search_sku_all_sellers
+- copy_compat() includes org_id in compat_logs insert, passes org_id to copy_compat_to_targets
+- compat_logs() uses 3-tier visibility: super-admin sees all, org admin sees org, operator sees own
+- Files changed: app/routers/compat.py
+- **Learnings for future iterations:**
+  - Same _resolve_item_seller pattern as copy.py: add org_id param, scope copy_sellers query
+  - preview_item first-seller fallback should also filter by .eq("active", True) in addition to org_id
+  - compat_logs visibility mirrors copy_logs pattern: super-admin > org admin > operator
+---
+
 ## 2026-03-05 - US-010
 - Org-scoped auth_ml.py: install(), callback(), list_sellers(), disconnect_seller()
 - install() now requires auth (Depends(require_user)), encodes org_id in state as `org_{org_id}`, returns JSON `{redirect_url}` instead of RedirectResponse
