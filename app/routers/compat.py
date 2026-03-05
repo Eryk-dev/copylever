@@ -5,7 +5,7 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.db.supabase import get_db
 from app.routers.auth import require_active_org, require_user
@@ -127,6 +127,13 @@ async def preview_item(item_id: str, seller: str = Query(None), user: dict = Dep
 
 class SearchSkuRequest(BaseModel):
     skus: list[str]
+
+    @field_validator("skus")
+    @classmethod
+    def limit_skus(cls, v: list[str]) -> list[str]:
+        if len(v) > 50:
+            raise ValueError("Maximo de 50 SKUs por busca")
+        return v
 
 
 @router.post("/search-sku")

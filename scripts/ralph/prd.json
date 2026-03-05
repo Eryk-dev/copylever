@@ -178,7 +178,7 @@
         "Typecheck passes"
       ],
       "priority": 11,
-      "passes": false,
+      "passes": true,
       "notes": "In app/routers/copy.py: resolve_sellers_endpoint is around line 390-408. It uses require_active_org which gives the user dict. After resolving items to sellers, check permissions: query user_permissions for the user's can_copy_from permissions. If user.role != 'admin', filter results. Move items with unauthorized sellers to the errors array. The _check_seller_permission helper (if refactored to shared module in US-008 Fase 1) can be reused, otherwise query user_permissions directly."
     },
     {
@@ -194,7 +194,7 @@
         "Typecheck passes"
       ],
       "priority": 12,
-      "passes": false,
+      "passes": true,
       "notes": "In CopyPage.tsx: when building groups in handleCopy (~line 73-118), also build a sourceMap from the groups: const sourceMap: Record<string, string> = {}; groups.forEach(g => g.itemIds.forEach(id => sourceMap[id] = g.source)). Pass sourceMap to CopyProgress (currently passes source as a single string via results.source). In CopyProgress.tsx: the component receives results with .source. Change to accept sourceMap. In handleDimensionSubmit, use sourceMap[itemId] instead of the single source. CopyProgress.tsx is in frontend/src/components/."
     },
     {
@@ -209,7 +209,7 @@
         "Typecheck passes"
       ],
       "priority": 13,
-      "passes": false,
+      "passes": true,
       "notes": "In app/routers/compat.py: SearchSkuRequest has skus: List[str]. Add @field_validator('skus') to check len(v) <= 50. For the semaphore: in the search-sku handler, create sem = asyncio.Semaphore(10) and wrap each ML API call task with async with sem. The frontend compat page has a SKU textarea — add a counter showing '{count}/50 SKUs' and warning styling when count > 45."
     }
   ]

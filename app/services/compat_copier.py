@@ -39,11 +39,21 @@ async def search_sku_all_sellers(
     if allowed_sellers is not None:
         sellers = [s for s in sellers if s["slug"] in allowed_sellers]
 
+    sem = asyncio.Semaphore(10)
+
+    async def _search_with_sem(slug: str, sku: str) -> list[str]:
+        async with sem:
+            return await search_items_by_sku(slug, sku, org_id=org_id)
+
+    async def _get_item_with_sem(slug: str, item_id: str) -> dict[str, Any]:
+        async with sem:
+            return await get_item(slug, item_id, org_id=org_id)
+
     # Build tasks: one per seller+SKU combination
     tasks: list[tuple[dict[str, Any], str, asyncio.Task[list[str]]]] = []
     for seller in sellers:
         for sku in skus:
-            task = asyncio.create_task(search_items_by_sku(seller["slug"], sku, org_id=org_id))
+            task = asyncio.create_task(_search_with_sem(seller["slug"], sku))
             tasks.append((seller, sku, task))
 
     # Await all search tasks in parallel
@@ -57,7 +67,7 @@ async def search_sku_all_sellers(
             logger.warning("SKU search failed for seller %s, sku %s", seller["slug"], sku)
             continue
         for item_id in item_ids:
-            info_task = asyncio.create_task(get_item(seller["slug"], item_id, org_id=org_id))
+            info_task = asyncio.create_task(_get_item_with_sem(seller["slug"], item_id))
             item_info_tasks.append((seller, sku, item_id, info_task))
 
     for seller, sku, item_id, info_task in item_info_tasks:

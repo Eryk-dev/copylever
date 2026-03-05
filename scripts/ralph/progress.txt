@@ -127,3 +127,40 @@ Started: Thu Mar  5 15:46:25 -03 2026
   - `_token_locks` dict is safe for single-worker uvicorn (Docker uses 1 worker) — no cross-process coordination needed
   - The lock is keyed by `seller_slug` only (not org_id) since seller slugs are unique within the system
 ---
+
+## 2026-03-05 - US-108
+- Added permission filtering to resolve_sellers_endpoint for non-admin users
+- After resolving item→seller mapping, each result is checked via `_check_seller_permission(user, seller_slug, "from")`
+- Items whose seller the operator lacks `can_copy_from` for are moved to the errors list with message 'Sem permissao para este seller'
+- Admin users bypass the check (existing `_check_seller_permission` logic)
+- Files changed: `app/routers/copy.py`
+- **Learnings for future iterations:**
+  - `_check_seller_permission` already handles admin bypass — no need for separate role check
+  - The permission filter is applied in the result-building loop, not as a separate pass — simpler and avoids iterating twice
+  - Frontend already filters client-side (CopyForm.tsx:81-86) but backend is now the source of truth
+---
+
+## 2026-03-05 - US-101
+- Built `sourceMap` (Record<string, string> mapping item_id→seller_slug) from copy groups in CopyPage.tsx handleCopy
+- Added `sourceMap` state in CopyPage, passed as prop to CopyProgress
+- CopyProgress now accepts optional `sourceMap` prop, uses `sourceMap[r.source_item_id]` per item in handleDimensionSubmit (with fallback to legacy `results.source`)
+- When copying from multiple sellers, dimension retry now sends the correct source seller for each item
+- Files changed: `frontend/src/pages/CopyPage.tsx`, `frontend/src/components/CopyProgress.tsx`
+- **Learnings for future iterations:**
+  - CopyProgress previously read source via `(results as any).source` — a loosely typed field set by CopyPage
+  - The sourceMap pattern (item_id→seller_slug) is more correct than a single `source` string when multiple groups exist
+  - `sourceMap` is optional in CopyProgress props for backwards compatibility (fallback to legacy source)
+  - CopyPage builds sourceMap before the loop, sets it via state so it's available for CopyProgress render
+---
+
+## 2026-03-05 - US-114
+- Added `@field_validator('skus')` to `SearchSkuRequest` in compat.py — rejects >50 SKUs with "Maximo de 50 SKUs por busca"
+- Added `asyncio.Semaphore(10)` in `search_sku_all_sellers` to limit concurrent ML API requests (both search and get_item calls)
+- Frontend: added SKU counter (`{count}/50 SKUs`) below textarea, warning styling when >45, error when >50, search button disabled when >50
+- Files changed: `app/routers/compat.py`, `app/services/compat_copier.py`, `frontend/src/pages/CompatPage.tsx`
+- **Learnings for future iterations:**
+  - Pydantic `field_validator` with `@classmethod` is the pattern for validation in this codebase (not `validator`)
+  - `asyncio.Semaphore` wraps individual task coroutines — define inner `async def` helpers that acquire the semaphore, then create tasks from those helpers
+  - `parseSkus()` in CompatPage.tsx splits by comma/whitespace/newline — reuse it for counting (call outside useCallback for render-time count)
+  - The semaphore is scoped to the `search_sku_all_sellers` call — limits both search and get_item phases to 10 concurrent ML API calls
+---

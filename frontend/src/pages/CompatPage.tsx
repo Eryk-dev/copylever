@@ -133,6 +133,8 @@ export default function CompatPage({ sellers, headers }: Props) {
     }
   }, [headers, firstSellerSlug]);
 
+  const parsedSkuCount = parseSkus(skuInput).length;
+
   const handleSearch = useCallback(async () => {
     const skus = parseSkus(skuInput);
     if (!skus.length) return;
@@ -356,10 +358,25 @@ export default function CompatPage({ sellers, headers }: Props) {
               fontFamily: 'var(--font-mono)',
             }}
           />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+            <span style={{
+              fontSize: 'var(--text-xs)',
+              fontFamily: 'var(--font-mono)',
+              color: parsedSkuCount > 50 ? 'var(--danger)' : parsedSkuCount > 45 ? 'var(--warning)' : 'var(--ink-faint)',
+              fontWeight: parsedSkuCount > 45 ? 600 : 400,
+            }}>
+              {parsedSkuCount}/50 SKUs
+            </span>
+            {parsedSkuCount > 50 && (
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--danger)', fontWeight: 500 }}>
+                Maximo de 50 SKUs por busca
+              </span>
+            )}
+          </div>
           <button
             className="btn-primary"
             onClick={handleSearch}
-            disabled={!skuInput.trim() || searching}
+            disabled={!skuInput.trim() || searching || parsedSkuCount > 50}
             style={{ padding: 'var(--space-2) var(--space-4)', fontSize: 'var(--text-sm)', alignSelf: 'flex-start' }}
           >
             {searching ? (
