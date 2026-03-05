@@ -109,12 +109,12 @@ def _get_seller_credentials(seller: dict) -> tuple[str, str]:
     return app_id, secret
 
 
-async def _get_token(seller_slug: str) -> str:
+async def _get_token(seller_slug: str, org_id: str) -> str:
     """Get access_token for seller. Auto-refresh if expired."""
     db = get_db()
     result = db.table("copy_sellers").select(
         "ml_access_token, ml_refresh_token, ml_token_expires_at, ml_app_id, ml_secret_key, active"
-    ).eq("slug", seller_slug).execute()
+    ).eq("slug", seller_slug).eq("org_id", org_id).execute()
 
     if not result.data:
         raise RuntimeError(f"Seller '{seller_slug}' not found")
@@ -148,7 +148,7 @@ async def _get_token(seller_slug: str) -> str:
             "ml_access_token": None,
             "ml_refresh_token": None,
             "ml_token_expires_at": None,
-        }).eq("slug", seller_slug).execute()
+        }).eq("slug", seller_slug).eq("org_id", org_id).execute()
         raise RuntimeError(
             f"Seller '{seller_slug}': refresh token inválido ou revogado. "
             f"Reconecte via /api/ml/install"
@@ -162,12 +162,12 @@ async def _get_token(seller_slug: str) -> str:
         "ml_access_token": data["access_token"],
         "ml_refresh_token": data["refresh_token"],
         "ml_token_expires_at": new_expires.isoformat(),
-    }).eq("slug", seller_slug).execute()
+    }).eq("slug", seller_slug).eq("org_id", org_id).execute()
 
     return data["access_token"]
 
 
-async def exchange_code(code: str) -> dict:
+async def exchange_code(code: str, org_id: str = "") -> dict:
     """Exchange authorization_code for access_token + refresh_token."""
     from app.config import settings
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -182,7 +182,7 @@ async def exchange_code(code: str) -> dict:
         return resp.json()
 
 
-async def fetch_user_info(access_token: str) -> dict:
+async def fetch_user_info(access_token: str, org_id: str = "") -> dict:
     """GET /users/me — returns ML user profile."""
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(
@@ -193,14 +193,14 @@ async def fetch_user_info(access_token: str) -> dict:
         return resp.json()
 
 
-async def get_seller_official_store_id(seller_slug: str) -> int | None:
+async def get_seller_official_store_id(seller_slug: str, org_id: str) -> int | None:
     """Get the official_store_id for a brand seller.
 
     Checks cached value in copy_sellers first; if not cached, searches
     the seller's items (up to 20) and caches the result.
     """
     db = get_db()
-    seller = db.table("copy_sellers").select("ml_user_id, official_store_id").eq("slug", seller_slug).single().execute()
+    seller = db.table("copy_sellers").select("ml_user_id, official_store_id").eq("slug", seller_slug).eq("org_id", org_id).single().execute()
     user_id = seller.data["ml_user_id"]
 
     # Return cached value if available
@@ -208,7 +208,7 @@ async def get_seller_official_store_id(seller_slug: str) -> int | None:
     if cached:
         return cached
 
-    token = await _get_token(seller_slug)
+    token = await _get_token(seller_slug, org_id)
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(
             f"{ML_API}/users/{user_id}/items/search",
@@ -234,7 +234,7 @@ async def get_seller_official_store_id(seller_slug: str) -> int | None:
             if osi:
                 # Cache in DB for future use
                 try:
-                    db.table("copy_sellers").update({"official_store_id": osi}).eq("slug", seller_slug).execute()
+                    db.table("copy_sellers").update({"official_store_id": osi}).eq("slug", seller_slug).eq("org_id", org_id).execute()
                 except Exception:
                     pass
                 logger.info("Found official_store_id=%d for %s (from item %s)", osi, seller_slug, item_id)
@@ -247,9 +247,9 @@ async def get_seller_official_store_id(seller_slug: str) -> int | None:
 # ── Item operations ──────────────────────────────────────
 
 
-async def get_item(seller_slug: str, item_id: str) -> dict:
+async def get_item(seller_slug: str, item_id: str, org_id: str = "") -> dict:
     """GET /items/{item_id} — full item data."""
-    token = await _get_token(seller_slug)
+    token = await _get_token(seller_slug, org_id)
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(
             f"{ML_API}/items/{item_id}",
@@ -259,9 +259,9 @@ async def get_item(seller_slug: str, item_id: str) -> dict:
         return resp.json()
 
 
-async def get_item_description(seller_slug: str, item_id: str) -> dict:
+async def get_item_description(seller_slug: str, item_id: str, org_id: str = "") -> dict:
     """GET /items/{item_id}/description — item description."""
-    token = await _get_token(seller_slug)
+    token = await _get_token(seller_slug, org_id)
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(
             f"{ML_API}/items/{item_id}/description",
@@ -273,9 +273,9 @@ async def get_item_description(seller_slug: str, item_id: str) -> dict:
         return resp.json()
 
 
-async def get_item_compatibilities(seller_slug: str, item_id: str) -> dict | None:
+async def get_item_compatibilities(seller_slug: str, item_id: str, org_id: str = "") -> dict | None:
     """GET /items/{item_id}/compatibilities?extended=true — autoparts compatibilities."""
-    token = await _get_token(seller_slug)
+    token = await _get_token(seller_slug, org_id)
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(
             f"{ML_API}/items/{item_id}/compatibilities",
@@ -288,9 +288,9 @@ async def get_item_compatibilities(seller_slug: str, item_id: str) -> dict | Non
         return resp.json()
 
 
-async def create_item(seller_slug: str, payload: dict) -> dict:
+async def create_item(seller_slug: str, payload: dict, org_id: str = "") -> dict:
     """POST /items — create new listing."""
-    token = await _get_token(seller_slug)
+    token = await _get_token(seller_slug, org_id)
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(
             f"{ML_API}/items",
@@ -301,9 +301,9 @@ async def create_item(seller_slug: str, payload: dict) -> dict:
         return resp.json()
 
 
-async def set_item_description(seller_slug: str, item_id: str, plain_text: str) -> dict:
+async def set_item_description(seller_slug: str, item_id: str, plain_text: str, org_id: str = "") -> dict:
     """POST /items/{item_id}/description — set description."""
-    token = await _get_token(seller_slug)
+    token = await _get_token(seller_slug, org_id)
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             f"{ML_API}/items/{item_id}/description",
@@ -314,9 +314,9 @@ async def set_item_description(seller_slug: str, item_id: str, plain_text: str) 
         return resp.json()
 
 
-async def set_item_compatibilities(seller_slug: str, item_id: str, compat_data: dict) -> dict:
+async def set_item_compatibilities(seller_slug: str, item_id: str, compat_data: dict, org_id: str = "") -> dict:
     """POST /items/{item_id}/compatibilities — set compatibilities."""
-    token = await _get_token(seller_slug)
+    token = await _get_token(seller_slug, org_id)
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             f"{ML_API}/items/{item_id}/compatibilities",
@@ -327,9 +327,9 @@ async def set_item_compatibilities(seller_slug: str, item_id: str, compat_data: 
         return resp.json()
 
 
-async def update_item(seller_slug: str, item_id: str, payload: dict) -> dict:
+async def update_item(seller_slug: str, item_id: str, payload: dict, org_id: str = "") -> dict:
     """PUT /items/{item_id} — update existing listing."""
-    token = await _get_token(seller_slug)
+    token = await _get_token(seller_slug, org_id)
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.put(
             f"{ML_API}/items/{item_id}",
@@ -340,13 +340,13 @@ async def update_item(seller_slug: str, item_id: str, payload: dict) -> dict:
         return resp.json()
 
 
-async def search_items_by_sku(seller_slug: str, sku: str) -> list[str]:
+async def search_items_by_sku(seller_slug: str, sku: str, org_id: str = "") -> list[str]:
     """GET /users/{user_id}/items/search with seller_sku and sku params."""
     db = get_db()
-    seller = db.table("copy_sellers").select("ml_user_id").eq("slug", seller_slug).single().execute()
+    seller = db.table("copy_sellers").select("ml_user_id").eq("slug", seller_slug).eq("org_id", org_id).single().execute()
     user_id = seller.data["ml_user_id"]
 
-    token = await _get_token(seller_slug)
+    token = await _get_token(seller_slug, org_id)
     item_ids: set[str] = set()
     async with httpx.AsyncClient(timeout=30.0) as client:
         for params in ({"seller_sku": sku}, {"sku": sku}):
@@ -402,6 +402,7 @@ async def copy_item_compatibilities(
     new_item_id: str,
     source_item_id: str,
     source_compat_products: list[dict] | None = None,
+    org_id: str = "",
 ) -> dict:
     """POST /items/{id}/compatibilities — copy from source item.
 
@@ -410,7 +411,7 @@ async def copy_item_compatibilities(
     products must be supplied via *source_compat_products* (pre-fetched by the
     caller with the source seller's token).
     """
-    token = await _get_token(seller_slug)
+    token = await _get_token(seller_slug, org_id)
     headers = {"Authorization": f"Bearer {token}"}
     payload = {"item_to_copy": {"item_id": source_item_id, "extended_information": True}}
     async with httpx.AsyncClient(timeout=30.0) as client:
