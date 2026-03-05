@@ -91,7 +91,7 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": "Follow the exact same patterns from the existing login endpoint in auth.py for password hashing (bcrypt.hashpw), session creation (user_sessions insert), and token generation (secrets.token_urlsafe(32)). The new org has payment_active=true initially — billing enforcement is deferred. Username is set to email for simplicity."
     },
     {

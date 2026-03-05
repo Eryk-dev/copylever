@@ -1,59 +1,59 @@
 # Ralph Progress Log
-Started: Thu Mar  5 10:34:09 -03 2026
+Started: Thu Mar  5 10:43:47 -03 2026
 ---
 
 ## Codebase Patterns
-- Migrations use `IF NOT EXISTS` for all CREATE TABLE, CREATE INDEX, and ADD COLUMN
-- Migration files follow `NNN_description.sql` naming in `app/db/migrations/`
-- Typecheck is `npx tsc -b` in frontend/ directory
-- No Python type checker configured — only syntax checks apply
+- Use `IF NOT EXISTS` for all CREATE TABLE, CREATE INDEX in SQL migrations
+- Use `ADD COLUMN IF NOT EXISTS` for ALTER TABLE in migrations
+- Supabase uses service_role key (bypass RLS) via `get_db()` singleton
+- Auth dependencies: `require_user()` → `require_admin()` → `require_super_admin()`
+- Session pattern: `secrets.token_urlsafe(32)`, 7 day expiry, stored in `user_sessions`
+- Password hashing: `bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")`
+- Error messages in Portuguese (user-facing), English (logs/code)
+- Python typecheck: `python3 -m py_compile <file>` or `python3 -c "import ast; ..."`
+- Frontend typecheck: `cd frontend && npx tsc --noEmit`
 ---
 
 ## 2026-03-05 - US-001
-- Created `app/db/migrations/007_multi_tenant.sql`
-- orgs table with UUID PK, name, email, stripe fields, active, payment_active, timestamps
-- Added org_id (nullable) to users, copy_sellers, user_permissions (CASCADE), copy_logs, compat_logs, api_debug_logs, auth_logs (SET NULL)
-- Added is_super_admin (BOOLEAN NOT NULL DEFAULT false) and email (TEXT) to users
-- Created indexes: idx_orgs_email, idx_orgs_stripe_customer, idx_{table}_org for all tables
-- Files changed: `app/db/migrations/007_multi_tenant.sql`
+- Created migration 007_multi_tenant.sql: orgs table, org_id columns on all tables, indexes
+- Files changed: app/db/migrations/007_multi_tenant.sql
 - **Learnings for future iterations:**
-  - Existing migrations 001-006 are simple ALTER TABLE or CREATE TABLE statements
-  - Use `ADD COLUMN IF NOT EXISTS` for safety on re-runs
-  - org_id is intentionally nullable at this stage — US-002 backfills and sets NOT NULL
+  - Existing migrations use numbered prefix pattern (001 through 006)
+  - Use IF NOT EXISTS everywhere for idempotent migrations
 ---
 
 ## 2026-03-05 - US-002
-- Created `app/db/migrations/008_backfill_org_data.sql`
-- Inserts Lever Money org with deterministic UUID `00000000-0000-0000-0000-000000000001`
-- Backfills org_id on all 7 tables (users, copy_sellers, user_permissions, copy_logs, compat_logs, api_debug_logs, auth_logs)
-- Sets eryk as super_admin
-- Sets NOT NULL on org_id for core tables (users, copy_sellers, user_permissions); log tables stay nullable
-- Drops old unique constraints (users_username_key, copy_sellers_slug_key) and creates org-scoped unique indexes
-- Creates partial unique index on users(email) WHERE email IS NOT NULL
-- Files changed: `app/db/migrations/008_backfill_org_data.sql`
+- Created migration 008_backfill_org_data.sql: Lever Money org, backfill, constraints
+- Files changed: app/db/migrations/008_backfill_org_data.sql
 - **Learnings for future iterations:**
-  - PRD UUID `1ev3rm0ney01` contains non-hex chars — used `000000000001` instead (UUIDs require hex only)
-  - Use `ON CONFLICT (id) DO NOTHING` for idempotent inserts
-  - Use `DROP CONSTRAINT IF EXISTS` before creating replacement indexes
-  - Log tables (copy_logs, compat_logs, api_debug_logs, auth_logs) keep org_id nullable for edge cases
+  - Deterministic UUID for Lever Money: '00000000-0000-0000-0000-000000000001'
+  - Use ON CONFLICT DO NOTHING for idempotent inserts
+  - Drop old unique constraints before creating org-scoped ones
 ---
 
 ## 2026-03-05 - US-003
-- Added `stripe_secret_key`, `stripe_webhook_secret`, `stripe_price_id` (all defaulting to empty string) to Settings class in `app/config.py`
-- Files changed: `app/config.py`
-- **Learnings for future iterations:**
-  - Settings class uses `pydantic_settings.BaseSettings` — just add fields with type annotations and defaults
-  - Fields default to empty string to keep them optional (no env var required)
+- Added Stripe config fields to Settings class
+- Files changed: app/config.py
 ---
 
 ## 2026-03-05 - US-004
-- Updated `require_user()` to return `email`, `org_id`, `is_super_admin` in the user dict
-- Added `require_super_admin()` dependency (checks `is_super_admin`, raises 403)
-- Added `require_active_org()` dependency (checks org.active, super-admins bypass, commented-out payment_active check)
-- Files changed: `app/routers/auth.py`
+- Updated require_user() to return org_id, is_super_admin, email
+- Added require_super_admin() and require_active_org() dependencies
+- Files changed: app/routers/auth.py
 - **Learnings for future iterations:**
-  - Auth dependencies follow pattern: async func with `x_auth_token: str = Header(...)`, call `require_user()`, check condition, return user dict
-  - `user.get("is_super_admin", False)` is safer than `user["is_super_admin"]` since the column was added later
-  - The `orgs` table query uses `.single()` since org_id is a FK — expects exactly one row
-  - `require_super_admin` and `require_active_org` are now available for import from `app.routers.auth`
+  - require_user returns: {id, username, email, role, org_id, is_super_admin, can_run_compat, permissions}
+  - require_active_org skips check for super_admin users
+---
+
+## 2026-03-05 - US-005
+- Added POST /api/auth/signup endpoint with SignupRequest model
+- Creates org + user + session in one flow
+- Validates email uniqueness, password length, company_name presence
+- Returns {token, user, org} matching the acceptance criteria
+- Files changed: app/routers/auth.py
+- **Learnings for future iterations:**
+  - Signup creates org first, then user with org_id reference
+  - Username is set to email for new signups
+  - New orgs get payment_active=true by default (billing enforcement deferred)
+  - auth_logs insert includes org_id for signup events
 ---

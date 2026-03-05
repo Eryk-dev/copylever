@@ -121,6 +121,12 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+    company_name: str
+
+
 class AdminPromoteRequest(BaseModel):
     username: str
     password: str
@@ -203,6 +209,85 @@ async def login(req: LoginRequest):
             "username": user["username"],
             "role": user["role"],
             "can_run_compat": user["can_run_compat"],
+        },
+    }
+
+
+@router.post("/signup")
+async def signup(req: SignupRequest):
+    """Create a new org and admin user. Returns session token + user/org info."""
+    db = get_db()
+
+    # Validate inputs
+    if not req.email or not req.email.strip():
+        raise HTTPException(status_code=400, detail="Email e obrigatorio")
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Senha deve ter pelo menos 6 caracteres")
+    if not req.company_name or not req.company_name.strip():
+        raise HTTPException(status_code=400, detail="Nome da empresa e obrigatorio")
+
+    email = req.email.strip().lower()
+
+    # Check if email already exists
+    existing = db.table("users").select("id").eq("email", email).execute()
+    if existing.data:
+        raise HTTPException(status_code=409, detail="Email ja cadastrado")
+
+    # Create org
+    org_result = db.table("orgs").insert({
+        "name": req.company_name.strip(),
+        "email": email,
+        "active": True,
+        "payment_active": True,
+    }).execute()
+    org = org_result.data[0]
+
+    # Create user
+    user_result = db.table("users").insert({
+        "email": email,
+        "username": email,
+        "password_hash": _hash_password(req.password),
+        "role": "admin",
+        "can_run_compat": True,
+        "org_id": org["id"],
+        "is_super_admin": False,
+        "active": True,
+    }).execute()
+    user = user_result.data[0]
+
+    # Create session
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_EXPIRY_DAYS)
+
+    db.table("user_sessions").insert({
+        "user_id": user["id"],
+        "token": token,
+        "expires_at": expires_at.isoformat(),
+    }).execute()
+
+    # Log signup
+    try:
+        db.table("auth_logs").insert({
+            "user_id": user["id"],
+            "username": user["username"],
+            "org_id": org["id"],
+            "action": "signup",
+        }).execute()
+    except Exception:
+        logger.warning("Failed to log signup for user %s", email)
+
+    return {
+        "token": token,
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "email": user["email"],
+            "role": user["role"],
+            "can_run_compat": user["can_run_compat"],
+        },
+        "org": {
+            "id": org["id"],
+            "name": org["name"],
         },
     }
 
