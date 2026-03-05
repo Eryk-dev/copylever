@@ -10,7 +10,7 @@
 # 3. If it's new, add an entry following the same structure
 # 4. The retry_system section documents how the auto-retry loop works
 #
-# Last updated: 2026-03-03
+# Last updated: 2026-03-05
 # ============================================================================
 
 # ── Quick reference: ML API error codes we've encountered ──────────────────
@@ -69,6 +69,25 @@ ml_error_codes:
       message: "user is not allowed to use this channel"
       cause: Source item has channels (e.g. marketplace) that dest seller can't use
       fix_applied: safe_mode strips channels field
+      severity: blocking
+
+    item.family_name.length_invalid:
+      message: "Family Name length is over of 60 character"
+      cause: family_name exceeds 60 char limit for certain categories/accounts
+      fix_applied: Truncate to 60 chars in _adjust_payload_for_ml_error instead of removing
+      severity: blocking
+
+    body.invalid_fields_variations_with_family_name:
+      ml_code: "body.invalid_fields"
+      message: "The field variations is invalid with family name"
+      cause: Payload has both variations and family_name — ML rejects the combo
+      fix_applied: Remove variations and ensure available_quantity when family_name is required
+      severity: blocking
+
+    item.attributes.missing_required:
+      message: "The attributes [X] are required for category Y"
+      cause: Required category attribute missing from source item
+      fix_applied: No auto-fix — source data issue. Clear error message returned.
       severity: blocking
 
     item.attribute.missing.seller.package.dimensions:
@@ -623,6 +642,84 @@ error_history:
     file: app/routers/copy.py, app/routers/compat.py
     lesson: "NEVER rely on public ML API for item resolution — some items require auth. Always use authenticated fallback."
 
+  - id: ERR-031
+    date: "2026-03-05"
+    category: item_copy
+    title: "variations incompatible with family_name on brand/user_product destination"
+    symptom: |
+      Copy presentesunique → presentes-criativos-uniquebox fails for items with variations.
+      ML rejects: "The field variations is invalid with family name" + "required [family_name, available_quantity]".
+      Retry adds family_name but doesn't remove variations → loop.
+    ml_error_code: body.invalid_fields + body.required_fields
+    root_cause: |
+      Source item is regular (has variations, no family_name). Destination requires family_name
+      (brand/user_product account). Payload built with variations (is_user_product=False).
+      Retry adds family_name but variations stays → ML says they're incompatible.
+      _extract_ml_error_fields can't extract "variations" from error because ML doesn't use
+      [brackets] in this message: "The field variations is invalid with family name".
+    fix: |
+      - Added _is_variations_invalid_with_family_name_error() detector
+      - In _adjust_payload_for_ml_error: when detected, remove variations and ensure available_quantity
+    file: app/services/item_copier.py
+    lesson: |
+      When destination requires family_name but source has variations, the item must be treated
+      as User Product for the destination: remove variations, set available_quantity, use family_name.
+      ML error messages without [brackets] need specific pattern detectors.
+
+  - id: ERR-032
+    date: "2026-03-05"
+    category: item_copy
+    title: "family_name exceeds 60 char limit — retry removes instead of truncating"
+    symptom: |
+      Copy MLB4456787126 fails: "Family Name length is over of 60 character".
+      _is_family_name_invalid_error() triggers (detects "family name" + "invalid" in "length_invalid"),
+      sets force_no_family_name=True. Next retry removes family_name, ML requires it back → loop.
+    ml_error_code: item.family_name.length_invalid
+    root_cause: |
+      MAX_FAMILY_NAME_LEN was 120 but ML enforces 60 chars for some categories/accounts.
+      The generic _is_family_name_invalid_error matched the length error code and set
+      force_no_family_name, which removes family_name entirely instead of truncating.
+    fix: |
+      - Added _is_family_name_length_error() detector
+      - In _adjust_payload_for_ml_error: truncate family_name to 60 chars
+      - In retry loop: don't set force_no_family_name for length errors
+    file: app/services/item_copier.py
+    lesson: |
+      ML family_name limit varies — can be 60 chars for some accounts/categories.
+      Length errors should trigger truncation, not removal. Differentiate between
+      "field is invalid" (wrong field type) and "field is too long" (truncatable).
+
+  - id: ERR-033
+    date: "2026-03-05"
+    category: attributes
+    title: "GIFTABLE, IS_HIGHLIGHT_BRAND, IS_TOM_BRAND not in excluded list"
+    symptom: |
+      Copy MLB5082877654: ML returns warnings for GIFTABLE, IS_HIGHLIGHT_BRAND, IS_TOM_BRAND
+      ("ignored because it is not modifiable"). These are non-blocking but pollute debug logs.
+    ml_error_code: item.attributes.ignored
+    root_cause: "These read-only attributes were not in EXCLUDED_ATTRIBUTES set"
+    fix: "Added GIFTABLE, IS_HIGHLIGHT_BRAND, IS_TOM_BRAND to EXCLUDED_ATTRIBUTES"
+    file: app/services/item_copier.py
+    lesson: "When ML says an attribute is 'not modifiable', add it to EXCLUDED_ATTRIBUTES immediately"
+
+  - id: ERR-034
+    date: "2026-03-05"
+    category: item_copy
+    title: "Missing MODEL attribute for category MLB270519"
+    symptom: |
+      Copy MLB5082877654 fails: "The attributes [MODEL] are required for category MLB270519".
+      The only type="error" cause — all others (GIFTABLE, shipping warnings) are type="warning".
+    ml_error_code: item.attributes.missing_required
+    root_cause: |
+      Source item (presentesunique) does not have MODEL attribute. MODEL is required for
+      category MLB270519 but not present in the source item data.
+      MODEL is not in EXCLUDED_ATTRIBUTES so it would be copied if present.
+    fix: "No auto-fix possible — source item genuinely lacks the required attribute. Error message is clear."
+    file: app/services/item_copier.py
+    lesson: |
+      Some categories require specific attributes (MODEL, etc.) that may not exist in the source.
+      These are data issues, not code bugs. The error message is already descriptive.
+
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.
 patterns:
@@ -636,8 +733,8 @@ patterns:
       compat_endpoint: "POST /items/{id}/compatibilities"
     user_product:
       identification: "Has user_product_listing tag OR family_name"
-      title_field: family_name (max 120 chars)
-      accepts_variations: false (on create)
+      title_field: family_name (max 60 chars for some accounts, 120 for others — truncate to 60 to be safe)
+      accepts_variations: false (on create — ML rejects "variations is invalid with family name")
       compat_endpoint: "POST /user-products/{up_id}/compatibilities"
 
   ml_api_brand_accounts:
@@ -663,6 +760,9 @@ patterns:
       - "SHIPMENT_PACKING — auto-calculated"
       - "CATALOG_TITLE, PRODUCT_FEATURES — catalog-managed"
       - "HAS_COMPATIBILITIES — read-only"
+      - "GIFTABLE — read-only"
+      - "IS_HIGHLIGHT_BRAND — read-only"
+      - "IS_TOM_BRAND — read-only"
     value_extraction_order:
       - "Direct: value_id / value_name"
       - "Nested: values[0].id / values[0].name"

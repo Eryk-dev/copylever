@@ -155,6 +155,7 @@ async def copy_with_dims(req: CopyWithDimensionsRequest, user: dict = Depends(re
         item_id=item_id,
         dimensions=dims,
         org_id=org_id,
+        user_id=user["id"],
     )
 
     success_count = sum(1 for r in results if r["status"] == "success")
@@ -238,6 +239,7 @@ async def retry_dimensions(req: RetryDimensionsRequest, user: dict = Depends(req
         item_id=log["source_item_id"],
         dimensions=dims,
         org_id=org_id,
+        user_id=user["id"],
     )
 
     success_count = sum(1 for r in results if r["status"] == "success")

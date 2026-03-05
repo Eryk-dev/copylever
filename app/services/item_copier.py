@@ -98,6 +98,9 @@ EXCLUDED_ATTRIBUTES = {
     "CATALOG_TITLE",        # catalog-managed title
     "PRODUCT_FEATURES",     # catalog-managed features
     "HAS_COMPATIBILITIES",  # read-only, ML ignores it
+    "GIFTABLE",             # read-only, ML ignores it
+    "IS_HIGHLIGHT_BRAND",   # read-only, ML ignores it
+    "IS_TOM_BRAND",         # read-only, ML ignores it
 }
 
 # Top-level fields to NOT copy (auto-generated)
@@ -350,6 +353,37 @@ def _is_official_store_id_error(exc: MlApiError) -> bool:
     return False
 
 
+def _is_variations_invalid_with_family_name_error(exc: MlApiError) -> bool:
+    """Detect 'variations is invalid with family name' — can't have both."""
+    payload = exc.payload if isinstance(exc.payload, dict) else {}
+    causes = payload.get("cause", [])
+    if isinstance(causes, list):
+        for cause in causes:
+            if not isinstance(cause, dict) or cause.get("type") != "error":
+                continue
+            msg = str(cause.get("message", "")).lower()
+            if "variations" in msg and "invalid" in msg and "family name" in msg:
+                return True
+    return False
+
+
+def _is_family_name_length_error(exc: MlApiError) -> bool:
+    """Detect family_name length validation error (e.g. over 60 chars)."""
+    payload = exc.payload if isinstance(exc.payload, dict) else {}
+    causes = payload.get("cause", [])
+    if isinstance(causes, list):
+        for cause in causes:
+            if not isinstance(cause, dict):
+                continue
+            code = str(cause.get("code", "")).lower()
+            msg = str(cause.get("message", "")).lower()
+            if "family_name" in code and "length" in code:
+                return True
+            if "family name" in msg and ("length" in msg or "over of" in msg):
+                return True
+    return False
+
+
 def _ensure_top_level_stock(payload: dict, item: dict) -> None:
     if "available_quantity" in payload:
         return
@@ -445,6 +479,18 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
         if sku:
             adjusted["seller_custom_field"] = sku
             actions.append("added required seller_custom_field")
+
+    # When variations conflict with family_name (dest is brand/user_product account
+    # but source has variations), remove variations and ensure available_quantity
+    if _is_variations_invalid_with_family_name_error(exc) and "variations" in adjusted:
+        adjusted.pop("variations")
+        actions.append("removed variations (incompatible with family_name)")
+        _ensure_top_level_stock(adjusted, item)
+
+    # Handle family_name length error: truncate to 60 chars instead of removing
+    if _is_family_name_length_error(exc) and adjusted.get("family_name"):
+        adjusted["family_name"] = adjusted["family_name"][:60]
+        actions.append("truncated family_name to 60 chars")
 
     if "variations" not in adjusted:
         _ensure_top_level_stock(adjusted, item)
@@ -705,7 +751,7 @@ async def copy_single_item(
                 last_exc = exc
                 if _is_title_invalid_error(exc):
                     force_no_title = True
-                if _is_family_name_invalid_error(exc):
+                if _is_family_name_invalid_error(exc) and not _is_family_name_length_error(exc):
                     force_no_family_name = True
                 adjusted_payload, actions = _adjust_payload_for_ml_error(payload, item, exc)
 
@@ -1022,6 +1068,7 @@ async def copy_with_dimensions(
     item_id: str,
     dimensions: dict,
     org_id: str = "",
+    user_id: str | None = None,
 ) -> list[dict]:
     """
     Apply shipping dimensions to the source item, then copy to destinations.
@@ -1046,7 +1093,7 @@ async def copy_with_dimensions(
     # 2. Re-copy to all destinations (normal copy flow, item now has dimensions)
     results = []
     for dest_seller in dest_sellers:
-        result = await copy_single_item(source_seller, dest_seller, item_id, org_id=org_id)
+        result = await copy_single_item(source_seller, dest_seller, item_id, org_id=org_id, user_id=user_id)
         results.append(result)
 
     return results
