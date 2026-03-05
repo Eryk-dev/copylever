@@ -189,7 +189,7 @@
         "Typecheck passes"
       ],
       "priority": 11,
-      "passes": false,
+      "passes": true,
       "notes": "In copy_anuncios() at line ~84, extract org_id = user['org_id'] and pass to copy_items(). In copy_with_dims(), same. In preview_item(), pass org_id to _resolve_item_seller() and get_item(). In copy_logs(), the current admin check is 'if user[\"role\"] != \"admin\"' — change to also check is_super_admin: super-admins see all, org admins see their org, operators see their own. _resolve_item_seller() queries copy_sellers — add .eq('org_id', org_id)."
     },
     {

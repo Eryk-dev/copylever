@@ -122,3 +122,17 @@ Started: Thu Mar  5 10:43:47 -03 2026
   - Same ML user can be connected by different orgs — scoping by org_id in callback is critical
   - list_sellers now uses require_user (not require_admin) so operators can see sellers too
 ---
+
+## 2026-03-05 - US-011
+- Org-scoped copy.py router: all endpoints now use org_id from user context
+- _resolve_item_seller() accepts org_id, scopes copy_sellers query and get_item calls
+- copy_anuncios() and copy_with_dims() pass org_id to copy_items/copy_with_dimensions
+- retry_dimensions() scopes copy_logs lookup by org_id (super-admin bypasses)
+- copy_logs() uses 3-tier visibility: super-admin sees all, org admin sees org, operator sees own
+- preview_item() passes org_id to get_item, get_item_description, get_item_compatibilities
+- Files changed: app/routers/copy.py
+- **Learnings for future iterations:**
+  - copy_logs visibility: super-admin > org admin (by org_id) > operator (by user_id)
+  - _resolve_item_seller in copy.py and compat.py are duplicates — both need same org_id change
+  - retry_dimensions must also scope the log lookup by org_id to prevent cross-org access
+---
