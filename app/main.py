@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
-from app.routers import admin_users, auth, auth_ml, compat, copy
+from app.routers import admin_users, auth, auth_ml, compat, copy, super_admin
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,6 +43,7 @@ app.include_router(auth.router)
 app.include_router(auth_ml.router)
 app.include_router(copy.router)
 app.include_router(compat.router)
+app.include_router(super_admin.router)
 
 
 @app.get("/api/health")
