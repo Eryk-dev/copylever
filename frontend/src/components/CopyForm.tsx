@@ -280,7 +280,8 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
           <button
             type="button"
             onClick={selectAllDests}
-            style={{ background: 'none', color: 'var(--positive)', fontSize: 'var(--text-xs)', fontWeight: 500, padding: 0 }}
+            disabled={resolving}
+            style={{ background: 'none', color: 'var(--positive)', fontSize: 'var(--text-xs)', fontWeight: 500, padding: 0, opacity: resolving ? 0.5 : 1 }}
           >
             {validDests.every(s => destinations.includes(s.slug)) ? 'Desmarcar todos' : 'Selecionar todos'}
           </button>
@@ -292,7 +293,7 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
               validDests.map(seller => {
                 const on = destinations.includes(seller.slug);
                 return (
-                  <button key={seller.slug} type="button" onClick={() => toggleDest(seller.slug)} className="chip-toggle" style={{
+                  <button key={seller.slug} type="button" onClick={() => toggleDest(seller.slug)} disabled={resolving} className="chip-toggle" style={{
                     padding: '6px 12px',
                     fontSize: 'var(--text-xs)',
                     fontWeight: on ? 600 : 400,
@@ -302,6 +303,7 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
                     display: 'flex',
                     alignItems: 'center',
                     gap: '4px',
+                    ...(resolving ? { opacity: 0.5, pointerEvents: 'none' as const } : {}),
                   }}>
                     {on && <span style={{ fontSize: 10 }}>{'\u2713'}</span>}
                     {seller.name || seller.slug}
