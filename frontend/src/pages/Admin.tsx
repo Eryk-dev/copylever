@@ -8,23 +8,36 @@ interface Props {
   sellers: Seller[];
   loadSellers: () => Promise<void>;
   disconnectSeller: (slug: string) => Promise<void>;
+  headers: () => Record<string, string>;
 }
 
-export default function Admin({ sellers, loadSellers, disconnectSeller }: Props) {
-  const apiBase = API_BASE.trim();
-  const installBase = apiBase
-    ? (apiBase.startsWith('http://') || apiBase.startsWith('https://')
-      ? apiBase
-      : `${window.location.origin}${apiBase.startsWith('/') ? '' : '/'}${apiBase}`)
-    : window.location.origin;
-  const installUrl = `${installBase.replace(/\/+$/, '')}/api/ml/install`;
+export default function Admin({ sellers, loadSellers, disconnectSeller, headers }: Props) {
   const { toast } = useToast();
   const [refreshing, setRefreshing] = useState(false);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
+  const [installing, setInstalling] = useState(false);
 
-  const handleCopy = async () => {
-    await navigator.clipboard.writeText(installUrl);
-    toast('Link copiado!');
+  const handleInstall = async () => {
+    setInstalling(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/ml/install`, { headers: headers() });
+      if (!res.ok) {
+        if (res.status === 401) {
+          toast('Erro: sessao expirada. Faca login novamente.');
+        } else {
+          toast('Erro ao iniciar autorizacao ML.');
+        }
+        return;
+      }
+      const data = await res.json();
+      if (data.redirect_url) {
+        window.open(data.redirect_url, '_blank');
+      }
+    } catch {
+      toast('Erro de conexao ao iniciar autorizacao.');
+    } finally {
+      setInstalling(false);
+    }
   };
 
   const handleRefresh = async () => {
@@ -47,52 +60,23 @@ export default function Admin({ sellers, loadSellers, disconnectSeller }: Props)
       {/* Install Link */}
       <Card title="Conectar nova conta ML">
         <p style={{ color: 'var(--ink-muted)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-3)' }}>
-          Abra o link abaixo para autorizar uma conta do Mercado Livre:
+          Clique no botao abaixo para autorizar uma conta do Mercado Livre:
         </p>
-        <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
-          <code style={{
-            flex: 1,
-            background: 'var(--paper)',
-            padding: 'var(--space-3) var(--space-4)',
-            borderRadius: 6,
-            border: '1px solid var(--line)',
-            fontSize: 'var(--text-xs)',
-            fontFamily: 'var(--font-mono)',
-            color: 'var(--positive)',
-            wordBreak: 'break-all',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-          }}>
-            {installUrl}
-          </code>
-          <button
-            onClick={handleCopy}
-            className="btn-primary"
-            style={{
-              padding: 'var(--space-3) var(--space-4)',
-              fontSize: 'var(--text-xs)',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            Copiar
-          </button>
-          <a
-            href={installUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="btn-ghost"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              padding: 'var(--space-3) var(--space-4)',
-              fontSize: 'var(--text-xs)',
-              textDecoration: 'none',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            Abrir
-          </a>
-        </div>
+        <button
+          onClick={handleInstall}
+          disabled={installing}
+          className="btn-primary"
+          style={{
+            padding: 'var(--space-3) var(--space-5)',
+            fontSize: 'var(--text-sm)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--space-2)',
+          }}
+        >
+          {installing && <span className="spinner spinner-sm" />}
+          {installing ? 'Redirecionando...' : 'Autorizar conta ML'}
+        </button>
       </Card>
 
       {/* Sellers List */}
@@ -126,7 +110,7 @@ export default function Admin({ sellers, loadSellers, disconnectSeller }: Props)
               {'\u2194'}
             </div>
             Nenhum seller conectado.<br />
-            Use o link acima para autorizar uma conta ML.
+            Use o botao acima para autorizar uma conta ML.
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>

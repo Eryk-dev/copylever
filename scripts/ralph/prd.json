@@ -357,7 +357,7 @@
         "Typecheck passes"
       ],
       "priority": 21,
-      "passes": false,
+      "passes": true,
       "notes": "The billing status comes from GET /api/billing/status. If it returns 503, set a 'billingAvailable=false' state and hide the section. For the Assinar button, POST /api/billing/create-checkout returns {checkout_url} — use window.location.href = checkout_url to redirect. Same for portal. Add BillingPage as a sub-tab in the Admin section alongside Sellers and Usuarios. The payment banner in App.tsx should be a simple div with warning styling."
     },
     {
@@ -371,7 +371,7 @@
         "Typecheck passes"
       ],
       "priority": 22,
-      "passes": false,
+      "passes": true,
       "notes": "The current Admin.tsx likely has an <a href> link to /api/ml/install. Since this endpoint now requires auth (X-Auth-Token header) and returns JSON instead of redirecting, we need to fetch it programmatically. Use fetch() with headers() from props, parse JSON, then window.open() the redirect_url. This is a small change — just update the install button/link handler."
     }
   ]

@@ -257,3 +257,33 @@ Started: Thu Mar  5 10:43:47 -03 2026
   - Table styling: thStyle uses uppercase, letterSpacing 0.05em, var(--text-xs) font
   - Optimistic update for toggle: update local state immediately without refetching
 ---
+
+## 2026-03-05 - US-021
+- Created BillingPage.tsx with billing status display, subscribe/manage buttons
+- Added billing sub-tab to Admin section (only visible when billing is available)
+- Added payment banner below header for org admins with inactive payment
+- App.tsx fetches GET /api/billing/status on auth to determine billingAvailable and paymentActive
+- If billing endpoint returns 503, billing section is hidden entirely
+- Files changed: frontend/src/pages/BillingPage.tsx (new), frontend/src/App.tsx
+- **Learnings for future iterations:**
+  - BillingPage follows same Card pattern as other pages (import from CopyPage)
+  - billingAvailable state controls visibility of billing tab AND payment banner
+  - paymentActive defaults to true to avoid flashing banner before status is fetched
+  - Payment banner only shows for org admins (not super-admins) with inactive billing
+  - AdminSubView type extended to include 'billing' alongside 'sellers' and 'users'
+  - Banner "Ver assinatura" button navigates to admin view + billing sub-tab
+---
+
+## 2026-03-05 - US-022
+- Updated Admin.tsx ML install flow: replaced direct `<a href>` link with authenticated fetch
+- Added `headers` prop to Admin component, passed from App.tsx
+- `handleInstall()` fetches GET /api/ml/install with X-Auth-Token header, parses JSON `{redirect_url}`, opens via `window.open()`
+- Handles 401 (session expired) and generic errors with toast messages
+- Removed URL display + copy button (no longer needed since endpoint requires auth)
+- Updated empty-state text from "link" to "botao"
+- Files changed: frontend/src/pages/Admin.tsx, frontend/src/App.tsx
+- **Learnings for future iterations:**
+  - /api/ml/install now returns JSON {redirect_url} instead of RedirectResponse — frontend must fetch with auth headers
+  - Admin component needs `headers` prop for authenticated API calls (like other pages)
+  - window.open(url, '_blank') for OAuth redirects to avoid losing current page state
+---
