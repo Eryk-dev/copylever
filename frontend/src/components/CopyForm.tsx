@@ -34,6 +34,7 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
   const [destinations, setDestinations] = useState<string[]>([]);
   const [confirming, setConfirming] = useState(false);
   const lastResolvedKey = useRef('');
+  const pendingResolve = useRef(false);
 
   const itemIds = itemIdsText.split(/[\n,]+/).map(normalizeItemId).filter(id => id.length > 0);
 
@@ -104,6 +105,14 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
     if (ids.length > 0) resolveAll(ids);
   }, [itemIdsText, resolveAll]);
 
+  // Auto-resolve after paste
+  useEffect(() => {
+    if (pendingResolve.current && itemIdsText.trim()) {
+      pendingResolve.current = false;
+      normalizeAndResolve();
+    }
+  }, [itemIdsText, normalizeAndResolve]);
+
   // Clear state when IDs are cleared
   useEffect(() => {
     if (!itemIdsText.trim()) {
@@ -170,6 +179,7 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
         <textarea
           value={itemIdsText}
           onChange={e => { setItemIdsText(e.target.value); setConfirming(false); }}
+          onPaste={() => { pendingResolve.current = true; }}
           onBlur={normalizeAndResolve}
           placeholder={"Cole os IDs dos anuncios (um por linha)\n1234567890\nMLB9876543210"}
           rows={4}
