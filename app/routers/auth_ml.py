@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse
 
 from app.config import settings
 from app.db.supabase import get_db
-from app.routers.auth import require_user
+from app.routers.auth import require_active_org, require_user
 from app.services.ml_api import exchange_code, fetch_user_info
 
 logger = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ router = APIRouter(tags=["ml"])
 
 @router.get("/api/ml/install")
 @router.get("/ml/install")
-async def install(user: dict = Depends(require_user)):
+async def install(user: dict = Depends(require_active_org)):
     """Return ML OAuth URL with org_id encoded in state."""
     org_id = user["org_id"]
     params = urlencode({
@@ -136,7 +136,7 @@ async def callback(code: str, state: str = ""):
 
 
 @router.get("/api/sellers")
-async def list_sellers(user: dict = Depends(require_user)):
+async def list_sellers(user: dict = Depends(require_active_org)):
     """List connected sellers for the user's org."""
     db = get_db()
     result = db.table("copy_sellers").select(
@@ -163,7 +163,7 @@ async def list_sellers(user: dict = Depends(require_user)):
 
 
 @router.delete("/api/sellers/{slug}")
-async def disconnect_seller(slug: str, user: dict = Depends(require_user)):
+async def disconnect_seller(slug: str, user: dict = Depends(require_active_org)):
     """Disconnect a seller (clear tokens), scoped by org."""
     db = get_db()
     result = db.table("copy_sellers").update({

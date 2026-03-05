@@ -109,9 +109,8 @@ async def require_active_org(x_auth_token: str = Header(...)) -> dict:
     if not org_result.data or not org_result.data.get("active"):
         raise HTTPException(status_code=403, detail="Organizacao desativada")
 
-    # Enable when Stripe is configured
-    # if not org_result.data.get("payment_active"):
-    #     raise HTTPException(status_code=403, detail="Assinatura pendente")
+    if not org_result.data.get("payment_active"):
+        raise HTTPException(status_code=402, detail="Assinatura pendente")
 
     return user
 
@@ -240,7 +239,7 @@ async def signup(req: SignupRequest):
         "name": req.company_name.strip(),
         "email": email,
         "active": True,
-        "payment_active": True,
+        "payment_active": False,
     }).execute()
     org = org_result.data[0]
 

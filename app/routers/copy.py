@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.db.supabase import get_db
-from app.routers.auth import require_user
+from app.routers.auth import require_active_org, require_user
 from app.services.item_copier import copy_items, copy_with_dimensions
 from app.services.ml_api import get_item, get_item_description, get_item_compatibilities
 
@@ -82,7 +82,7 @@ class CopyWithDimensionsRequest(BaseModel):
 
 
 @router.post("")
-async def copy_anuncios(req: CopyRequest, user: dict = Depends(require_user)):
+async def copy_anuncios(req: CopyRequest, user: dict = Depends(require_active_org)):
     """Copy listings from source seller to destination seller(s)."""
     if not req.source:
         raise HTTPException(status_code=400, detail="source is required")
@@ -134,7 +134,7 @@ async def copy_anuncios(req: CopyRequest, user: dict = Depends(require_user)):
 
 
 @router.post("/with-dimensions")
-async def copy_with_dims(req: CopyWithDimensionsRequest, user: dict = Depends(require_user)):
+async def copy_with_dims(req: CopyWithDimensionsRequest, user: dict = Depends(require_active_org)):
     """Apply dimensions to source item, then copy to destinations."""
     dims = req.dimensions.model_dump(exclude_none=True)
     if not dims:
@@ -191,7 +191,7 @@ class RetryDimensionsRequest(BaseModel):
 
 
 @router.post("/retry-dimensions")
-async def retry_dimensions(req: RetryDimensionsRequest, user: dict = Depends(require_user)):
+async def retry_dimensions(req: RetryDimensionsRequest, user: dict = Depends(require_active_org)):
     """Retry a dimension-failed copy from the logs history."""
     db = get_db()
 
@@ -268,7 +268,7 @@ async def copy_logs(
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
     status: str | None = Query(None),
-    user: dict = Depends(require_user),
+    user: dict = Depends(require_active_org),
 ):
     """Get copy history. Operators see only their own logs; admins see all."""
     db = get_db()
@@ -294,7 +294,7 @@ async def copy_logs(
 
 
 @router.get("/preview/{item_id}")
-async def preview_item(item_id: str, seller: str = Query(...), user: dict = Depends(require_user)):
+async def preview_item(item_id: str, seller: str = Query(...), user: dict = Depends(require_active_org)):
     """Preview an item before copying. Auto-detects owner seller on 403."""
     org_id = user["org_id"]
     try:
@@ -388,7 +388,7 @@ class ResolveSellersRequest(BaseModel):
 
 
 @router.post("/resolve-sellers")
-async def resolve_sellers_endpoint(req: ResolveSellersRequest, user: dict = Depends(require_user)):
+async def resolve_sellers_endpoint(req: ResolveSellersRequest, user: dict = Depends(require_active_org)):
     """Bulk-resolve which seller owns each item."""
     clean_ids = [_normalize_item_id(iid) for iid in req.item_ids if iid.strip()]
     if not clean_ids:

@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.db.supabase import get_db
-from app.routers.auth import require_user
+from app.routers.auth import require_active_org, require_user
 from app.services.compat_copier import copy_compat_to_targets, search_sku_all_sellers
 from app.services.ml_api import get_item, get_item_compatibilities
 
@@ -50,7 +50,7 @@ async def _resolve_item_seller(item_id: str, org_id: str, skip_seller: str | Non
 
 
 @router.get("/preview/{item_id}")
-async def preview_item(item_id: str, seller: str = Query(None), user: dict = Depends(require_user)):
+async def preview_item(item_id: str, seller: str = Query(None), user: dict = Depends(require_active_org)):
     """Preview an item's compatibility info."""
     # Check can_run_compat (admins bypass)
     if user["role"] != "admin" and not user.get("can_run_compat"):
@@ -130,7 +130,7 @@ class SearchSkuRequest(BaseModel):
 
 
 @router.post("/search-sku")
-async def search_sku(req: SearchSkuRequest, user: dict = Depends(require_user)):
+async def search_sku(req: SearchSkuRequest, user: dict = Depends(require_active_org)):
     """Search for items by SKU across connected sellers (filtered by permissions)."""
     if not req.skus:
         raise HTTPException(status_code=400, detail="At least one SKU is required")
@@ -161,7 +161,7 @@ class CopyRequest(BaseModel):
 
 
 @router.post("/copy")
-async def copy_compat(req: CopyRequest, bg: BackgroundTasks, user: dict = Depends(require_user)):
+async def copy_compat(req: CopyRequest, bg: BackgroundTasks, user: dict = Depends(require_active_org)):
     """Queue compatibility copy — returns immediately, results appear in logs."""
     # Check can_run_compat (admins bypass)
     if user["role"] != "admin" and not user.get("can_run_compat"):
@@ -207,7 +207,7 @@ async def compat_logs(
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
     status: str | None = Query(None),
-    user: dict = Depends(require_user),
+    user: dict = Depends(require_active_org),
 ):
     """Get compat copy history. Operators see only their own logs; admins see all."""
     db = get_db()

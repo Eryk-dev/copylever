@@ -88,6 +88,71 @@ export default function App() {
     );
   }
 
+  // Paywall: billing configured, not paid, not super-admin
+  if (billingAvailable && !paymentActive && !auth.user?.is_super_admin) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 'var(--space-6)',
+      }}>
+        <div className="animate-in" style={{
+          background: 'var(--surface)',
+          borderRadius: 12,
+          padding: 'var(--space-12)',
+          width: '100%',
+          maxWidth: 420,
+          textAlign: 'center',
+        }}>
+          <h1 style={{
+            fontSize: 'var(--text-xl)',
+            fontWeight: 700,
+            letterSpacing: 'var(--tracking-tight)',
+            color: 'var(--ink)',
+            marginBottom: 'var(--space-2)',
+          }}>
+            Copy Anuncios
+          </h1>
+          <p style={{
+            color: 'var(--ink-muted)',
+            fontSize: 'var(--text-sm)',
+            marginBottom: 'var(--space-6)',
+          }}>
+            {auth.user?.org_name || 'Sua empresa'}
+          </p>
+          <div style={{
+            background: 'rgba(245,158,11,0.08)',
+            border: '1px solid rgba(245,158,11,0.2)',
+            borderRadius: 8,
+            padding: 'var(--space-4)',
+            marginBottom: 'var(--space-6)',
+          }}>
+            <p style={{ color: 'var(--ink)', fontSize: 'var(--text-sm)', fontWeight: 600, marginBottom: 'var(--space-1)' }}>
+              Assinatura necessaria
+            </p>
+            <p style={{ color: 'var(--ink-muted)', fontSize: 'var(--text-xs)' }}>
+              Para usar o Copy Anuncios, ative sua assinatura.
+            </p>
+          </div>
+          <BillingPage headers={auth.headers} />
+          <button
+            onClick={auth.logout}
+            className="btn-ghost"
+            style={{
+              marginTop: 'var(--space-4)',
+              padding: '6px 12px',
+              fontSize: 'var(--text-xs)',
+            }}
+          >
+            Sair
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{
       width: '100%',
