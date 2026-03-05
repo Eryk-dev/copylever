@@ -193,3 +193,26 @@ Started: Thu Mar  5 10:43:47 -03 2026
   - subscription.updated checks status in ("active", "trialing") to determine payment_active
   - client_reference_id in Checkout Session links back to org_id
 ---
+
+## 2026-03-05 - US-016
+- Added Org and OrgWithStats interfaces to frontend/src/lib/api.ts
+- Updated AuthUser interface with email, org_id, org_name, is_super_admin fields
+- Added signup() method to useAuth hook (POST /api/auth/signup, stores token, fetches /me)
+- Exposed signup in useAuth return object
+- Files changed: frontend/src/lib/api.ts, frontend/src/hooks/useAuth.ts
+- **Learnings for future iterations:**
+  - fetchMe() already returns whatever JSON the server sends — just need to update the TypeScript interface
+  - signup() follows exact same pattern as login(): POST, store token, fetchMe
+  - OrgWithStats extends Org — used by super-admin page (US-020)
+---
+
+## 2026-03-05 - US-017
+- Created frontend/src/pages/Signup.tsx with email, password, company name fields
+- Follows Login.tsx styling exactly: same card layout, inputStyle helper, shake animation, error display
+- Submit calls onSignup(email, password, companyName) prop; "Ja tem conta? Entrar" link calls onNavigateToLogin prop
+- Files changed: frontend/src/pages/Signup.tsx (new)
+- **Learnings for future iterations:**
+  - Signup.tsx mirrors Login.tsx structure: same card, inputStyle, shake, btn-primary, animate-in patterns
+  - Props pattern: onSignup callback + onNavigateToLogin for parent routing (App.tsx handles in US-019)
+  - autoComplete="new-password" for signup vs "current-password" for login
+---

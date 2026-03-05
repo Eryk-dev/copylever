@@ -274,7 +274,7 @@
         "Typecheck passes"
       ],
       "priority": 16,
-      "passes": false,
+      "passes": true,
       "notes": "In useAuth.ts, the AuthUser interface is at line ~12. Add the 4 new fields. The signup() method follows the same pattern as login(): POST to API, store token, call fetchMe(). The /api/auth/me endpoint now returns org_name (from US-006). For the api.ts types, add them after the existing interfaces."
     },
     {
@@ -291,7 +291,7 @@
         "Typecheck passes"
       ],
       "priority": 17,
-      "passes": false,
+      "passes": true,
       "notes": "Copy the structure of Login.tsx for styling. The signup page uses the same card layout, input styling, and error display pattern. The auth.signup() method was added in US-016. The parent App.tsx will handle routing between Login/Signup views in US-019."
     },
     {
