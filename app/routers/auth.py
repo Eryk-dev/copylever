@@ -132,6 +132,15 @@ class AdminPromoteRequest(BaseModel):
     master_password: str
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+
 @router.post("/login")
 async def login(req: LoginRequest):
     """Authenticate with email and password. Returns session token + user info."""
@@ -317,6 +326,62 @@ async def logout(x_auth_token: str = Header(None)):
                 logger.warning("Failed to log logout for user_id %s", user_id)
         db.table("user_sessions").delete().eq("token", x_auth_token).execute()
     return {"status": "ok"}
+
+
+@router.post("/forgot-password")
+async def forgot_password(req: ForgotPasswordRequest):
+    """Generate a password reset token. Always returns 200 regardless of email existence."""
+    db = get_db()
+
+    result = db.table("users").select("id").eq("email", req.email.strip().lower()).execute()
+    if result.data:
+        user_id = result.data[0]["id"]
+        token = secrets.token_urlsafe(32)
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+        db.table("password_reset_tokens").insert({
+            "user_id": user_id,
+            "token": token,
+            "expires_at": expires_at.isoformat(),
+        }).execute()
+        logger.info("Password reset token created for user %s", user_id)
+
+    return {"message": "Se o email existir, enviaremos instrucoes"}
+
+
+@router.post("/reset-password")
+async def reset_password(req: ResetPasswordRequest):
+    """Reset password using a valid token."""
+    if len(req.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Senha deve ter pelo menos 6 caracteres")
+
+    db = get_db()
+
+    # Look up token
+    token_result = db.table("password_reset_tokens").select("*").eq("token", req.token).execute()
+    if not token_result.data:
+        raise HTTPException(status_code=400, detail="Link expirado ou invalido")
+
+    token_row = token_result.data[0]
+
+    # Check expiry
+    expires_at = token_row["expires_at"]
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if datetime.now(timezone.utc) > expires_at:
+        # Clean up expired token
+        db.table("password_reset_tokens").delete().eq("id", token_row["id"]).execute()
+        raise HTTPException(status_code=400, detail="Link expirado ou invalido")
+
+    # Update password
+    db.table("users").update({
+        "password_hash": _hash_password(req.new_password),
+    }).eq("id", token_row["user_id"]).execute()
+
+    # Delete used token
+    db.table("password_reset_tokens").delete().eq("id", token_row["id"]).execute()
+
+    logger.info("Password reset completed for user %s", token_row["user_id"])
+    return {"message": "Senha alterada com sucesso"}
 
 
 @router.get("/me")
