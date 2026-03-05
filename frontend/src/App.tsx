@@ -22,6 +22,7 @@ export default function App() {
   const [billingAvailable, setBillingAvailable] = useState(false);
   const [paymentActive, setPaymentActive] = useState(true);
   const [billingMessage, setBillingMessage] = useState<string | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('onboarding-done'));
 
   useEffect(() => {
     if (!auth.isAuthenticated) return;
@@ -292,6 +293,45 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {/* Onboarding Guide */}
+      {showOnboarding && !auth.user?.is_super_admin && (
+        <div style={{
+          background: 'var(--surface)',
+          borderRadius: 12,
+          padding: 'var(--space-6)',
+        }}>
+          <h2 style={{
+            fontSize: 'var(--text-base)',
+            fontWeight: 700,
+            color: 'var(--ink)',
+            marginBottom: 'var(--space-4)',
+          }}>
+            Bem-vindo ao Copy Anuncios!
+          </h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+            <p style={{ fontSize: 'var(--text-sm)', color: 'var(--ink-muted)' }}>
+              <strong style={{ color: 'var(--ink)' }}>1.</strong> Conecte sua conta do Mercado Livre na aba Admin &gt; Sellers
+            </p>
+            <p style={{ fontSize: 'var(--text-sm)', color: 'var(--ink-muted)' }}>
+              <strong style={{ color: 'var(--ink)' }}>2.</strong> Cole os IDs dos anuncios que deseja copiar
+            </p>
+            <p style={{ fontSize: 'var(--text-sm)', color: 'var(--ink-muted)' }}>
+              <strong style={{ color: 'var(--ink)' }}>3.</strong> Selecione origem e destino e clique Copiar
+            </p>
+          </div>
+          <button
+            onClick={() => {
+              localStorage.setItem('onboarding-done', 'true');
+              setShowOnboarding(false);
+            }}
+            className="btn-primary"
+            style={{ marginTop: 'var(--space-4)', padding: '8px 20px', fontSize: 'var(--text-sm)' }}
+          >
+            Entendi
+          </button>
+        </div>
+      )}
 
       {/* Payment Banner */}
       {billingAvailable && !paymentActive && auth.user?.role === 'admin' && !auth.user?.is_super_admin && (
