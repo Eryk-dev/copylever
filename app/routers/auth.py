@@ -68,7 +68,10 @@ async def require_user(x_auth_token: str = Header(...)) -> dict:
     return {
         "id": user["id"],
         "username": user["username"],
+        "email": user.get("email"),
         "role": user["role"],
+        "org_id": user["org_id"],
+        "is_super_admin": user.get("is_super_admin", False),
         "can_run_compat": user["can_run_compat"],
         "permissions": permissions,
     }
@@ -79,6 +82,37 @@ async def require_admin(x_auth_token: str = Header(...)) -> dict:
     user = await require_user(x_auth_token)
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Acesso restrito a administradores")
+    return user
+
+
+async def require_super_admin(x_auth_token: str = Header(...)) -> dict:
+    """Dependency: verify user is a super-admin."""
+    user = await require_user(x_auth_token)
+    if not user.get("is_super_admin"):
+        raise HTTPException(status_code=403, detail="Acesso restrito ao super-admin")
+    return user
+
+
+async def require_active_org(x_auth_token: str = Header(...)) -> dict:
+    """Dependency: verify user belongs to an active org."""
+    user = await require_user(x_auth_token)
+
+    # Super-admins bypass org checks
+    if user.get("is_super_admin"):
+        return user
+
+    db = get_db()
+    org_result = db.table("orgs").select(
+        "active, payment_active"
+    ).eq("id", user["org_id"]).single().execute()
+
+    if not org_result.data or not org_result.data.get("active"):
+        raise HTTPException(status_code=403, detail="Organizacao desativada")
+
+    # Enable when Stripe is configured
+    # if not org_result.data.get("payment_active"):
+    #     raise HTTPException(status_code=403, detail="Assinatura pendente")
+
     return user
 
 
