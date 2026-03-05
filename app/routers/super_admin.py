@@ -34,7 +34,7 @@ async def list_orgs(user: dict = Depends(require_super_admin)):
         org_id = org["id"]
 
         user_count = db.table("users").select("id", count="exact").eq("org_id", org_id).execute().count or 0
-        seller_count = db.table("copy_sellers").select("id", count="exact").eq("org_id", org_id).eq("active", True).execute().count or 0
+        seller_count = db.table("copy_sellers").select("slug", count="exact").eq("org_id", org_id).eq("active", True).execute().count or 0
         copy_count = db.table("copy_logs").select("id", count="exact").eq("org_id", org_id).gte("created_at", thirty_days_ago).execute().count or 0
         compat_count = db.table("compat_logs").select("id", count="exact").eq("org_id", org_id).gte("created_at", thirty_days_ago).execute().count or 0
 
