@@ -614,6 +614,18 @@ def _build_item_payload(item: dict, safe_mode: bool = False) -> dict:
     if item.get("channels") and not safe_mode:
         payload["channels"] = item["channels"]
 
+    # Full (fulfillment) items have stock in ML warehouse, so available_quantity
+    # comes as 0. Ensure at least 1 so the destination listing is active.
+    source_shipping = item.get("shipping") or {}
+    is_full = source_shipping.get("logistic_type") == "fulfillment"
+    if is_full:
+        if "variations" in payload:
+            for v in payload["variations"]:
+                if v.get("available_quantity", 0) < 1:
+                    v["available_quantity"] = 1
+        elif payload.get("available_quantity", 0) < 1:
+            payload["available_quantity"] = 1
+
     return payload
 
 
