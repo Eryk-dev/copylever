@@ -258,7 +258,7 @@
         "Typecheck passes"
       ],
       "priority": 15,
-      "passes": false,
+      "passes": true,
       "notes": "Import stripe, set stripe.api_key = settings.stripe_secret_key. For create-checkout: stripe.checkout.Session.create(mode='subscription', line_items=[{price: settings.stripe_price_id, quantity: 1}], customer=stripe_customer_id or None, customer_email=org_email, success_url=f'{settings.base_url}?billing=success', cancel_url=f'{settings.base_url}?billing=cancel', client_reference_id=str(org_id)). For webhook: stripe.Webhook.construct_event(payload, sig_header, settings.stripe_webhook_secret). The webhook endpoint must accept raw body — use Request object and await request.body(). For admin check within require_user: if user['role'] != 'admin': raise HTTPException(403)."
     },
     {

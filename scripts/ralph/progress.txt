@@ -177,3 +177,19 @@ Started: Thu Mar  5 10:43:47 -03 2026
   - For 30-day filters: .gte("created_at", thirty_days_ago.isoformat()) with timezone-aware datetime
   - copy_sellers active filter: .eq("active", True) for seller_count
 ---
+
+## 2026-03-05 - US-015
+- Created app/routers/billing.py with 4 endpoints: create-checkout, create-portal, webhook, status
+- Added stripe==11.4.1 to requirements.txt
+- Registered billing router in app/main.py
+- All endpoints check `_require_stripe()` first — returns 503 if stripe_secret_key is empty
+- Webhook uses raw body (await request.body()) for Stripe signature verification
+- Handles 3 event types: checkout.session.completed, customer.subscription.deleted, customer.subscription.updated
+- Files changed: app/routers/billing.py (new), requirements.txt, app/main.py
+- **Learnings for future iterations:**
+  - stripe.error.SignatureVerificationError is the correct path in stripe 11.x
+  - Webhook endpoint must NOT use Depends(require_user) — Stripe sends requests directly
+  - Create Stripe customer on first checkout if org has no stripe_customer_id
+  - subscription.updated checks status in ("active", "trialing") to determine payment_active
+  - client_reference_id in Checkout Session links back to org_id
+---
