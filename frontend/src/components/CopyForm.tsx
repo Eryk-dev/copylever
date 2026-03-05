@@ -158,8 +158,7 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
   const step1Done = resolvedCount > 0;
   const step2Done = destinations.length > 0;
 
-  // For preview, use the first resolved item's seller
-  const firstResolved = Object.entries(resolvedSources)[0];
+  const resolvedEntries = Object.entries(resolvedSources);
 
   return (
     <form onSubmit={handleSubmit} className="card" style={{
@@ -231,6 +230,62 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
               </span>
             ))}
             <span>{resolvedCount} anuncio(s)</span>
+          </div>
+        )}
+        {/* Resolved items list with individual preview buttons */}
+        {resolvedEntries.length > 1 && (
+          <div style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-1)',
+            marginTop: 'var(--space-2)',
+            padding: 'var(--space-2) var(--space-3)',
+            background: 'var(--paper)',
+            borderRadius: 6,
+            border: '1px solid var(--line)',
+          }}>
+            {resolvedEntries.map(([itemId, slug]) => (
+              <div key={itemId} style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 'var(--space-2)',
+                padding: '2px 0',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', minWidth: 0 }}>
+                  <span style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 'var(--text-xs)',
+                    color: 'var(--ink)',
+                    fontWeight: 500,
+                  }}>{itemId}</span>
+                  <span style={{
+                    fontSize: 'var(--text-xs)',
+                    color: 'var(--ink-faint)',
+                    whiteSpace: 'nowrap',
+                  }}>{sellerName(slug)}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onPreview(itemId, slug)}
+                  style={{
+                    background: 'none',
+                    color: 'var(--ink-faint)',
+                    fontSize: 'var(--text-xs)',
+                    padding: '1px 6px',
+                    borderRadius: 3,
+                    border: '1px solid var(--line)',
+                    cursor: 'pointer',
+                    flexShrink: 0,
+                    transition: 'all 0.15s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.color = 'var(--ink)'; e.currentTarget.style.borderColor = 'var(--ink-muted)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.color = 'var(--ink-faint)'; e.currentTarget.style.borderColor = 'var(--line)'; }}
+                >
+                  Preview
+                </button>
+              </div>
+            ))}
           </div>
         )}
         {unresolvedIds.length > 0 && (
@@ -332,8 +387,8 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
           {copying ? 'Copiando...' : confirming ? 'Confirmar' : `Copiar${totalOps > 0 ? ` (${totalOps})` : ''}`}
         </button>
 
-        {firstResolved && (
-          <button type="button" onClick={() => onPreview(firstResolved[0], firstResolved[1])} className="btn-ghost" style={{
+        {resolvedEntries.length === 1 && (
+          <button type="button" onClick={() => onPreview(resolvedEntries[0][0], resolvedEntries[0][1])} className="btn-ghost" style={{
             padding: 'var(--space-3) var(--space-4)',
             fontSize: 'var(--text-xs)',
           }}>
