@@ -1,18 +1,22 @@
 import { useState, useMemo } from 'react';
 import { useAuth } from './hooks/useAuth';
 import Login from './pages/Login';
+import Signup from './pages/Signup';
 import CopyPage from './pages/CopyPage';
 import Admin from './pages/Admin';
 import UsersPage from './pages/UsersPage';
 import CompatPage from './pages/CompatPage';
+import SuperAdminPage from './pages/SuperAdminPage';
 
-type View = 'copy' | 'admin' | 'compat';
+type View = 'copy' | 'admin' | 'compat' | 'super';
 type AdminSubView = 'sellers' | 'users';
+type AuthView = 'login' | 'signup';
 
 export default function App() {
   const auth = useAuth();
   const [view, setView] = useState<View>('copy');
   const [adminSubView, setAdminSubView] = useState<AdminSubView>('sellers');
+  const [authView, setAuthView] = useState<AuthView>('login');
 
   const visibleTabs = useMemo(() => {
     if (!auth.user) return [] as View[];
@@ -35,6 +39,11 @@ export default function App() {
       tabs.push('admin');
     }
 
+    // Show Plataforma tab for super-admins
+    if (u.is_super_admin) {
+      tabs.push('super');
+    }
+
     return tabs;
   }, [auth.user]);
 
@@ -44,7 +53,20 @@ export default function App() {
     : visibleTabs[0] ?? 'copy';
 
   if (!auth.isAuthenticated) {
-    return <Login onLogin={auth.login} />;
+    if (authView === 'signup') {
+      return (
+        <Signup
+          onSignup={auth.signup}
+          onNavigateToLogin={() => setAuthView('login')}
+        />
+      );
+    }
+    return (
+      <Login
+        onLogin={auth.login}
+        onNavigateToSignup={() => setAuthView('signup')}
+      />
+    );
   }
 
   return (
@@ -96,6 +118,11 @@ export default function App() {
                 Admin
               </ViewTab>
             )}
+            {visibleTabs.includes('super') && (
+              <ViewTab active={activeView === 'super'} onClick={() => setView('super')}>
+                Plataforma
+              </ViewTab>
+            )}
           </nav>
         </div>
 
@@ -105,7 +132,7 @@ export default function App() {
               fontSize: 'var(--text-xs)',
               color: 'var(--ink-muted)',
             }}>
-              {auth.user.username}
+              {auth.user.username}{auth.user.org_name ? ` - ${auth.user.org_name}` : ''}
             </span>
           )}
           <button
@@ -150,6 +177,9 @@ export default function App() {
         )}
         {activeView === 'compat' && (
           <CompatPage sellers={auth.sellers} headers={auth.headers} />
+        )}
+        {activeView === 'super' && (
+          <SuperAdminPage headers={auth.headers} />
         )}
       </div>
     </div>

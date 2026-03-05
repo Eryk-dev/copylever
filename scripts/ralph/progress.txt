@@ -216,3 +216,30 @@ Started: Thu Mar  5 10:43:47 -03 2026
   - Props pattern: onSignup callback + onNavigateToLogin for parent routing (App.tsx handles in US-019)
   - autoComplete="new-password" for signup vs "current-password" for login
 ---
+
+## 2026-03-05 - US-018
+- Updated Login.tsx: changed input from text/username to email type, placeholder "Email"
+- Updated subtitle from "usuario e senha" to "email e senha"
+- Added onNavigateToSignup optional callback prop + "Ainda nao tem conta? Cadastre-se" link
+- Admin-promote flow still sends { username: email_value } for backward compat
+- Updated useAuth.ts login() to send { email } instead of { username } to /api/auth/login
+- Files changed: frontend/src/pages/Login.tsx, frontend/src/hooks/useAuth.ts
+- **Learnings for future iterations:**
+  - Login.tsx Props now has optional onNavigateToSignup — App.tsx needs to pass it (US-019)
+  - Admin-promote still uses `username` field in its API call (different endpoint, not updated)
+  - useAuth login param renamed from username to email — callers are compatible (same type)
+---
+
+## 2026-03-05 - US-019
+- Added authView state ('login' | 'signup') for unauthenticated routing
+- When !isAuthenticated: shows Login or Signup based on authView state
+- Wired onNavigateToSignup/onNavigateToLogin callbacks between Login/Signup
+- Header now displays org name next to username: `{username} - {org_name}`
+- Added 'super' to View type, 'Plataforma' tab visible for super-admins
+- Created placeholder SuperAdminPage.tsx (to be fleshed out in US-020)
+- Files changed: frontend/src/App.tsx, frontend/src/pages/SuperAdminPage.tsx (new)
+- **Learnings for future iterations:**
+  - auth.headers is a function `() => Record<string, string>`, not a plain object — props must match
+  - SuperAdminPage placeholder accepts headers prop for consistency with other pages
+  - AuthView type controls login/signup toggle without React Router (simple state-based routing)
+---

@@ -307,7 +307,7 @@
         "Typecheck passes"
       ],
       "priority": 18,
-      "passes": false,
+      "passes": true,
       "notes": "In Login.tsx, the login function currently sends {username, password}. Change to {email: username_value, password}. The onNavigateToSignup prop will be passed from App.tsx. Keep the admin-promote flow as-is since it's used for bootstrap. Add the signup link with the same styling as other text links in the app."
     },
     {
@@ -324,7 +324,7 @@
         "Typecheck passes"
       ],
       "priority": 19,
-      "passes": false,
+      "passes": true,
       "notes": "In App.tsx, add 'super' to the View type. The visibleTabs useMemo already conditionally adds tabs — add: if (u.is_super_admin) tabs.push('super'). For the unauthenticated view, wrap the Login/Signup toggle in the existing !isAuthenticated block. The SuperAdminPage component will be created in US-020. For now, render a placeholder div if the component doesn't exist yet."
     },
     {
