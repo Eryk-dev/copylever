@@ -379,15 +379,29 @@ async def reset_password(req: ResetPasswordRequest):
         db.table("password_reset_tokens").delete().eq("id", token_row["id"]).execute()
         raise HTTPException(status_code=400, detail="Link expirado ou invalido")
 
+    user_id = token_row["user_id"]
+
     # Update password
     db.table("users").update({
         "password_hash": _hash_password(req.new_password),
-    }).eq("id", token_row["user_id"]).execute()
+    }).eq("id", user_id).execute()
 
-    # Delete used token
-    db.table("password_reset_tokens").delete().eq("id", token_row["id"]).execute()
+    # Invalidate ALL sessions for this user
+    db.table("user_sessions").delete().eq("user_id", user_id).execute()
 
-    logger.info("Password reset completed for user %s", token_row["user_id"])
+    # Delete ALL password reset tokens for this user (not just the used one)
+    db.table("password_reset_tokens").delete().eq("user_id", user_id).execute()
+
+    # Log the action
+    try:
+        db.table("auth_logs").insert({
+            "user_id": user_id,
+            "action": "password_reset_sessions_cleared",
+        }).execute()
+    except Exception:
+        logger.warning("Failed to log password_reset_sessions_cleared for user %s", user_id)
+
+    logger.info("Password reset completed for user %s (all sessions invalidated)", user_id)
     return {"message": "Senha alterada com sucesso"}
 
 
