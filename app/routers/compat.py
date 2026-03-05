@@ -16,13 +16,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/compat", tags=["compat"])
 
 
-async def _resolve_item_seller(item_id: str, skip_seller: str | None = None) -> tuple[str | None, dict | None]:
+async def _resolve_item_seller(item_id: str, org_id: str, skip_seller: str | None = None) -> tuple[str | None, dict | None]:
     """Try all connected sellers IN PARALLEL to find one that can fetch the item.
 
     Returns (seller_slug, item_data) from the first seller that succeeds, or (None, None).
     """
     db = get_db()
-    sellers = db.table("copy_sellers").select("slug").eq("active", True).execute()
+    sellers = db.table("copy_sellers").select("slug").eq("active", True).eq("org_id", org_id).execute()
     if not sellers.data:
         return None, None
 
@@ -31,7 +31,7 @@ async def _resolve_item_seller(item_id: str, skip_seller: str | None = None) -> 
         return None, None
 
     async def _try(slug: str) -> tuple[str, dict]:
-        item = await get_item(slug, item_id)
+        item = await get_item(slug, item_id, org_id=org_id)
         return slug, item
 
     tasks = [asyncio.create_task(_try(s)) for s in slugs]
@@ -55,19 +55,20 @@ async def preview_item(item_id: str, seller: str = Query(None), user: dict = Dep
     # Check can_run_compat (admins bypass)
     if user["role"] != "admin" and not user.get("can_run_compat"):
         raise HTTPException(status_code=403, detail="Sem permissão para rodar compatibilidade")
+    org_id = user["org_id"]
     # If no seller provided, use the first connected seller
     if not seller:
         db = get_db()
-        result = db.table("copy_sellers").select("slug").limit(1).execute()
+        result = db.table("copy_sellers").select("slug").eq("org_id", org_id).eq("active", True).limit(1).execute()
         if not result.data:
             raise HTTPException(status_code=400, detail="No connected sellers found")
         seller = result.data[0]["slug"]
 
     try:
-        item = await get_item(seller, item_id)
+        item = await get_item(seller, item_id, org_id=org_id)
     except Exception as first_err:
         # First seller failed — try all other connected sellers
-        resolved_seller, resolved_item = await _resolve_item_seller(item_id, skip_seller=seller)
+        resolved_seller, resolved_item = await _resolve_item_seller(item_id, org_id=org_id, skip_seller=seller)
         if resolved_seller and resolved_item:
             seller = resolved_seller
             item = resolved_item
@@ -77,7 +78,7 @@ async def preview_item(item_id: str, seller: str = Query(None), user: dict = Dep
     has_compatibilities = False
     compat_count = 0
     try:
-        compat = await get_item_compatibilities(seller, item_id)
+        compat = await get_item_compatibilities(seller, item_id, org_id=org_id)
         if compat is not None:
             has_compatibilities = bool(compat)
             # compat may have a list of products or a count
@@ -134,6 +135,7 @@ async def search_sku(req: SearchSkuRequest, user: dict = Depends(require_user)):
     if not req.skus:
         raise HTTPException(status_code=400, detail="At least one SKU is required")
 
+    org_id = user["org_id"]
     # Filter sellers by can_copy_to permission (admins get all)
     allowed_sellers = None
     if user["role"] != "admin":
@@ -143,7 +145,7 @@ async def search_sku(req: SearchSkuRequest, user: dict = Depends(require_user)):
             if p.get("can_copy_to")
         ]
 
-    results = await search_sku_all_sellers(req.skus, allowed_sellers=allowed_sellers)
+    results = await search_sku_all_sellers(req.skus, allowed_sellers=allowed_sellers, org_id=org_id)
     return results
 
 
@@ -168,6 +170,7 @@ async def copy_compat(req: CopyRequest, bg: BackgroundTasks, user: dict = Depend
     if not req.targets:
         raise HTTPException(status_code=400, detail="At least one target is required")
 
+    org_id = user["org_id"]
     targets = [{"seller_slug": t.seller_slug, "item_id": t.item_id} for t in req.targets]
 
     # Create in_progress log row before starting background task
@@ -183,13 +186,14 @@ async def copy_compat(req: CopyRequest, bg: BackgroundTasks, user: dict = Depend
         "success_count": 0,
         "error_count": 0,
         "status": "in_progress",
+        "org_id": org_id,
     }
     if user.get("id"):
         log_insert["user_id"] = user["id"]
     log_row = db.table("compat_logs").insert(log_insert).execute()
     log_id = log_row.data[0]["id"]
 
-    bg.add_task(copy_compat_to_targets, req.source_item_id, targets, req.skus, log_id)
+    bg.add_task(copy_compat_to_targets, req.source_item_id, targets, req.skus, log_id, org_id=org_id)
 
     return {
         "status": "queued",
@@ -210,7 +214,11 @@ async def compat_logs(
     query = db.table("compat_logs").select("*, users(username)").order(
         "created_at", desc=True
     )
-    if user["role"] != "admin":
+    if user.get("is_super_admin"):
+        pass  # super-admin sees all logs
+    elif user["role"] == "admin":
+        query = query.eq("org_id", user["org_id"])
+    else:
         query = query.eq("user_id", user["id"])
     if status:
         query = query.eq("status", status)
