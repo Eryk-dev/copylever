@@ -63,7 +63,7 @@ export default function Login({ onLogin, onNavigateToSignup, onNavigateToForgotP
     // Normal login flow
     const success = await onLogin(email.trim(), password);
     if (!success) {
-      setError('Credenciais inválidas');
+      setError('Email ou senha incorretos');
       triggerShake();
     }
     setLoading(false);

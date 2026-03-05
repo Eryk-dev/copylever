@@ -147,10 +147,8 @@ async def login(req: LoginRequest):
     """Authenticate with email and password. Returns session token + user info."""
     db = get_db()
 
-    # Find user by email first, fallback to username for backward compatibility
+    # Find user by email
     result = db.table("users").select("*").eq("email", req.email).execute()
-    if not result.data:
-        result = db.table("users").select("*").eq("username", req.email).execute()
     if not result.data:
         # Log failed login attempt (user not found)
         try:
@@ -160,7 +158,7 @@ async def login(req: LoginRequest):
             }).execute()
         except Exception:
             logger.warning("Failed to log login_failed for unknown user %s", req.email)
-        raise HTTPException(status_code=401, detail="Credenciais inválidas")
+        raise HTTPException(status_code=401, detail="Email ou senha incorretos")
 
     user = result.data[0]
 
@@ -174,7 +172,7 @@ async def login(req: LoginRequest):
             }).execute()
         except Exception:
             logger.warning("Failed to log login_failed for inactive user %s", user["username"])
-        raise HTTPException(status_code=401, detail="Credenciais inválidas")
+        raise HTTPException(status_code=401, detail="Email ou senha incorretos")
 
     if not _verify_password(req.password, user["password_hash"]):
         # Log failed login attempt (wrong password)
@@ -186,7 +184,7 @@ async def login(req: LoginRequest):
             }).execute()
         except Exception:
             logger.warning("Failed to log login_failed for user %s", user["username"])
-        raise HTTPException(status_code=401, detail="Credenciais inválidas")
+        raise HTTPException(status_code=401, detail="Email ou senha incorretos")
 
     # Create session
     token = secrets.token_urlsafe(32)
