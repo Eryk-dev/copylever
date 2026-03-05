@@ -239,7 +239,7 @@
         "Typecheck passes"
       ],
       "priority": 14,
-      "passes": false,
+      "passes": true,
       "notes": "For the stats, use separate count queries: db.table('users').select('id', count='exact').eq('org_id', org_id).execute() → result.count. Same pattern for copy_sellers (add .eq('active', True)), copy_logs (add date filter for last 30 days using .gte('created_at', thirty_days_ago.isoformat())), compat_logs. Import require_super_admin from app.routers.auth. Import get_db from app.db.supabase. Use datetime for 30-day calculation."
     },
     {

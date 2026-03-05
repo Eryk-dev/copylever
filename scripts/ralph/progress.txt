@@ -164,3 +164,16 @@ Started: Thu Mar  5 10:43:47 -03 2026
   - update_user/delete_user pattern: fetch target first, compare org_id, return 404 if mismatch
   - user_permissions upsert uses on_conflict="user_id,seller_slug" — org_id is extra data, not part of conflict key
 ---
+
+## 2026-03-05 - US-014
+- Created app/routers/super_admin.py with GET /api/super/orgs and PUT /api/super/orgs/{org_id}
+- GET /orgs returns all orgs enriched with user_count, seller_count, copy_count (30d), compat_count (30d)
+- PUT /orgs/{org_id} accepts {active, payment_active} to toggle org status
+- All endpoints use Depends(require_super_admin)
+- Registered router in app/main.py
+- Files changed: app/routers/super_admin.py (new), app/main.py
+- **Learnings for future iterations:**
+  - Supabase count queries: select("id", count="exact").execute().count returns int or None
+  - For 30-day filters: .gte("created_at", thirty_days_ago.isoformat()) with timezone-aware datetime
+  - copy_sellers active filter: .eq("active", True) for seller_count
+---
