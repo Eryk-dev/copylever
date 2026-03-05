@@ -17,6 +17,7 @@ export interface CopyResult {
   status: 'success' | 'error' | 'pending' | 'needs_dimensions';
   dest_item_id: string | null;
   error: string | null;
+  sku?: string | null;
 }
 
 export interface CopyResponse {

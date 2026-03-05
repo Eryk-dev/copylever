@@ -8,12 +8,14 @@ export interface Dimensions {
 }
 
 interface DimensionFormProps {
-  itemId: string;
+  sku?: string;
+  itemIds: string[];
   destinations: string[];
   onSubmit: (dims: Dimensions) => void;
 }
 
-export default function DimensionForm({ itemId, destinations, onSubmit }: DimensionFormProps) {
+export default function DimensionForm({ sku, itemIds, destinations, onSubmit }: DimensionFormProps) {
+  const ids = itemIds;
   const [height, setHeight] = useState('');
   const [width, setWidth] = useState('');
   const [length, setLength] = useState('');
@@ -89,10 +91,20 @@ export default function DimensionForm({ itemId, destinations, onSubmit }: Dimens
         marginBottom: 'var(--space-3)',
         lineHeight: 'var(--leading-normal)',
       }}>
-        <span style={{ fontFamily: 'var(--font-mono)' }}>{itemId}</span>
+        {sku && (
+          <>
+            <span style={{ fontWeight: 600, color: 'var(--ink)' }}>SKU: {sku}</span>
+            {' — '}
+          </>
+        )}
+        {ids.length === 1 ? (
+          <span style={{ fontFamily: 'var(--font-mono)' }}>{ids[0]}</span>
+        ) : (
+          <span>{ids.length} anuncio(s): <span style={{ fontFamily: 'var(--font-mono)' }}>{ids.join(', ')}</span></span>
+        )}
         {' '}&rarr; {destinations.join(', ')}
         <br />
-        Informe as dimensoes da embalagem para atualizar o item origem e copiar.
+        Informe as dimensoes da embalagem para atualizar {ids.length > 1 ? 'os itens de origem' : 'o item origem'} e copiar.
       </p>
       <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
         <label style={labelStyle}>

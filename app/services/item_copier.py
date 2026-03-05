@@ -636,12 +636,14 @@ async def copy_single_item(
         "status": "pending",
         "dest_item_id": None,
         "error": None,
+        "sku": None,
     }
 
     try:
         # 1. GET full item data from source
         logger.info(f"Fetching item {item_id} from {source_seller}")
         item = await get_item(source_seller, item_id, org_id=org_id)
+        result["sku"] = _get_item_seller_custom_field(item) or None
 
         # 2. GET description
         description_data = await get_item_description(source_seller, item_id, org_id=org_id)

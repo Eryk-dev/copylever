@@ -9,60 +9,62 @@ interface Props {
 }
 
 export default function CopyProgress({ results, headers, onDimensionRetry }: Props) {
-  // Group needs_dimensions results by source_item_id
-  const dimItems = new Map<string, CopyResult[]>();
+  // Group needs_dimensions results by SKU (fallback to item_id if no SKU)
+  const dimGroups = new Map<string, { itemIds: string[]; results: CopyResult[] }>();
   for (const r of results.results) {
-    if (r.status === 'needs_dimensions') {
-      const list = dimItems.get(r.source_item_id) || [];
-      list.push(r);
-      dimItems.set(r.source_item_id, list);
-    }
+    if (r.status !== 'needs_dimensions') continue;
+    const key = r.sku || r.source_item_id;
+    const group = dimGroups.get(key) || { itemIds: [], results: [] };
+    if (!group.itemIds.includes(r.source_item_id)) group.itemIds.push(r.source_item_id);
+    group.results.push(r);
+    dimGroups.set(key, group);
   }
 
-  const handleDimensionSubmit = async (itemId: string, destinations: string[], dims: Dimensions) => {
-    // Find the source seller from other results
-    const sourceResult = results.results.find(r => r.source_item_id === itemId);
-    if (!sourceResult) return;
+  const handleDimensionSubmit = async (groupKey: string, dims: Dimensions) => {
+    const group = dimGroups.get(groupKey);
+    if (!group) return;
 
-    // The source seller is embedded in the copy context — we need to pass it.
-    // Extract from the first non-dimension result's context or from the request.
-    // We'll look for it from the original request data passed via the response.
     const source = (results as any).source || '';
+    const allRetryResults: CopyResult[] = [];
+    const processedItemIds = new Set<string>();
 
-    try {
-      const res = await fetch(`${API_BASE}/api/copy/with-dimensions`, {
-        method: 'POST',
-        headers: headers(),
-        body: JSON.stringify({
-          source,
-          destinations,
-          item_id: itemId,
-          dimensions: dims,
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: 'Erro desconhecido' }));
-        alert(`Erro: ${err.detail}`);
-        return;
+    // Call with-dimensions for each unique source item in the group
+    for (const r of group.results) {
+      if (processedItemIds.has(r.source_item_id)) continue;
+      processedItemIds.add(r.source_item_id);
+
+      const itemDests = group.results.filter(rr => rr.source_item_id === r.source_item_id).map(rr => rr.dest_seller);
+      try {
+        const res = await fetch(`${API_BASE}/api/copy/with-dimensions`, {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({ source, destinations: itemDests, item_id: r.source_item_id, dimensions: dims }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: 'Erro desconhecido' }));
+          alert(`Erro em ${r.source_item_id}: ${err.detail}`);
+          continue;
+        }
+        const retryData: CopyResponse = await res.json();
+        allRetryResults.push(...retryData.results);
+      } catch (e) {
+        alert(`Erro em ${r.source_item_id}: ${e}`);
       }
-      const retryData: CopyResponse = await res.json();
-
-      // Merge retry results into existing results
-      const updated = { ...results };
-      updated.results = results.results.map(r => {
-        if (r.source_item_id !== itemId || r.status !== 'needs_dimensions') return r;
-        const retried = retryData.results.find(rr => rr.dest_seller === r.dest_seller);
-        return retried || r;
-      });
-      updated.success = updated.results.filter(r => r.status === 'success').length;
-      updated.errors = updated.results.filter(r => r.status === 'error').length;
-      updated.needs_dimensions = updated.results.filter(r => r.status === 'needs_dimensions').length;
-      updated.total = updated.results.length;
-
-      onDimensionRetry?.(updated);
-    } catch (e) {
-      alert(`Erro: ${e}`);
     }
+
+    // Merge all retry results
+    const updated = { ...results };
+    updated.results = results.results.map(r => {
+      if (r.status !== 'needs_dimensions') return r;
+      const retried = allRetryResults.find(rr => rr.source_item_id === r.source_item_id && rr.dest_seller === r.dest_seller);
+      return retried || r;
+    });
+    updated.success = updated.results.filter(r => r.status === 'success').length;
+    updated.errors = updated.results.filter(r => r.status === 'error').length;
+    updated.needs_dimensions = updated.results.filter(r => r.status === 'needs_dimensions').length;
+    updated.total = updated.results.length;
+
+    onDimensionRetry?.(updated);
   };
 
   return (
@@ -96,13 +98,14 @@ export default function CopyProgress({ results, headers, onDimensionRetry }: Pro
         <Stat label="Erros" value={results.errors} color="var(--danger)" />
       </div>
 
-      {/* Dimension forms — one per source item that needs it */}
-      {[...dimItems.entries()].map(([itemId, dimResults]) => (
+      {/* Dimension forms — one per SKU group */}
+      {[...dimGroups.entries()].map(([groupKey, group]) => (
         <DimensionForm
-          key={itemId}
-          itemId={itemId}
-          destinations={dimResults.map(r => r.dest_seller)}
-          onSubmit={(dims) => handleDimensionSubmit(itemId, dimResults.map(r => r.dest_seller), dims)}
+          key={groupKey}
+          sku={group.results[0]?.sku || undefined}
+          itemIds={group.itemIds}
+          destinations={[...new Set(group.results.map(r => r.dest_seller))]}
+          onSubmit={(dims) => handleDimensionSubmit(groupKey, dims)}
         />
       ))}
 

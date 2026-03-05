@@ -383,7 +383,7 @@ function LogRow({ log, isRetrying, onRetryClick, onRetrySubmit }: {
         <tr>
           <td colSpan={7} style={{ padding: 'var(--space-2) var(--space-3)' }}>
             <DimensionForm
-              itemId={log.source_item_id}
+              itemIds={[log.source_item_id]}
               destinations={log.dest_sellers || []}
               onSubmit={onRetrySubmit}
             />
