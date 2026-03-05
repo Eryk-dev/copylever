@@ -404,7 +404,12 @@ async def resolve_sellers_endpoint(req: ResolveSellersRequest, user: dict = Depe
     errors = []
     for iid in clean_ids:
         if iid in resolved:
-            results.append({"item_id": iid, "seller_slug": resolved[iid]})
+            seller_slug = resolved[iid]
+            # For non-admin users, check can_copy_from permission
+            if not _check_seller_permission(user, seller_slug, "from"):
+                errors.append({"item_id": iid, "error": "Sem permissao para este seller"})
+            else:
+                results.append({"item_id": iid, "seller_slug": seller_slug})
         else:
             errors.append({"item_id": iid, "error": "Item nao encontrado em nenhum seller conectado"})
 
