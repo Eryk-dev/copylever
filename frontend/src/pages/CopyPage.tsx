@@ -125,13 +125,15 @@ export default function CopyPage({ sellers, headers, user }: Props) {
     try {
       const results = await Promise.all(
         items.map(async ([rawId, seller]) => {
-          let itemId = rawId.trim();
-          const m = itemId.match(/MLB[-]?(\d+)/i);
-          if (m) itemId = `MLB${m[1]}`;
-          else if (/^\d+$/.test(itemId)) itemId = `MLB${itemId}`;
-          const res = await fetch(`${API_BASE}/api/copy/preview/${itemId}?seller=${encodeURIComponent(seller)}`, { headers: headers(), cache: 'no-store' });
-          if (!res.ok) return null;
-          return await res.json() as ItemPreview;
+          try {
+            let itemId = rawId.trim();
+            const m = itemId.match(/MLB[-]?(\d+)/i);
+            if (m) itemId = `MLB${m[1]}`;
+            else if (/^\d+$/.test(itemId)) itemId = `MLB${itemId}`;
+            const res = await fetch(`${API_BASE}/api/copy/preview/${itemId}?seller=${encodeURIComponent(seller)}`, { headers: headers(), cache: 'no-store' });
+            if (!res.ok) return null;
+            return await res.json() as ItemPreview;
+          } catch { return null; }
         })
       );
       const valid = results.filter((r): r is ItemPreview => r !== null);
