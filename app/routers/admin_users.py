@@ -17,6 +17,24 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 USER_FIELDS = "id, username, email, role, org_id, can_run_compat, active, created_at, last_login_at"
 
 
+def _check_last_admin(db, org_id: str, target_user_id: str):
+    """Raise 400 if removing/demoting target would leave org with zero admins."""
+    result = (
+        db.table("users")
+        .select("id", count="exact")
+        .eq("org_id", org_id)
+        .eq("role", "admin")
+        .eq("active", True)
+        .neq("id", target_user_id)
+        .execute()
+    )
+    if result.count == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Não é possível remover o último administrador da organização",
+        )
+
+
 def _hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
@@ -96,9 +114,11 @@ async def update_user(user_id: str, req: UpdateUserRequest, user: dict = Depends
     db = get_db()
 
     # Verify target user belongs to same org
-    target = db.table("users").select("id, org_id").eq("id", user_id).execute()
+    target = db.table("users").select("id, org_id, role, active").eq("id", user_id).execute()
     if not target.data or target.data[0]["org_id"] != user["org_id"]:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+    target_user = target.data[0]
 
     update_data: dict = {}
     if req.password is not None:
@@ -113,6 +133,16 @@ async def update_user(user_id: str, req: UpdateUserRequest, user: dict = Depends
     if not update_data:
         raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
 
+    # Prevent removing the last admin (demote or deactivate)
+    if target_user["role"] == "admin" and target_user["active"]:
+        would_lose_admin = False
+        if req.role is not None and req.role != "admin":
+            would_lose_admin = True
+        if req.active is False:
+            would_lose_admin = True
+        if would_lose_admin:
+            _check_last_admin(db, user["org_id"], user_id)
+
     db.table("users").update(update_data).eq("id", user_id).execute()
 
     # Return updated user without password_hash
@@ -122,16 +152,18 @@ async def update_user(user_id: str, req: UpdateUserRequest, user: dict = Depends
 
 @router.delete("/users/{user_id}")
 async def delete_user(user_id: str, user: dict = Depends(require_admin)):
-    """Delete a user (admin only). Cannot delete yourself."""
-    if user_id == user["id"]:
-        raise HTTPException(status_code=400, detail="Não é possível deletar a si mesmo")
-
+    """Delete a user (admin only)."""
     db = get_db()
 
     # Verify target user belongs to same org
-    target = db.table("users").select("id, org_id").eq("id", user_id).execute()
+    target = db.table("users").select("id, org_id, role, active").eq("id", user_id).execute()
     if not target.data or target.data[0]["org_id"] != user["org_id"]:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+    # Prevent deleting the last admin
+    target_user = target.data[0]
+    if target_user["role"] == "admin" and target_user["active"]:
+        _check_last_admin(db, user["org_id"], user_id)
 
     db.table("users").delete().eq("id", user_id).execute()
 
