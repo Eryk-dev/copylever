@@ -1,219 +1,378 @@
 {
-  "project": "COPY ANUNCIOS — User Auth & RBAC",
-  "branchName": "ralph/user-auth-rbac",
-  "description": "Replace single shared password with per-user login (username+password), role-based access control (admin/operator), granular per-seller permissions, and full audit logging.",
+  "project": "COPY ANUNCIOS — Multi-Tenant SaaS Migration",
+  "branchName": "ralph/multi-tenant-saas",
+  "description": "Convert single-tenant internal tool to multi-tenant SaaS. Each client (org) gets their own sellers, users, and operations. Shared schema with org_id on all tables. Self-service signup with email+password+company. Super-admin panel for platform owner. Stripe billing integration (ready but deferred).",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Database migration: auth tables",
-      "description": "As a developer, I want to create the database schema for users, sessions, permissions, and auth logs so that the backend can store and query auth data.",
+      "title": "Database migration: orgs table and org_id columns",
+      "description": "As a developer, I want to create the orgs table and add org_id to all existing tables so that data can be isolated per organization.",
       "acceptanceCriteria": [
-        "Create migration file app/db/migrations/003_user_auth.sql",
-        "Table `users` created with columns: id (UUID PK DEFAULT gen_random_uuid()), username (TEXT UNIQUE NOT NULL), password_hash (TEXT NOT NULL), role (TEXT NOT NULL DEFAULT 'operator' CHECK IN ('admin','operator')), can_run_compat (BOOLEAN NOT NULL DEFAULT false), active (BOOLEAN NOT NULL DEFAULT true), created_at (TIMESTAMPTZ DEFAULT now()), last_login_at (TIMESTAMPTZ)",
-        "Table `user_sessions` created with columns: id (UUID PK DEFAULT gen_random_uuid()), user_id (UUID FK to users ON DELETE CASCADE), token (TEXT UNIQUE NOT NULL), created_at (TIMESTAMPTZ DEFAULT now()), expires_at (TIMESTAMPTZ NOT NULL)",
-        "Table `user_permissions` created with columns: id (UUID PK DEFAULT gen_random_uuid()), user_id (UUID FK to users ON DELETE CASCADE), seller_slug (TEXT NOT NULL), can_copy_from (BOOLEAN NOT NULL DEFAULT false), can_copy_to (BOOLEAN NOT NULL DEFAULT false), UNIQUE(user_id, seller_slug)",
-        "Table `auth_logs` created with columns: id (UUID PK DEFAULT gen_random_uuid()), user_id (UUID REFERENCES users(id) ON DELETE SET NULL), username (TEXT), action (TEXT NOT NULL), created_at (TIMESTAMPTZ DEFAULT now())",
-        "ALTER TABLE copy_logs ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE SET NULL",
-        "ALTER TABLE compat_logs ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE SET NULL",
+        "Create migration file app/db/migrations/007_multi_tenant.sql",
+        "Table `orgs` created with columns: id (UUID PK DEFAULT gen_random_uuid()), name (TEXT NOT NULL), email (TEXT UNIQUE NOT NULL), active (BOOLEAN NOT NULL DEFAULT true), stripe_customer_id (TEXT UNIQUE), stripe_subscription_id (TEXT UNIQUE), payment_active (BOOLEAN NOT NULL DEFAULT false), created_at (TIMESTAMPTZ DEFAULT now()), updated_at (TIMESTAMPTZ DEFAULT now())",
+        "Add org_id UUID column (nullable initially) with FK REFERENCES orgs(id) ON DELETE CASCADE to: users, copy_sellers, user_permissions",
+        "Add org_id UUID column (nullable initially) with FK REFERENCES orgs(id) ON DELETE SET NULL to: copy_logs, compat_logs, api_debug_logs, auth_logs",
+        "Add is_super_admin BOOLEAN NOT NULL DEFAULT false column to users table",
+        "Add email TEXT column to users table",
+        "Create index idx_orgs_email ON orgs(email)",
+        "Create index idx_orgs_stripe_customer ON orgs(stripe_customer_id)",
+        "Create indexes idx_{table}_org ON each table for the org_id column",
         "Typecheck passes"
       ],
       "priority": 1,
       "passes": true,
-      "notes": "Use IF NOT EXISTS for all CREATE TABLE statements. The copy_logs and compat_logs tables already exist — only add the user_id column. Check existing migrations in app/db/migrations/ for style reference. Supabase uses PostgreSQL."
+      "notes": "Use IF NOT EXISTS for all CREATE TABLE and CREATE INDEX. Use ADD COLUMN IF NOT EXISTS for ALTER TABLE. Check existing migrations in app/db/migrations/ for style (001 through 006 exist). Supabase uses PostgreSQL. Do NOT add NOT NULL to org_id yet — that happens after data backfill in US-002. Do NOT change unique constraints yet — US-002 handles that."
     },
     {
       "id": "US-002",
-      "title": "Backend: auth endpoints (login, logout, me)",
-      "description": "As an operator, I want to log in with my username and password so that I have an individual session. Replace the old single-password auth system.",
+      "title": "Database migration: backfill existing data and finalize constraints",
+      "description": "As a developer, I want to migrate existing data to a 'Lever Money' org and enforce org-scoped constraints so that the system is ready for multi-tenancy.",
       "acceptanceCriteria": [
-        "Rewrite app/routers/auth.py to use the new users/user_sessions tables instead of admin_config",
-        "POST /api/auth/login accepts {username, password}, verifies bcrypt hash against users table, creates session in user_sessions with UUID4 token and 7-day expiry, returns {token, user:{id, username, role, can_run_compat}}",
-        "POST /api/auth/login returns 401 with {detail: 'Credenciais inválidas'} if username not found, password wrong, or user.active is false",
-        "POST /api/auth/logout deletes the session row from user_sessions matching the token",
-        "GET /api/auth/me looks up token from X-Auth-Token header in user_sessions, checks not expired, returns {id, username, role, can_run_compat, permissions:[{seller_slug, can_copy_from, can_copy_to}]}",
-        "New FastAPI dependency require_user() extracts X-Auth-Token header, looks up user_sessions join users, returns user dict with permissions array. Raises 401 if token missing/invalid/expired",
-        "New FastAPI dependency require_admin() calls require_user() then checks role == 'admin', raises 403 if not",
-        "Login updates users.last_login_at to now()",
-        "Add ADMIN_MASTER_PASSWORD to app/config.py Settings class as optional string field (default None)",
-        "Old admin_config-based session_token/password_hash logic is removed from auth.py",
+        "Create migration file app/db/migrations/008_backfill_org_data.sql",
+        "INSERT INTO orgs with a deterministic UUID '00000000-0000-0000-0000-1ev3rm0ney01', name='Lever Money', email='eryk@levermoney.com.br', active=true, payment_active=true",
+        "UPDATE all rows in users, copy_sellers, copy_logs, compat_logs, api_debug_logs, auth_logs, user_permissions to SET org_id = the Lever Money UUID WHERE org_id IS NULL",
+        "UPDATE users SET is_super_admin = true WHERE username = 'eryk'",
+        "ALTER TABLE users ALTER COLUMN org_id SET NOT NULL",
+        "ALTER TABLE copy_sellers ALTER COLUMN org_id SET NOT NULL",
+        "ALTER TABLE user_permissions ALTER COLUMN org_id SET NOT NULL",
+        "Drop old unique constraint on users(username) and create new UNIQUE INDEX idx_users_org_username ON users(org_id, username)",
+        "Create UNIQUE INDEX idx_users_email ON users(email) WHERE email IS NOT NULL",
+        "Drop old unique constraint on copy_sellers(slug) and create new UNIQUE INDEX idx_copy_sellers_org_slug ON copy_sellers(org_id, slug)",
         "Typecheck passes"
       ],
       "priority": 2,
       "passes": true,
-      "notes": "Current auth.py uses admin_config table with password_hash and session_token columns. The new system uses users + user_sessions tables. Keep using bcrypt for password hashing (already in requirements.txt). The require_admin dependency in the current code is used by auth_ml.py router — make sure the new require_admin works as a drop-in replacement. Import Header from fastapi for X-Auth-Token extraction."
+      "notes": "This migration MUST run after 007_multi_tenant.sql. Use IF NOT EXISTS for indexes. The deterministic UUID uses hex chars only (no special chars). For dropping constraints safely, use: ALTER TABLE users DROP CONSTRAINT IF EXISTS users_username_key; and ALTER TABLE copy_sellers DROP CONSTRAINT IF EXISTS copy_sellers_slug_key;. Log tables (copy_logs, compat_logs, api_debug_logs, auth_logs) keep org_id nullable for edge cases."
     },
     {
       "id": "US-003",
-      "title": "Backend: admin-promote endpoint",
-      "description": "As the system owner, I want to use a master password from .env to create or promote the first admin user without manual database access.",
+      "title": "Config: add Stripe settings to app/config.py",
+      "description": "As a developer, I want Stripe configuration variables available so that billing endpoints can use them later.",
       "acceptanceCriteria": [
-        "POST /api/auth/admin-promote in app/routers/auth.py accepts {username, password, master_password}",
-        "If ADMIN_MASTER_PASSWORD is not set in config, return 403 with {detail: 'Master password not configured'}",
-        "If master_password does not match ADMIN_MASTER_PASSWORD, return 403 with {detail: 'Senha master inválida'}",
-        "If master_password is correct and user does not exist: create user with role='admin', can_run_compat=true, hash password with bcrypt, return created user (without password_hash)",
-        "If master_password is correct and user exists: update role to 'admin', update can_run_compat to true, update password_hash if provided, return updated user",
-        "Log action='admin_promote' to auth_logs table with the user_id and username",
+        "Add stripe_secret_key: str = '' to Settings class in app/config.py",
+        "Add stripe_webhook_secret: str = '' to Settings class",
+        "Add stripe_price_id: str = '' to Settings class",
         "Typecheck passes"
       ],
       "priority": 3,
       "passes": true,
-      "notes": "This endpoint does NOT require authentication (it's the bootstrap mechanism). Add it to the auth router alongside login/logout. Use the same bcrypt hashing pattern from the login endpoint."
+      "notes": "Simple change — just add 3 fields to the existing Settings(BaseSettings) class in app/config.py. They default to empty string so they're optional. No other files need changes."
     },
     {
       "id": "US-004",
-      "title": "Backend: user CRUD API",
-      "description": "As an admin, I want API endpoints to create, list, update, and delete operator accounts.",
+      "title": "Backend: update require_user to return org_id and add require_super_admin",
+      "description": "As a developer, I want auth dependencies to include org context so that all downstream code can scope queries by org.",
       "acceptanceCriteria": [
-        "Create new router file app/routers/admin_users.py",
-        "Register the router in app/main.py with prefix /api/admin",
-        "GET /api/admin/users — returns list of all users with fields: id, username, role, can_run_compat, active, created_at, last_login_at. Never returns password_hash. Protected by require_admin()",
-        "POST /api/admin/users — accepts {username, password, role, can_run_compat}. Hashes password with bcrypt. Returns 409 if username already exists. Returns created user. Protected by require_admin()",
-        "PUT /api/admin/users/{user_id} — accepts partial body: {password?, role?, can_run_compat?, active?}. If password provided, hash it. Returns updated user. Protected by require_admin()",
-        "DELETE /api/admin/users/{user_id} — deletes user. Returns 400 with {detail: 'Não é possível deletar a si mesmo'} if user_id matches the requesting admin. Cascades to sessions and permissions via FK. Protected by require_admin()",
+        "Modify require_user() in app/routers/auth.py to return org_id, is_super_admin, and email in the user dict",
+        "The user dict returned is: {id, username, email, role, org_id, is_super_admin, can_run_compat, permissions}",
+        "Add new async dependency require_super_admin() that calls require_user() then checks is_super_admin is True, raises HTTPException 403 with detail 'Acesso restrito ao super-admin' if not",
+        "Add new async dependency require_active_org() that calls require_user(), fetches org from orgs table by org_id, raises HTTPException 403 if org.active is False. For super_admin users, skip the check. Add a commented-out block for payment_active check with comment '# Enable when Stripe is configured'",
         "Typecheck passes"
       ],
       "priority": 4,
       "passes": true,
-      "notes": "Import require_admin from app/routers/auth. Use get_db() from app/db/supabase. Supabase client uses .table('users').select/insert/update/delete pattern. For password hashing use bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()."
+      "notes": "In require_user(), the current code fetches from users table and _get_user_permissions(). Just add the new fields from the users row: user['org_id'], user.get('is_super_admin', False), user.get('email'). The users table already has these columns from US-001/002. require_active_org uses get_db().table('orgs').select('active, payment_active').eq('id', user['org_id']).single().execute()."
     },
     {
       "id": "US-005",
-      "title": "Backend: permissions CRUD API",
-      "description": "As an admin, I want API endpoints to read and update per-seller permissions for each operator.",
+      "title": "Backend: signup endpoint",
+      "description": "As a new customer, I want to sign up with email, password and company name so that I can start using the platform.",
       "acceptanceCriteria": [
-        "Add endpoints to app/routers/admin_users.py (same router as US-004)",
-        "GET /api/admin/users/{user_id}/permissions — returns list of {seller_slug, seller_name, can_copy_from, can_copy_to} for ALL connected sellers from copy_sellers table. Sellers without a row in user_permissions default to can_copy_from=false, can_copy_to=false. Protected by require_admin()",
-        "PUT /api/admin/users/{user_id}/permissions — accepts array [{seller_slug, can_copy_from, can_copy_to}]. For each entry, upsert into user_permissions (insert on conflict(user_id, seller_slug) update). Protected by require_admin()",
+        "Add POST /api/auth/signup endpoint in app/routers/auth.py",
+        "Request model SignupRequest with fields: email (str), password (str), company_name (str)",
+        "Validate email is not empty and doesn't already exist in users table (return 409 'Email ja cadastrado')",
+        "Validate password is at least 6 chars (return 400 'Senha deve ter pelo menos 6 caracteres')",
+        "Validate company_name is not empty (return 400 'Nome da empresa e obrigatorio')",
+        "Create org row: name=company_name, email=email, active=true, payment_active=true",
+        "Create user row: email=email, username=email (use email as username), password_hash=bcrypt(password), role='admin', can_run_compat=true, org_id=org.id, is_super_admin=false",
+        "Create session token (same pattern as login: secrets.token_urlsafe(32), 7 day expiry)",
+        "Return {token, user: {id, username, email, role, can_run_compat}, org: {id, name}}",
+        "Log action='signup' to auth_logs with user_id, username, and org_id",
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": true,
-      "notes": "For the GET, fetch all sellers from copy_sellers, then fetch user_permissions for the user_id, then merge — sellers not in permissions get false/false defaults. For upsert in Supabase, use .upsert() with on_conflict='user_id,seller_slug'. The seller_name comes from copy_sellers.name column."
+      "passes": false,
+      "notes": "Follow the exact same patterns from the existing login endpoint in auth.py for password hashing (bcrypt.hashpw), session creation (user_sessions insert), and token generation (secrets.token_urlsafe(32)). The new org has payment_active=true initially — billing enforcement is deferred. Username is set to email for simplicity."
     },
     {
       "id": "US-006",
-      "title": "Backend: permission enforcement in copy and compat endpoints",
-      "description": "As a system, I want to validate user permissions server-side on every copy and compat operation so that operators cannot bypass UI restrictions.",
+      "title": "Backend: update login to accept email",
+      "description": "As a user, I want to log in with my email so that the login flow matches the signup flow.",
       "acceptanceCriteria": [
-        "In app/routers/copy.py: replace require_admin with require_user in all endpoints",
-        "POST /api/copy and POST /api/copy/with-dimensions: check user has can_copy_from for source_seller and can_copy_to for each dest_seller. Admin users bypass checks. Return 403 with specific message listing the disallowed seller(s) if not permitted",
-        "GET /api/copy/preview/{item_id}: require_user() only (any authenticated user can preview)",
-        "In app/routers/compat.py: replace require_admin with require_user in all endpoints",
-        "POST /api/compat/copy: check user.can_run_compat is true. Admin users bypass. Return 403 if not",
-        "POST /api/compat/search-sku: require_user(). Filter seller list to only sellers the user has can_copy_to permission (admin gets all sellers)",
-        "GET /api/compat/preview/{item_id}: require_user() and check can_run_compat. Admin bypass",
-        "In app/routers/auth_ml.py: keep require_admin() for seller management (connect/disconnect sellers) — only admins manage sellers",
+        "Modify LoginRequest model in app/routers/auth.py to have field 'email' instead of 'username'",
+        "POST /api/auth/login looks up user by email field first",
+        "If email lookup fails, fallback to looking up by username (backward compatibility for existing users who may not have email set)",
+        "The rest of the login flow (bcrypt verify, session creation, auth_logs) stays the same",
+        "GET /api/auth/me returns org info: add org_name by joining/querying orgs table using user's org_id",
+        "The /me response adds: email, org_id, org_name, is_super_admin to the returned dict",
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": true,
-      "notes": "The require_user dependency from US-002 returns a dict with {id, username, role, can_run_compat, permissions:[{seller_slug, can_copy_from, can_copy_to}]}. To check permissions, iterate user['permissions'] looking for matching seller_slug. If user['role'] == 'admin', skip all checks. Helper function check_seller_permission(user, seller_slug, direction) could be useful."
+      "passes": false,
+      "notes": "In the login endpoint, first try: db.table('users').select('*').eq('email', req.email).execute(). If not result.data, fallback: db.table('users').select('*').eq('username', req.email).execute(). This lets existing users (who have username but no email) still log in. For /me, after getting user, query: db.table('orgs').select('name').eq('id', user['org_id']).single().execute() and add org_name to response."
     },
     {
       "id": "US-007",
-      "title": "Backend: audit logging with user_id",
-      "description": "As an admin, I want every operation to record which user performed it so I have full traceability.",
+      "title": "Backend: thread org_id through ml_api.py",
+      "description": "As a developer, I want all ML API functions to accept org_id so that seller token lookups are scoped per organization.",
       "acceptanceCriteria": [
-        "In app/routers/copy.py: pass the authenticated user's id when inserting into copy_logs (user_id column added in US-001)",
-        "In app/services/compat_copier.py: accept user_id parameter in copy_compat_to_targets and pass it when inserting into compat_logs",
-        "In app/routers/compat.py: pass user.id to compat_copier functions",
-        "In app/routers/auth.py: insert into auth_logs on login success (action='login'), login failure (action='login_failed'), logout (action='logout')",
-        "GET /api/copy/logs: if user.role == 'operator', filter by user_id. If admin, return all. Include username in response (join users table or add username to log row)",
-        "GET /api/compat/logs: same operator/admin filtering as copy logs. Include username in response",
+        "Add org_id: str parameter to _get_token() and add .eq('org_id', org_id) to the copy_sellers query",
+        "Add org_id: str parameter to get_item(), get_item_description(), get_item_compatibilities(), create_item(), set_item_description(), set_item_compatibilities(), update_item() — all pass org_id to _get_token()",
+        "Add org_id: str parameter to search_items_by_sku() — add .eq('org_id', org_id) to copy_sellers query AND pass org_id to _get_token()",
+        "Add org_id: str parameter to copy_item_compatibilities() — pass org_id to _get_token()",
+        "Add org_id: str parameter to get_seller_official_store_id() — add .eq('org_id', org_id) to copy_sellers query AND pass org_id to _get_token()",
+        "Add org_id: str parameter to exchange_code() and fetch_user_info() — these don't need it for queries but keep consistent signature (no query changes needed)",
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": true,
-      "notes": "copy_logs insertion happens in app/services/item_copier.py (look for db.table('copy_logs').insert). Add user_id to the insert dict. compat_logs insertion is in app/services/compat_copier.py. For the logs endpoints, use .eq('user_id', user['id']) filter for operators. For username, either join or just store username alongside user_id at insert time."
+      "passes": false,
+      "notes": "This is a mechanical change: add org_id parameter to every public function, thread it to _get_token() calls. The _get_token() function at line ~112 queries copy_sellers by slug — add .eq('org_id', org_id) to that query. search_items_by_sku() at line ~343 also queries copy_sellers directly — add .eq('org_id', org_id) there too. get_seller_official_store_id() at line ~196 queries copy_sellers — add org_id filter. exchange_code() and fetch_user_info() don't query sellers so org_id is just passed through for API consistency. IMPORTANT: After this change, all callers in item_copier.py, compat_copier.py, and routers will fail typecheck until updated in subsequent stories."
     },
     {
       "id": "US-008",
-      "title": "Frontend: Login page with username and password",
-      "description": "As an operator, I want a login screen with username and password fields to authenticate individually.",
+      "title": "Backend: thread org_id through item_copier.py",
+      "description": "As a developer, I want the copy service to pass org_id to all ML API calls so that seller lookups are org-scoped.",
       "acceptanceCriteria": [
-        "Update frontend/src/pages/Login.tsx to show two input fields: 'Usuário' (text) and 'Senha' (password) plus 'Entrar' button",
-        "Submitting calls POST /api/auth/login with {username, password}",
-        "On success, stores token in localStorage key 'copy-auth-token' and calls onLogin callback",
-        "On failure (401), shows inline error message with shake animation (reuse existing pattern from current Login.tsx)",
-        "Discrete text link 'Acesso Admin' below the login form toggles visibility of a third field 'Senha Master'",
-        "When 'Senha Master' field is visible and filled, submit calls POST /api/auth/admin-promote with {username, password, master_password} instead of login. On success, auto-login the user",
-        "Old single-password login flow is completely removed",
+        "Add org_id: str parameter to copy_single_item() and pass it to all ml_api function calls (get_item, get_item_description, get_item_compatibilities, create_item, set_item_description, copy_item_compatibilities, get_seller_official_store_id)",
+        "Add org_id: str parameter to copy_items() and pass to copy_single_item()",
+        "Add org_id: str parameter to copy_with_dimensions() and pass to update_item() and copy_single_item()",
+        "Add org_id field to _log_api_debug() function and include it in the insert row dict",
+        "All copy_logs inserts in copy_items() include org_id in the insert dict",
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": true,
-      "notes": "Current Login.tsx has a single password field and calls /api/auth/login with just {password}. Update to {username, password}. The localStorage key changes from 'copy-admin-token' to 'copy-auth-token'. The admin-promote flow: call /api/auth/admin-promote first, if success then call /api/auth/login with same username/password to get a session token."
+      "passes": false,
+      "notes": "copy_single_item() is the main function (~line 617). It calls: get_item(), get_item_description(), get_item_compatibilities(), create_item(), set_item_description(), copy_item_compatibilities(), get_seller_official_store_id(). Add org_id= to each call. copy_items() (~line 896) creates copy_logs rows — add 'org_id': org_id to log_insert dict. _log_api_debug() (~line 40) inserts into api_debug_logs — add org_id to the row dict and the function signature."
     },
     {
       "id": "US-009",
-      "title": "Frontend: useAuth hook and navbar update",
-      "description": "As an operator, I want the app to show my name, adapt navigation to my permissions, and let me log out.",
+      "title": "Backend: thread org_id through compat_copier.py",
+      "description": "As a developer, I want the compat service to pass org_id to all ML API calls so that seller lookups are org-scoped.",
       "acceptanceCriteria": [
-        "Update frontend/src/hooks/useAuth.ts to call GET /api/auth/me on mount and store full user object: {id, username, role, can_run_compat, permissions:[{seller_slug, can_copy_from, can_copy_to}]}",
-        "All API requests from useAuth use X-Auth-Token header with token from localStorage 'copy-auth-token'",
-        "If GET /api/auth/me returns 401, clear localStorage token and set authed=false (triggers login redirect)",
-        "Update frontend/src/App.tsx navbar to display the logged-in username",
-        "Add logout button in navbar that calls POST /api/auth/logout, clears localStorage 'copy-auth-token', and redirects to login",
-        "Hide 'Admin' tab in navbar if user.role !== 'admin'",
-        "Hide 'Compatibilidade' tab if user.can_run_compat is false",
-        "Hide 'Copiar' tab if user has zero can_copy_from OR zero can_copy_to sellers in permissions array",
+        "Add org_id: str parameter to search_sku_all_sellers() and add .eq('org_id', org_id) to the copy_sellers query, pass org_id to search_items_by_sku() and get_item() calls",
+        "Add org_id: str parameter to _resolve_source_seller() and add .eq('org_id', org_id) to the copy_sellers query, pass org_id to get_item() calls",
+        "Add org_id: str parameter to copy_compat_to_targets() and pass org_id to _resolve_source_seller(), get_item_compatibilities(), copy_item_compatibilities(). Include org_id in compat_logs inserts",
+        "Pass org_id to _log_api_debug() calls in the error handler",
         "Typecheck passes"
       ],
       "priority": 9,
-      "passes": true,
-      "notes": "Current useAuth stores: authed, sellers, login(), logout(), etc. Expand to also store 'user' object. The navbar in App.tsx renders tab buttons — add conditional rendering. The localStorage key was 'copy-admin-token', now 'copy-auth-token'. Make sure to update all references. The user.permissions array has {seller_slug, can_copy_from, can_copy_to} — check if any has can_copy_from=true and any has can_copy_to=true to show Copiar tab."
+      "passes": false,
+      "notes": "search_sku_all_sellers() at line ~22 queries copy_sellers — add .eq('org_id', org_id). It calls search_items_by_sku() and get_item() — pass org_id. _resolve_source_seller() at line ~77 queries copy_sellers — add .eq('org_id', org_id). copy_compat_to_targets() at line ~90 writes to compat_logs — add org_id to the insert dicts."
     },
     {
       "id": "US-010",
-      "title": "Frontend: Admin users management page",
-      "description": "As an admin, I want a UI to create, edit, and delete operator accounts inside the Admin section.",
+      "title": "Backend: org-scope auth_ml.py (OAuth + sellers)",
+      "description": "As a developer, I want the OAuth flow and seller management to be org-scoped so that each org manages their own ML connections.",
       "acceptanceCriteria": [
-        "Create frontend/src/pages/UsersPage.tsx accessible from Admin section (add as sub-tab or section alongside existing Sellers management in Admin.tsx)",
-        "Display table of users with columns: Usuário, Role (admin/operador), Compat (sim/não), Status (ativo/inativo), Último Login (formatted date or 'Nunca')",
-        "Button 'Novo Usuário' opens inline form with fields: username (text), senha (password), role (select: admin/operador), pode rodar compat (toggle/checkbox)",
-        "Each user row has edit button that opens inline form to change: senha (optional blank=no change), role, can_run_compat, active toggle",
-        "Each user row has delete button with confirmation dialog. Delete button disabled/hidden for current logged-in user",
-        "All actions call /api/admin/users endpoints with X-Auth-Token header and show toast feedback on success/error",
-        "Follow existing design system (CSS variables, button classes, table styling from CopyPage/CompatPage)",
+        "GET /api/ml/install requires authentication via Depends(require_user), extracts org_id from user, encodes org_id in OAuth state parameter as 'org_{org_id}', returns JSON {redirect_url: '...'} instead of RedirectResponse",
+        "GET /api/ml/callback parses org_id from state parameter (strip 'org_' prefix), includes org_id in copy_sellers insert/update, scopes existing seller lookup by org_id",
+        "GET /api/sellers adds .eq('org_id', user['org_id']) to copy_sellers query. Uses Depends(require_user) instead of Depends(require_admin) so any authenticated user can see their org's sellers",
+        "DELETE /api/sellers/{slug} adds .eq('org_id', user['org_id']) to the update query to prevent cross-org deletion",
+        "The callback success page still works (HTML response)",
         "Typecheck passes"
       ],
       "priority": 10,
-      "passes": true,
-      "notes": "Look at Admin.tsx for the existing layout pattern and how sellers are listed. Reuse the same card/table styling. For the inline form, look at how CopyForm.tsx handles form state. Use the Toast component for feedback. The API endpoints are /api/admin/users (GET, POST) and /api/admin/users/{id} (PUT, DELETE). Add navigation to UsersPage from Admin.tsx or App.tsx."
+      "passes": false,
+      "notes": "Current install() at line ~21 returns RedirectResponse. Change to return JSON: {redirect_url: url}. The frontend will open this URL. Add 'from app.routers.auth import require_user' if not already imported. In callback() at line ~36, parse state: if state.startswith('org_'): org_id = state[4:]. The existing seller lookup by ml_user_id needs .eq('org_id', org_id) because the same ML user could be connected by different orgs. The callback does NOT require auth (it's a redirect from ML). list_sellers currently uses require_admin — change to require_user so operators can also see sellers."
     },
     {
       "id": "US-011",
-      "title": "Frontend: Admin permissions panel per user",
-      "description": "As an admin, I want to set per-seller copy permissions for each operator using simple checkboxes.",
+      "title": "Backend: org-scope copy.py router",
+      "description": "As a developer, I want copy endpoints to be org-scoped so that each org only sees and operates on their own data.",
       "acceptanceCriteria": [
-        "Each user row in UsersPage has a 'Permissões' button that expands or opens a permissions panel below the row",
-        "Panel fetches and displays all connected sellers with two checkboxes each: 'Origem' (can_copy_from) and 'Destino' (can_copy_to)",
-        "Panel loads current permissions from GET /api/admin/users/{id}/permissions and pre-checks the boxes accordingly",
-        "Button 'Salvar' calls PUT /api/admin/users/{id}/permissions with the full array and shows toast on success",
-        "For admin-role users, panel shows message 'Admins têm acesso total a todos os sellers' instead of checkboxes (no editing needed)",
-        "Follow existing design system styling",
+        "Extract org_id = user['org_id'] in all endpoints that use Depends(require_user)",
+        "Pass org_id to copy_items() and copy_with_dimensions() calls",
+        "_resolve_item_seller() accepts org_id parameter, adds .eq('org_id', org_id) to copy_sellers query",
+        "preview_item() passes org_id to _resolve_item_seller() and get_item() calls",
+        "copy_logs() adds .eq('org_id', user['org_id']) filter. For super-admin (user.get('is_super_admin')), skip the org_id filter to see all logs",
+        "retry_dimensions() scopes copy_logs lookup by org_id",
         "Typecheck passes"
       ],
       "priority": 11,
-      "passes": true,
-      "notes": "The permissions API returns [{seller_slug, seller_name, can_copy_from, can_copy_to}] for all sellers. Render as a grid/table with seller name + two checkboxes. On save, send the full array back. Use useState to track permission changes locally before saving."
+      "passes": false,
+      "notes": "In copy_anuncios() at line ~84, extract org_id = user['org_id'] and pass to copy_items(). In copy_with_dims(), same. In preview_item(), pass org_id to _resolve_item_seller() and get_item(). In copy_logs(), the current admin check is 'if user[\"role\"] != \"admin\"' — change to also check is_super_admin: super-admins see all, org admins see their org, operators see their own. _resolve_item_seller() queries copy_sellers — add .eq('org_id', org_id)."
     },
     {
       "id": "US-012",
-      "title": "Frontend: filter sellers and features by user permissions",
-      "description": "As an operator, I want to only see the sellers and features I have access to, keeping the UI clean and focused.",
+      "title": "Backend: org-scope compat.py router",
+      "description": "As a developer, I want compat endpoints to be org-scoped so that each org only sees their own data.",
       "acceptanceCriteria": [
-        "In CopyPage.tsx (or CopyForm.tsx), filter the source seller list to only sellers where user has can_copy_from=true. If user is admin, show all sellers",
-        "In CopyPage.tsx (or CopyForm.tsx), filter the destination seller list to only sellers where user has can_copy_to=true. If user is admin, show all sellers",
-        "In CompatPage.tsx, the SKU search only considers sellers the user has can_copy_to permission for (either filter client-side before sending or rely on backend filtering from US-006)",
-        "If user has no permitted origin or destination sellers, CopyPage shows a friendly message like 'Nenhum seller disponível. Peça ao admin para liberar acesso.'",
-        "If user.can_run_compat is false and they navigate to /compat, redirect them to the first available page",
-        "Follow existing design system styling for empty states",
+        "Extract org_id = user['org_id'] in all endpoints",
+        "_resolve_item_seller() accepts org_id, adds .eq('org_id', org_id) to copy_sellers query",
+        "preview_item() passes org_id to _resolve_item_seller(), get_item(), get_item_compatibilities(). Scopes first-seller fallback query by org_id",
+        "search_sku() passes org_id to search_sku_all_sellers()",
+        "copy_compat() includes org_id in compat_logs insert, passes org_id to copy_compat_to_targets()",
+        "compat_logs() adds .eq('org_id', user['org_id']) filter. Super-admin sees all",
         "Typecheck passes"
       ],
       "priority": 12,
-      "passes": true,
-      "notes": "The user permissions are available in the useAuth hook from US-009 as user.permissions array. Filter sellers by matching seller.slug against permissions. In CopyForm.tsx, the sellers prop is already passed down — filter before rendering. For compat, the backend (US-006) already filters, but the frontend should also hide the tab (US-009 handles that)."
+      "passes": false,
+      "notes": "Same pattern as US-011 for copy.py. The _resolve_item_seller() in compat.py is a duplicate of the one in copy.py — both need the same change. preview_item() at line ~52 has a fallback: db.table('copy_sellers').select('slug').limit(1).execute() — add .eq('org_id', org_id) and .eq('active', True) to this. copy_compat() at line ~161 inserts into compat_logs — add org_id to log_insert dict."
+    },
+    {
+      "id": "US-013",
+      "title": "Backend: org-scope admin_users.py router",
+      "description": "As a developer, I want user management endpoints scoped by org so that each org admin only manages their own users.",
+      "acceptanceCriteria": [
+        "list_users() adds .eq('org_id', user['org_id']) to users query",
+        "create_user() includes org_id=user['org_id'] in the insert dict. Checks username uniqueness within org (not globally)",
+        "update_user() verifies target user belongs to same org before updating",
+        "delete_user() verifies target user belongs to same org before deleting",
+        "get_user_permissions() scopes copy_sellers query by .eq('org_id', user['org_id'])",
+        "update_user_permissions() adds org_id to the upsert dict",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": "In list_users() at line ~48, add .eq('org_id', user['org_id']). In create_user() at line ~57, add 'org_id': user['org_id'] to new_user dict. For uniqueness check, change .eq('username', req.username) to also .eq('org_id', user['org_id']). In update_user()/delete_user(), first fetch the target user and verify target_user['org_id'] == user['org_id'], return 404 if not. In get_user_permissions(), the sellers query at line ~133 should add .eq('org_id', user['org_id'])."
+    },
+    {
+      "id": "US-014",
+      "title": "Backend: super-admin router",
+      "description": "As the platform owner, I want API endpoints to see all organizations, their usage stats, and toggle their active status.",
+      "acceptanceCriteria": [
+        "Create new file app/routers/super_admin.py with APIRouter(prefix='/api/super', tags=['super-admin'])",
+        "All endpoints use Depends(require_super_admin) from app.routers.auth",
+        "GET /api/super/orgs returns list of all orgs, each with: id, name, email, active, payment_active, created_at, user_count, seller_count, copy_count (last 30 days), compat_count (last 30 days)",
+        "PUT /api/super/orgs/{org_id} accepts {active?: bool, payment_active?: bool} and updates the org",
+        "Register the router in app/main.py: app.include_router(super_admin.router)",
+        "Typecheck passes"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": "For the stats, use separate count queries: db.table('users').select('id', count='exact').eq('org_id', org_id).execute() → result.count. Same pattern for copy_sellers (add .eq('active', True)), copy_logs (add date filter for last 30 days using .gte('created_at', thirty_days_ago.isoformat())), compat_logs. Import require_super_admin from app.routers.auth. Import get_db from app.db.supabase. Use datetime for 30-day calculation."
+    },
+    {
+      "id": "US-015",
+      "title": "Backend: billing router (Stripe)",
+      "description": "As a developer, I want billing endpoints ready so that Stripe can be configured later without code changes.",
+      "acceptanceCriteria": [
+        "Create new file app/routers/billing.py with APIRouter(prefix='/api/billing', tags=['billing'])",
+        "Add 'stripe' to requirements.txt",
+        "POST /api/billing/create-checkout (Depends(require_user), must be org admin): creates Stripe Checkout Session with mode='subscription', returns {checkout_url}. Creates Stripe customer if org has no stripe_customer_id. Saves stripe_customer_id to org.",
+        "POST /api/billing/create-portal (Depends(require_user), must be org admin): creates Stripe Customer Portal session, returns {portal_url}. Returns 400 if org has no stripe_customer_id.",
+        "POST /api/billing/webhook (no auth): verifies Stripe signature, handles events: checkout.session.completed (set payment_active=true, save subscription_id), customer.subscription.deleted (set payment_active=false), customer.subscription.updated (check status)",
+        "GET /api/billing/status (Depends(require_user)): returns org's {payment_active, stripe_subscription_id} for current user's org",
+        "Register the router in app/main.py",
+        "If stripe_secret_key is empty, all endpoints return 503 with 'Billing not configured'",
+        "Typecheck passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": "Import stripe, set stripe.api_key = settings.stripe_secret_key. For create-checkout: stripe.checkout.Session.create(mode='subscription', line_items=[{price: settings.stripe_price_id, quantity: 1}], customer=stripe_customer_id or None, customer_email=org_email, success_url=f'{settings.base_url}?billing=success', cancel_url=f'{settings.base_url}?billing=cancel', client_reference_id=str(org_id)). For webhook: stripe.Webhook.construct_event(payload, sig_header, settings.stripe_webhook_secret). The webhook endpoint must accept raw body — use Request object and await request.body(). For admin check within require_user: if user['role'] != 'admin': raise HTTPException(403)."
+    },
+    {
+      "id": "US-016",
+      "title": "Frontend: update types and useAuth for multi-tenant",
+      "description": "As a developer, I want the frontend types and auth hook updated so that all components have access to org context.",
+      "acceptanceCriteria": [
+        "In frontend/src/lib/api.ts: add Org interface {id: string, name: string, email: string, active: boolean, payment_active: boolean, created_at: string}",
+        "In frontend/src/lib/api.ts: add OrgWithStats interface extending Org with {user_count: number, seller_count: number, copy_count: number, compat_count: number}",
+        "In frontend/src/hooks/useAuth.ts: update AuthUser interface to add: email: string, org_id: string, org_name: string, is_super_admin: boolean",
+        "In useAuth.ts: add signup() method that calls POST /api/auth/signup with {email, password, company_name}, stores token, fetches /me, returns boolean success",
+        "In useAuth.ts: fetchMe() parses new fields from /api/auth/me response (org_id, org_name, is_super_admin, email)",
+        "Typecheck passes"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": "In useAuth.ts, the AuthUser interface is at line ~12. Add the 4 new fields. The signup() method follows the same pattern as login(): POST to API, store token, call fetchMe(). The /api/auth/me endpoint now returns org_name (from US-006). For the api.ts types, add them after the existing interfaces."
+    },
+    {
+      "id": "US-017",
+      "title": "Frontend: signup page",
+      "description": "As a new customer, I want a signup page so that I can create an account for my company.",
+      "acceptanceCriteria": [
+        "Create frontend/src/pages/Signup.tsx with fields: Email (email input), Senha (password input), Nome da Empresa (text input)",
+        "Submit button 'Criar Conta' calls auth.signup(email, password, companyName)",
+        "On success, redirects to main app (parent handles via auth state change)",
+        "On failure, shows inline error message with same styling as Login.tsx",
+        "Link at bottom: 'Ja tem conta? Entrar' that navigates to login view",
+        "Follow existing design system (CSS variables, card styling from Login.tsx)",
+        "Typecheck passes"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": "Copy the structure of Login.tsx for styling. The signup page uses the same card layout, input styling, and error display pattern. The auth.signup() method was added in US-016. The parent App.tsx will handle routing between Login/Signup views in US-019."
+    },
+    {
+      "id": "US-018",
+      "title": "Frontend: update Login page for email",
+      "description": "As a user, I want the login page to accept email and link to signup.",
+      "acceptanceCriteria": [
+        "Change 'Usuario' label to 'Email' in Login.tsx",
+        "Change input type from 'text' to 'email'",
+        "The login call sends {email: value, password: value} instead of {username: value, password: value}",
+        "Add link below the form: 'Ainda nao tem conta? Cadastre-se' that calls an onNavigateToSignup callback prop",
+        "Keep the 'Acesso Admin' master password flow for backward compat (it still sends username field)",
+        "Typecheck passes"
+      ],
+      "priority": 18,
+      "passes": false,
+      "notes": "In Login.tsx, the login function currently sends {username, password}. Change to {email: username_value, password}. The onNavigateToSignup prop will be passed from App.tsx. Keep the admin-promote flow as-is since it's used for bootstrap. Add the signup link with the same styling as other text links in the app."
+    },
+    {
+      "id": "US-019",
+      "title": "Frontend: App.tsx routing for signup, super-admin tab, org display",
+      "description": "As a user, I want the app to handle signup routing, show org name in header, and show super-admin tab when applicable.",
+      "acceptanceCriteria": [
+        "Add authView state ('login' | 'signup') for unauthenticated routing. Default to 'login'",
+        "When !isAuthenticated: show Login if authView='login', Signup if authView='signup'",
+        "Pass onNavigateToSignup callback to Login that sets authView='signup'",
+        "Pass onNavigateToLogin callback to Signup (for the 'Ja tem conta?' link)",
+        "In header, display org name next to username: '{username} - {org_name}'",
+        "If user.is_super_admin, add 'Plataforma' tab to visibleTabs that shows SuperAdminPage",
+        "Typecheck passes"
+      ],
+      "priority": 19,
+      "passes": false,
+      "notes": "In App.tsx, add 'super' to the View type. The visibleTabs useMemo already conditionally adds tabs — add: if (u.is_super_admin) tabs.push('super'). For the unauthenticated view, wrap the Login/Signup toggle in the existing !isAuthenticated block. The SuperAdminPage component will be created in US-020. For now, render a placeholder div if the component doesn't exist yet."
+    },
+    {
+      "id": "US-020",
+      "title": "Frontend: super-admin page",
+      "description": "As the platform owner, I want a page to see all organizations, their payment status, and usage stats.",
+      "acceptanceCriteria": [
+        "Create frontend/src/pages/SuperAdminPage.tsx",
+        "Fetch GET /api/super/orgs on mount, display table with columns: Empresa, Email, Status (Ativo/Inativo badge), Pagamento (Ativo/Inativo badge), Usuarios, Sellers, Copias (30d), Compats (30d), Criado em",
+        "Each row has a toggle button to activate/deactivate org (PUT /api/super/orgs/{id})",
+        "Use same table styling as CopyPage logs table (th/td styles, StatusBadge pattern)",
+        "Follow existing design system (Card component from CopyPage, CSS variables)",
+        "Typecheck passes"
+      ],
+      "priority": 20,
+      "passes": false,
+      "notes": "Import Card from './CopyPage' (it's already exported). Use the same table styling pattern (th with uppercase labels, td with padding). For the toggle, use a simple button that calls PUT with {active: !current_active}. Refresh the list after toggle. The API returns OrgWithStats shape from US-016 types. Format dates with toLocaleString('pt-BR')."
+    },
+    {
+      "id": "US-021",
+      "title": "Frontend: billing page and payment banner",
+      "description": "As an org admin, I want to see billing status and subscribe via Stripe, and see a banner if payment is pending.",
+      "acceptanceCriteria": [
+        "Create frontend/src/pages/BillingPage.tsx accessible from Admin tab as a sub-section",
+        "Show current billing status from GET /api/billing/status: payment active/inactive",
+        "If payment inactive: show 'Assinar' button that calls POST /api/billing/create-checkout and redirects to checkout_url",
+        "If payment active: show 'Gerenciar Assinatura' button that calls POST /api/billing/create-portal and redirects to portal_url",
+        "In App.tsx: if user is org admin and org.payment_active is false, show a subtle banner below header: 'Assinatura pendente' with link to billing",
+        "If billing endpoints return 503 (not configured), hide the billing section entirely",
+        "Typecheck passes"
+      ],
+      "priority": 21,
+      "passes": false,
+      "notes": "The billing status comes from GET /api/billing/status. If it returns 503, set a 'billingAvailable=false' state and hide the section. For the Assinar button, POST /api/billing/create-checkout returns {checkout_url} — use window.location.href = checkout_url to redirect. Same for portal. Add BillingPage as a sub-tab in the Admin section alongside Sellers and Usuarios. The payment banner in App.tsx should be a simple div with warning styling."
+    },
+    {
+      "id": "US-022",
+      "title": "Frontend: update Admin page for OAuth install flow",
+      "description": "As an org admin, I want the ML seller install to work with the new authenticated flow.",
+      "acceptanceCriteria": [
+        "In Admin.tsx (or wherever the ML install link is), change from direct link to fetching GET /api/ml/install with auth headers",
+        "The API now returns {redirect_url} — open it with window.open(redirect_url, '_blank') or window.location.href",
+        "If the fetch fails with 401, show error message",
+        "Typecheck passes"
+      ],
+      "priority": 22,
+      "passes": false,
+      "notes": "The current Admin.tsx likely has an <a href> link to /api/ml/install. Since this endpoint now requires auth (X-Auth-Token header) and returns JSON instead of redirecting, we need to fetch it programmatically. Use fetch() with headers() from props, parse JSON, then window.open() the redirect_url. This is a small change — just update the install button/link handler."
     }
   ]
 }
