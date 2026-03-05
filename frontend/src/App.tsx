@@ -21,6 +21,7 @@ export default function App() {
   const [authView, setAuthView] = useState<AuthView>('login');
   const [billingAvailable, setBillingAvailable] = useState(false);
   const [paymentActive, setPaymentActive] = useState(true);
+  const [billingMessage, setBillingMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (!auth.isAuthenticated) return;
@@ -35,6 +36,48 @@ export default function App() {
         if (data) setPaymentActive(data.payment_active);
       })
       .catch(() => setBillingAvailable(false));
+  }, [auth.isAuthenticated]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-detect payment after Stripe return
+  useEffect(() => {
+    if (!auth.isAuthenticated) return;
+    const params = new URLSearchParams(window.location.search);
+
+    if (params.get('billing') === 'cancel') {
+      setBillingMessage('Assinatura cancelada');
+      window.history.replaceState(null, '', window.location.pathname);
+      return;
+    }
+
+    if (params.get('billing') !== 'success') return;
+
+    let attempts = 0;
+    const maxAttempts = 10;
+    const interval = setInterval(() => {
+      attempts++;
+      fetch(`${API_BASE}/api/billing/status`, { headers: auth.headers() })
+        .then(res => res.ok ? res.json() : null)
+        .then(data => {
+          if (data?.payment_active) {
+            setPaymentActive(true);
+            clearInterval(interval);
+            window.history.replaceState(null, '', window.location.pathname);
+          } else if (attempts >= maxAttempts) {
+            clearInterval(interval);
+            setBillingMessage('Pagamento em processamento. Atualize a pagina em alguns segundos.');
+            window.history.replaceState(null, '', window.location.pathname);
+          }
+        })
+        .catch(() => {
+          if (attempts >= maxAttempts) {
+            clearInterval(interval);
+            setBillingMessage('Pagamento em processamento. Atualize a pagina em alguns segundos.');
+            window.history.replaceState(null, '', window.location.pathname);
+          }
+        });
+    }, 2000);
+
+    return () => clearInterval(interval);
   }, [auth.isAuthenticated]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const visibleTabs = useMemo(() => {
@@ -136,6 +179,15 @@ export default function App() {
               Para usar o Copy Anuncios, ative sua assinatura.
             </p>
           </div>
+          {billingMessage && (
+            <p style={{
+              color: 'var(--ink-muted)',
+              fontSize: 'var(--text-sm)',
+              marginBottom: 'var(--space-4)',
+            }}>
+              {billingMessage}
+            </p>
+          )}
           <BillingPage headers={auth.headers} />
           <button
             onClick={auth.logout}
