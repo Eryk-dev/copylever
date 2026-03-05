@@ -79,11 +79,29 @@ export default function Signup({ onSignup, onNavigateToLogin }: Props) {
         <p style={{
           color: 'var(--ink-faint)',
           textAlign: 'center',
-          marginBottom: 'var(--space-8)',
+          marginBottom: 'var(--space-2)',
           fontSize: 'var(--text-sm)',
         }}>
           Crie sua conta para comecar
         </p>
+        <p style={{
+          color: 'var(--ink-muted)',
+          textAlign: 'center',
+          marginBottom: 'var(--space-4)',
+          fontSize: 'var(--text-xs)',
+        }}>
+          Copie anuncios e compatibilidades entre contas do Mercado Livre
+        </p>
+        <div style={{
+          marginBottom: 'var(--space-8)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-1)',
+        }}>
+          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>&#10003; Copia em massa entre contas</p>
+          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>&#10003; Compatibilidades veiculares automaticas</p>
+          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>&#10003; Gerenciamento multi-conta</p>
+        </div>
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
           <input
@@ -141,6 +159,15 @@ export default function Signup({ onSignup, onNavigateToLogin }: Props) {
             {loading ? 'Criando...' : 'Criar Conta'}
           </button>
         </form>
+
+        <p style={{
+          fontSize: 'var(--text-xs)',
+          color: 'var(--ink-faint)',
+          textAlign: 'center',
+          marginTop: 'var(--space-4)',
+        }}>
+          Plano mensal: R$ 349,90/mes
+        </p>
 
         <button
           type="button"
