@@ -358,14 +358,14 @@ def _normalize_item_id(raw: str) -> str:
     return clean
 
 
-async def _resolve_items_sellers(item_ids: list[str]) -> dict[str, str]:
+async def _resolve_items_sellers(item_ids: list[str], org_id: str) -> dict[str, str]:
     """Resolve source seller for multiple items in parallel.
 
     Returns {item_id: seller_slug} for items that were found.
     """
 
     async def _resolve_one(item_id: str) -> tuple[str, str | None]:
-        slug, _ = await _resolve_item_seller(item_id)
+        slug, _ = await _resolve_item_seller(item_id, org_id=org_id)
         return item_id, slug
 
     tasks = await asyncio.gather(
@@ -394,7 +394,8 @@ async def resolve_sellers_endpoint(req: ResolveSellersRequest, user: dict = Depe
     if not clean_ids:
         return {"results": [], "errors": []}
 
-    resolved = await _resolve_items_sellers(clean_ids)
+    org_id = user["org_id"]
+    resolved = await _resolve_items_sellers(clean_ids, org_id=org_id)
 
     results = []
     errors = []
