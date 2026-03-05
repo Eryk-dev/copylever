@@ -16,13 +16,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/copy", tags=["copy"])
 
 
-async def _resolve_item_seller(item_id: str, skip_seller: str | None = None) -> tuple[str | None, dict | None]:
+async def _resolve_item_seller(item_id: str, org_id: str, skip_seller: str | None = None) -> tuple[str | None, dict | None]:
     """Try all connected sellers IN PARALLEL to find one that can fetch the item.
 
     Returns (seller_slug, item_data) from the first seller that succeeds, or (None, None).
     """
     db = get_db()
-    sellers = db.table("copy_sellers").select("slug").eq("active", True).execute()
+    sellers = db.table("copy_sellers").select("slug").eq("active", True).eq("org_id", org_id).execute()
     if not sellers.data:
         return None, None
 
@@ -31,7 +31,7 @@ async def _resolve_item_seller(item_id: str, skip_seller: str | None = None) -> 
         return None, None
 
     async def _try(slug: str) -> tuple[str, dict]:
-        item = await get_item(slug, item_id)
+        item = await get_item(slug, item_id, org_id=org_id)
         return slug, item
 
     tasks = [asyncio.create_task(_try(s)) for s in slugs]
@@ -110,11 +110,13 @@ async def copy_anuncios(req: CopyRequest, user: dict = Depends(require_user)):
     if not clean_ids:
         raise HTTPException(status_code=400, detail="No valid item IDs provided")
 
+    org_id = user["org_id"]
     results = await copy_items(
         source_seller=req.source,
         dest_sellers=req.destinations,
         item_ids=clean_ids,
         user_id=user["id"],
+        org_id=org_id,
     )
 
     success_count = sum(1 for r in results if r["status"] == "success")
@@ -144,12 +146,14 @@ async def copy_with_dims(req: CopyWithDimensionsRequest, user: dict = Depends(re
     if denied_dests:
         raise HTTPException(status_code=403, detail=f"Sem permissão de destino para o(s) seller(s): {', '.join(denied_dests)}")
 
+    org_id = user["org_id"]
     item_id = req.item_id.strip()
     results = await copy_with_dimensions(
         source_seller=req.source,
         dest_sellers=req.destinations,
         item_id=item_id,
         dimensions=dims,
+        org_id=org_id,
     )
 
     success_count = sum(1 for r in results if r["status"] == "success")
@@ -190,8 +194,13 @@ async def retry_dimensions(req: RetryDimensionsRequest, user: dict = Depends(req
     """Retry a dimension-failed copy from the logs history."""
     db = get_db()
 
-    # 1. Fetch the original log entry
-    log_result = db.table("copy_logs").select("*").eq("id", req.log_id).execute()
+    org_id = user["org_id"]
+
+    # 1. Fetch the original log entry (scoped by org)
+    log_query = db.table("copy_logs").select("*").eq("id", req.log_id)
+    if not user.get("is_super_admin"):
+        log_query = log_query.eq("org_id", org_id)
+    log_result = log_query.execute()
     if not log_result.data:
         raise HTTPException(status_code=404, detail="Log nao encontrado")
     log = log_result.data[0]
@@ -227,6 +236,7 @@ async def retry_dimensions(req: RetryDimensionsRequest, user: dict = Depends(req
         dest_sellers=destinations,
         item_id=log["source_item_id"],
         dimensions=dims,
+        org_id=org_id,
     )
 
     success_count = sum(1 for r in results if r["status"] == "success")
@@ -264,7 +274,11 @@ async def copy_logs(
     query = db.table("copy_logs").select("*, users(username)").order(
         "created_at", desc=True
     )
-    if user["role"] != "admin":
+    if user.get("is_super_admin"):
+        pass  # super-admin sees all logs
+    elif user["role"] == "admin":
+        query = query.eq("org_id", user["org_id"])
+    else:
         query = query.eq("user_id", user["id"])
     if status:
         query = query.eq("status", status)
@@ -281,11 +295,12 @@ async def copy_logs(
 @router.get("/preview/{item_id}")
 async def preview_item(item_id: str, seller: str = Query(...), user: dict = Depends(require_user)):
     """Preview an item before copying. Auto-detects owner seller on 403."""
+    org_id = user["org_id"]
     try:
-        item = await get_item(seller, item_id)
+        item = await get_item(seller, item_id, org_id=org_id)
     except Exception as first_err:
         # First seller failed — try all other connected sellers
-        resolved_seller, resolved_item = await _resolve_item_seller(item_id, skip_seller=seller)
+        resolved_seller, resolved_item = await _resolve_item_seller(item_id, org_id=org_id, skip_seller=seller)
         if resolved_seller and resolved_item:
             seller = resolved_seller
             item = resolved_item
@@ -295,7 +310,7 @@ async def preview_item(item_id: str, seller: str = Query(...), user: dict = Depe
     # Fetch description
     description = ""
     try:
-        desc_data = await get_item_description(seller, item_id)
+        desc_data = await get_item_description(seller, item_id, org_id=org_id)
         description = desc_data.get("plain_text", "")
     except Exception:
         pass
@@ -303,7 +318,7 @@ async def preview_item(item_id: str, seller: str = Query(...), user: dict = Depe
     # Check compatibilities
     has_compatibilities = False
     try:
-        compat = await get_item_compatibilities(seller, item_id)
+        compat = await get_item_compatibilities(seller, item_id, org_id=org_id)
         has_compatibilities = compat is not None and bool(compat)
     except Exception:
         pass
