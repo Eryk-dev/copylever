@@ -30,9 +30,11 @@ export default function CopyPage({ sellers, headers, user }: Props) {
   const [logsLoaded, setLogsLoaded] = useState(false);
   const [logsOpen, setLogsOpen] = useState(true);
   const [previews, setPreviews] = useState<ItemPreview[]>([]);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const resolvedItemsRef = useRef<Array<[string, string]>>([]);
   const [hasMoreLogs, setHasMoreLogs] = useState(false);
   const [retryLogId, setRetryLogId] = useState<number | null>(null);
 
@@ -119,6 +121,7 @@ export default function CopyPage({ sellers, headers, user }: Props) {
 
   const handlePreview = useCallback(async (items: Array<[string, string]>) => {
     if (!items.length) return;
+    setPreviewOpen(true);
     setPreviewLoading(true);
     setPreviewError('');
     setPreviews([]);
@@ -142,6 +145,16 @@ export default function CopyPage({ sellers, headers, user }: Props) {
     } catch (e) { setPreviewError(String(e)); }
     finally { setPreviewLoading(false); }
   }, [headers]);
+
+  const handleResolvedChange = useCallback((items: Array<[string, string]>) => {
+    resolvedItemsRef.current = items;
+    if (previewOpen && items.length > 0) {
+      handlePreview(items);
+    } else if (items.length === 0) {
+      setPreviews([]);
+      setPreviewOpen(false);
+    }
+  }, [previewOpen, handlePreview]);
 
   const handleLogRetry = useCallback(async (logId: number, dims: Dimensions) => {
     try {
@@ -221,7 +234,7 @@ export default function CopyPage({ sellers, headers, user }: Props) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
-      <CopyForm sourceSellers={sourceSellers} destSellers={destSellers} headers={headers} onCopy={handleCopy} onPreview={handlePreview} copying={copying} />
+      <CopyForm sourceSellers={sourceSellers} destSellers={destSellers} headers={headers} onCopy={handleCopy} onPreview={handlePreview} onResolvedChange={handleResolvedChange} copying={copying} />
 
       {previewLoading && (
         <Card title="Preview">
@@ -238,7 +251,7 @@ export default function CopyPage({ sellers, headers, user }: Props) {
       )}
       {previews.length > 0 && (
         <Card title={`Preview (${previews.length})`} action={
-          <button onClick={() => setPreviews([])} style={{
+          <button onClick={() => { setPreviews([]); setPreviewOpen(false); }} style={{
             background: 'none',
             color: 'var(--ink-faint)',
             fontSize: 'var(--text-sm)',

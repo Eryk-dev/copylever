@@ -21,10 +21,11 @@ interface Props {
   headers: () => Record<string, string>;
   onCopy: (groups: CopyGroup[], destinations: string[]) => Promise<void>;
   onPreview: (items: Array<[string, string]>) => Promise<void>;
+  onResolvedChange?: (items: Array<[string, string]>) => void;
   copying: boolean;
 }
 
-export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, onPreview, copying }: Props) {
+export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, onPreview, onResolvedChange, copying }: Props) {
   const [itemIdsText, setItemIdsText] = useState('');
   // {item_id: seller_slug}
   const [resolvedSources, setResolvedSources] = useState<Record<string, string>>({});
@@ -123,6 +124,12 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
       setDestinations([]);
     }
   }, [itemIdsText]);
+
+  // Notify parent when resolved items change
+  useEffect(() => {
+    const entries = Object.entries(resolvedSources) as Array<[string, string]>;
+    onResolvedChange?.(entries);
+  }, [resolvedSources, onResolvedChange]);
 
   const resolvedCount = Object.keys(resolvedSources).length;
   const canCopy = resolvedCount > 0 && destinations.length > 0 && !copying;
