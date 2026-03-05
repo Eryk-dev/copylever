@@ -32,6 +32,7 @@ export default function App() {
   const [billingAvailable, setBillingAvailable] = useState(false);
   const [paymentActive, setPaymentActive] = useState(true);
   const [billingMessage, setBillingMessage] = useState<string | null>(null);
+  const [paywallLoading, setPaywallLoading] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('onboarding-done'));
 
   useEffect(() => {
@@ -164,6 +165,27 @@ export default function App() {
 
   // Paywall: billing configured, not paid, not super-admin
   if (billingAvailable && !paymentActive && !auth.user?.is_super_admin) {
+    const handlePaywallSubscribe = async () => {
+      setPaywallLoading(true);
+      try {
+        const res = await fetch(`${API_BASE}/api/billing/create-checkout`, {
+          method: 'POST',
+          headers: auth.headers(),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          setBillingMessage(data?.detail || 'Erro ao criar sessao de checkout');
+          return;
+        }
+        const data = await res.json();
+        window.location.href = data.checkout_url;
+      } catch {
+        setBillingMessage('Erro de conexao');
+      } finally {
+        setPaywallLoading(false);
+      }
+    };
+
     return (
       <div style={{
         minHeight: '100vh',
@@ -173,73 +195,147 @@ export default function App() {
         padding: 'var(--space-6)',
       }}>
         <div className="animate-in" style={{
-          background: 'var(--surface)',
-          borderRadius: 12,
-          padding: 'var(--space-12)',
           width: '100%',
-          maxWidth: 420,
-          textAlign: 'center',
+          maxWidth: 480,
         }}>
-          <h1 style={{
-            fontSize: 'var(--text-xl)',
-            fontWeight: 700,
-            letterSpacing: 'var(--tracking-tight)',
-            color: 'var(--ink)',
-            marginBottom: 'var(--space-2)',
-          }}>
-            Copy Anuncios
-          </h1>
-          <p style={{
-            color: 'var(--ink-muted)',
-            fontSize: 'var(--text-sm)',
-            marginBottom: 'var(--space-6)',
-          }}>
-            {auth.user?.org_name || 'Sua empresa'}
-          </p>
-          <div style={{
-            background: 'rgba(245,158,11,0.08)',
-            border: '1px solid rgba(245,158,11,0.2)',
-            borderRadius: 8,
-            padding: 'var(--space-4)',
-            marginBottom: 'var(--space-6)',
-          }}>
-            <p style={{ color: 'var(--ink)', fontSize: 'var(--text-sm)', fontWeight: 600, marginBottom: 'var(--space-1)' }}>
-              Assinatura necessaria
-            </p>
-            <p style={{ color: 'var(--ink-muted)', fontSize: 'var(--text-xs)' }}>
-              Para usar o Copy Anuncios, ative sua assinatura.
-            </p>
-          </div>
-          <p style={{
-            fontSize: 'var(--text-sm)',
-            color: 'var(--ink-muted)',
-            fontWeight: 600,
-            marginBottom: 'var(--space-4)',
-            textAlign: 'center',
-          }}>
-            Plano mensal — R$ 349,90/mês
-          </p>
-          {billingMessage && (
+          {/* Header */}
+          <div style={{ textAlign: 'center', marginBottom: 'var(--space-8)' }}>
+            <h1 style={{
+              fontSize: 'var(--text-2xl)',
+              fontWeight: 700,
+              letterSpacing: 'var(--tracking-tight)',
+              color: 'var(--ink)',
+              marginBottom: 'var(--space-2)',
+            }}>
+              Copy Anuncios
+            </h1>
             <p style={{
               color: 'var(--ink-muted)',
               fontSize: 'var(--text-sm)',
-              marginBottom: 'var(--space-4)',
             }}>
-              {billingMessage}
+              Copie anuncios entre contas do Mercado Livre em segundos
             </p>
-          )}
-          <BillingPage headers={auth.headers} />
-          <button
-            onClick={auth.logout}
-            className="btn-ghost"
-            style={{
+          </div>
+
+          {/* Pricing card */}
+          <div style={{
+            background: 'var(--surface)',
+            borderRadius: 16,
+            padding: 'var(--space-8)',
+            border: '1px solid var(--line)',
+          }}>
+            {/* Plan name + price */}
+            <div style={{ textAlign: 'center', marginBottom: 'var(--space-6)' }}>
+              <p style={{
+                fontSize: 'var(--text-xs)',
+                fontWeight: 600,
+                textTransform: 'uppercase' as const,
+                letterSpacing: '0.08em',
+                color: 'var(--ink-muted)',
+                marginBottom: 'var(--space-3)',
+              }}>
+                Plano Profissional
+              </p>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: 'var(--space-1)' }}>
+                <span style={{ fontSize: 'var(--text-sm)', color: 'var(--ink-muted)', fontWeight: 500 }}>R$</span>
+                <span style={{ fontSize: 40, fontWeight: 700, color: 'var(--ink)', letterSpacing: '-0.03em', lineHeight: 1 }}>349</span>
+                <span style={{ fontSize: 'var(--text-lg)', fontWeight: 600, color: 'var(--ink)' }}>,90</span>
+                <span style={{ fontSize: 'var(--text-sm)', color: 'var(--ink-muted)', marginLeft: 'var(--space-1)' }}>/mes</span>
+              </div>
+            </div>
+
+            {/* Divider */}
+            <div style={{ height: 1, background: 'var(--line)', margin: '0 calc(-1 * var(--space-2))', marginBottom: 'var(--space-5)' }} />
+
+            {/* Features */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', marginBottom: 'var(--space-6)' }}>
+              {[
+                'Copia ilimitada de anuncios',
+                'Copia de compatibilidades veiculares',
+                'Multiplas contas do Mercado Livre',
+                'Usuarios e permissoes por conta',
+                'Dimensoes e atributos automaticos',
+              ].map((feature) => (
+                <div key={feature} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+                    <path d="M13.3 4.3L6 11.6L2.7 8.3" stroke="var(--success)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                  <span style={{ fontSize: 'var(--text-sm)', color: 'var(--ink)' }}>{feature}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* CTA */}
+            <button
+              onClick={handlePaywallSubscribe}
+              disabled={paywallLoading}
+              className="btn-primary"
+              style={{
+                width: '100%',
+                padding: '14px 24px',
+                fontSize: 'var(--text-base)',
+                fontWeight: 600,
+                borderRadius: 10,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 'var(--space-2)',
+              }}
+            >
+              {paywallLoading && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--paper)' }} />}
+              {paywallLoading ? 'Redirecionando...' : 'Comecar agora'}
+            </button>
+
+            {/* Trust signals */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 'var(--space-4)',
               marginTop: 'var(--space-4)',
-              padding: '6px 12px',
-              fontSize: 'var(--text-xs)',
-            }}
-          >
-            Sair
-          </button>
+            }}>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)' }}>
+                Cancele quando quiser
+              </span>
+              <span style={{ width: 3, height: 3, borderRadius: '50%', background: 'var(--ink-faint)', flexShrink: 0 }} />
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)' }}>
+                Pagamento seguro via Stripe
+              </span>
+            </div>
+
+            {billingMessage && (
+              <p style={{
+                color: 'var(--ink-muted)',
+                fontSize: 'var(--text-sm)',
+                textAlign: 'center',
+                marginTop: 'var(--space-4)',
+              }}>
+                {billingMessage}
+              </p>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div style={{ textAlign: 'center', marginTop: 'var(--space-6)' }}>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)' }}>
+              Conectado como {auth.user?.username}
+              {auth.user?.org_name ? ` — ${auth.user.org_name}` : ''}
+            </span>
+            <span style={{ margin: '0 var(--space-2)', color: 'var(--ink-faint)' }}>·</span>
+            <button
+              onClick={auth.logout}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--ink-faint)',
+                fontSize: 'var(--text-xs)',
+                textDecoration: 'underline',
+                cursor: 'pointer',
+              }}
+            >
+              Sair
+            </button>
+          </div>
         </div>
       </div>
     );

@@ -102,24 +102,34 @@ export default function BillingPage({ headers }: Props) {
 
   return (
     <Card title="Assinatura">
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-          <span style={{
-            display: 'inline-block',
-            padding: '2px 10px',
-            borderRadius: 999,
-            fontSize: 'var(--text-xs)',
-            fontWeight: 600,
-            background: status?.payment_active ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)',
-            color: status?.payment_active ? 'var(--success)' : 'var(--danger)',
-          }}>
-            {status?.payment_active ? 'Ativo' : 'Inativo'}
-          </span>
-          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--ink-muted)' }}>
-            {status?.payment_active
-              ? 'Sua assinatura esta ativa.'
-              : 'Nenhuma assinatura ativa.'}
-          </span>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
+        {/* Status row */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: 'var(--space-4)',
+          background: status?.payment_active ? 'rgba(16,185,129,0.06)' : 'rgba(239,68,68,0.06)',
+          borderRadius: 10,
+          border: `1px solid ${status?.payment_active ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'}`,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+            <span style={{
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              background: status?.payment_active ? 'var(--success)' : 'var(--danger)',
+              flexShrink: 0,
+            }} />
+            <div>
+              <p style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--ink)' }}>
+                {status?.payment_active ? 'Assinatura ativa' : 'Sem assinatura'}
+              </p>
+              <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>
+                Plano mensal — R$ 349,90/mes
+              </p>
+            </div>
+          </div>
         </div>
 
         {error && (
@@ -141,34 +151,27 @@ export default function BillingPage({ headers }: Props) {
             }}
           >
             {actionLoading && <span className="spinner spinner-sm" />}
-            {actionLoading ? 'Abrindo...' : 'Gerenciar Assinatura'}
+            {actionLoading ? 'Abrindo...' : 'Gerenciar assinatura'}
           </button>
         ) : (
-          <>
-          <p style={{
-            fontSize: 'var(--text-sm)',
-            color: 'var(--ink-muted)',
-            fontWeight: 600,
-          }}>
-            Plano mensal — R$ 349,90/mês
-          </p>
           <button
             onClick={handleSubscribe}
             disabled={actionLoading}
             className="btn-primary"
             style={{
               alignSelf: 'flex-start',
-              padding: 'var(--space-2) var(--space-4)',
+              padding: '12px 24px',
               fontSize: 'var(--text-sm)',
+              fontWeight: 600,
+              borderRadius: 8,
               display: 'flex',
               alignItems: 'center',
               gap: 'var(--space-2)',
             }}
           >
             {actionLoading && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--paper)' }} />}
-            {actionLoading ? 'Redirecionando...' : 'Assinar'}
+            {actionLoading ? 'Redirecionando...' : 'Ativar assinatura'}
           </button>
-          </>
         )}
       </div>
     </Card>
