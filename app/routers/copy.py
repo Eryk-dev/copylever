@@ -196,16 +196,15 @@ async def retry_dimensions(req: RetryDimensionsRequest, user: dict = Depends(req
     """Retry a dimension-failed copy from the logs history."""
     db = get_db()
 
-    org_id = user["org_id"]
-
     # 1. Fetch the original log entry (scoped by org)
     log_query = db.table("copy_logs").select("*").eq("id", req.log_id)
     if not user.get("is_super_admin"):
-        log_query = log_query.eq("org_id", org_id)
+        log_query = log_query.eq("org_id", user["org_id"])
     log_result = log_query.execute()
     if not log_result.data:
         raise HTTPException(status_code=404, detail="Log nao encontrado")
     log = log_result.data[0]
+    org_id = log["org_id"]
 
     # 2. Verify it's a dimension error (new status or old error with dimension message)
     is_dim_error = log["status"] == "needs_dimensions"
