@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     # Auth
     admin_master_password: str = ""
 
+    # Stripe
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_price_id: str = ""
+
     # Server
     base_url: str = "http://localhost:8000"
 
