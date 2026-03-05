@@ -143,6 +143,11 @@ async def get_user_permissions(user_id: str, user: dict = Depends(require_admin)
     """Get per-seller permissions for a user. Returns all connected sellers with defaults."""
     db = get_db()
 
+    # Verify target user belongs to same org
+    target = db.table("users").select("id, org_id").eq("id", user_id).execute()
+    if not target.data or target.data[0]["org_id"] != user["org_id"]:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
     # Fetch all connected sellers for this org
     sellers_result = (
         db.table("copy_sellers")
@@ -181,9 +186,9 @@ async def update_user_permissions(
     """Upsert per-seller permissions for a user."""
     db = get_db()
 
-    # Verify the user exists
-    user_result = db.table("users").select("id").eq("id", user_id).execute()
-    if not user_result.data:
+    # Verify target user belongs to same org
+    target = db.table("users").select("id, org_id").eq("id", user_id).execute()
+    if not target.data or target.data[0]["org_id"] != user["org_id"]:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
 
     # Upsert each permission entry
