@@ -20,7 +20,7 @@ interface Props {
   destSellers: Seller[];
   headers: () => Record<string, string>;
   onCopy: (groups: CopyGroup[], destinations: string[]) => Promise<void>;
-  onPreview: (itemId: string, seller: string) => Promise<void>;
+  onPreview: (items: Array<[string, string]>) => Promise<void>;
   copying: boolean;
 }
 
@@ -158,8 +158,7 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
   const step1Done = resolvedCount > 0;
   const step2Done = destinations.length > 0;
 
-  const resolvedEntries = Object.entries(resolvedSources);
-  const firstResolved = resolvedEntries[0];
+  const resolvedEntries = Object.entries(resolvedSources) as Array<[string, string]>;
 
   return (
     <form onSubmit={handleSubmit} className="card" style={{
@@ -231,43 +230,6 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
               </span>
             ))}
             <span>{resolvedCount} anuncio(s)</span>
-          </div>
-        )}
-        {/* Resolved items list */}
-        {resolvedEntries.length > 0 && (
-          <div style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 0,
-            marginTop: 'var(--space-2)',
-            borderRadius: 6,
-            border: '1px solid var(--line)',
-            overflow: 'hidden',
-          }}>
-            {resolvedEntries.map(([itemId, slug], i) => (
-              <div key={itemId} style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 'var(--space-3)',
-                padding: 'var(--space-2) var(--space-3)',
-                background: i % 2 === 0 ? 'var(--paper)' : 'var(--surface)',
-                borderTop: i > 0 ? '1px solid var(--line)' : undefined,
-              }}>
-                <span style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: 'var(--text-xs)',
-                  color: 'var(--ink)',
-                  fontWeight: 500,
-                  minWidth: 0,
-                }}>{itemId}</span>
-                <span style={{
-                  fontSize: 'var(--text-xs)',
-                  color: 'var(--ink-faint)',
-                  whiteSpace: 'nowrap',
-                  marginLeft: 'auto',
-                }}>{sellerName(slug)}</span>
-              </div>
-            ))}
           </div>
         )}
         {unresolvedIds.length > 0 && (
@@ -369,8 +331,8 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
           {copying ? 'Copiando...' : confirming ? 'Confirmar' : `Copiar${totalOps > 0 ? ` (${totalOps})` : ''}`}
         </button>
 
-        {firstResolved && (
-          <button type="button" onClick={() => onPreview(firstResolved[0], firstResolved[1])} className="btn-ghost" style={{
+        {resolvedEntries.length > 0 && (
+          <button type="button" onClick={() => onPreview(resolvedEntries)} className="btn-ghost" style={{
             padding: 'var(--space-3) var(--space-4)',
             fontSize: 'var(--text-xs)',
           }}>

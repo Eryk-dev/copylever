@@ -29,7 +29,7 @@ export default function CopyPage({ sellers, headers, user }: Props) {
   const [logs, setLogs] = useState<CopyLog[]>([]);
   const [logsLoaded, setLogsLoaded] = useState(false);
   const [logsOpen, setLogsOpen] = useState(true);
-  const [preview, setPreview] = useState<ItemPreview | null>(null);
+  const [previews, setPreviews] = useState<ItemPreview[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -117,19 +117,26 @@ export default function CopyPage({ sellers, headers, user }: Props) {
     loadLogs();
   }, [headers, loadLogs]);
 
-  const handlePreview = useCallback(async (rawId: string, seller: string) => {
-    let itemId = rawId.trim();
-    if (!itemId || !seller) return;
-    const m = itemId.match(/MLB[-]?(\d+)/i);
-    if (m) itemId = `MLB${m[1]}`;
-    else if (/^\d+$/.test(itemId)) itemId = `MLB${itemId}`;
+  const handlePreview = useCallback(async (items: Array<[string, string]>) => {
+    if (!items.length) return;
     setPreviewLoading(true);
     setPreviewError('');
-    setPreview(null);
+    setPreviews([]);
     try {
-      const res = await fetch(`${API_BASE}/api/copy/preview/${itemId}?seller=${encodeURIComponent(seller)}`, { headers: headers(), cache: 'no-store' });
-      if (!res.ok) { const err = await res.json().catch(() => ({ detail: 'Item nao encontrado' })); setPreviewError(err.detail); return; }
-      setPreview(await res.json());
+      const results = await Promise.all(
+        items.map(async ([rawId, seller]) => {
+          let itemId = rawId.trim();
+          const m = itemId.match(/MLB[-]?(\d+)/i);
+          if (m) itemId = `MLB${m[1]}`;
+          else if (/^\d+$/.test(itemId)) itemId = `MLB${itemId}`;
+          const res = await fetch(`${API_BASE}/api/copy/preview/${itemId}?seller=${encodeURIComponent(seller)}`, { headers: headers(), cache: 'no-store' });
+          if (!res.ok) return null;
+          return await res.json() as ItemPreview;
+        })
+      );
+      const valid = results.filter((r): r is ItemPreview => r !== null);
+      if (valid.length === 0) { setPreviewError('Nenhum item encontrado'); return; }
+      setPreviews(valid);
     } catch (e) { setPreviewError(String(e)); }
     finally { setPreviewLoading(false); }
   }, [headers]);
@@ -227,7 +234,48 @@ export default function CopyPage({ sellers, headers, user }: Props) {
           <p style={{ color: 'var(--danger)', fontSize: 'var(--text-sm)' }}>{previewError}</p>
         </Card>
       )}
-      {preview && <PreviewCard preview={preview} onClose={() => setPreview(null)} />}
+      {previews.length > 0 && (
+        <Card title={`Preview (${previews.length})`} action={
+          <button onClick={() => setPreviews([])} style={{
+            background: 'none',
+            color: 'var(--ink-faint)',
+            fontSize: 'var(--text-sm)',
+            padding: '2px 6px',
+            borderRadius: 4,
+            lineHeight: 1,
+          }}>
+            {'\u2715'}
+          </button>
+        }>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+            {previews.map(p => (
+              <div key={p.id} className="animate-in" style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'var(--space-3)',
+                padding: 'var(--space-2) var(--space-3)',
+                background: 'var(--paper)',
+                borderRadius: 6,
+                border: '1px solid var(--line)',
+              }}>
+                {p.thumbnail && (
+                  <img src={p.thumbnail} alt="" style={{ width: 48, height: 48, borderRadius: 4, objectFit: 'cover', background: 'var(--surface)', flexShrink: 0 }} />
+                )}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ fontWeight: 500, fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-tight)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title}</p>
+                  <p style={{ color: 'var(--positive)', fontWeight: 700, fontSize: 'var(--text-sm)', marginTop: 2 }}>
+                    {p.currency_id} {p.price?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: 'var(--space-3)', fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', flexShrink: 0 }}>
+                  <span>{p.pictures_count} fotos</span>
+                  <span>{p.variations_count} var.</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
       {results && (
         <CopyProgress
           results={results}
@@ -391,55 +439,6 @@ function LogRow({ log, isRetrying, onRetryClick, onRetrySubmit }: {
         </tr>
       )}
     </>
-  );
-}
-
-function PreviewCard({ preview, onClose }: { preview: ItemPreview; onClose: () => void }) {
-  return (
-    <Card title="Preview" action={
-      <button onClick={onClose} style={{
-        background: 'none',
-        color: 'var(--ink-faint)',
-        fontSize: 'var(--text-sm)',
-        padding: '2px 6px',
-        borderRadius: 4,
-        lineHeight: 1,
-      }}>
-        {'\u2715'}
-      </button>
-    }>
-      <div className="animate-in" style={{ display: 'flex', gap: 'var(--space-3)' }}>
-        {preview.thumbnail && (
-          <img src={preview.thumbnail} alt="" style={{ width: 72, height: 72, borderRadius: 6, objectFit: 'cover', background: 'var(--surface)' }} />
-        )}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <p style={{ fontWeight: 600, fontSize: 'var(--text-sm)', lineHeight: 'var(--leading-tight)', marginBottom: 'var(--space-1)' }}>{preview.title}</p>
-          <p style={{ color: 'var(--positive)', fontWeight: 700, fontSize: 'var(--text-lg)' }}>
-            {preview.currency_id} {preview.price?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-          </p>
-        </div>
-      </div>
-      <div style={{
-        display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)',
-        gap: 'var(--space-1) var(--space-4)',
-        marginTop: 'var(--space-3)',
-        fontSize: 'var(--text-xs)', color: 'var(--ink-faint)',
-      }}>
-        <span>Status: <b style={{ color: 'var(--ink)' }}>{preview.status}</b></span>
-        <span>Tipo: <b style={{ color: 'var(--ink)' }}>{preview.listing_type_id}</b></span>
-        <span>Fotos: <b style={{ color: 'var(--ink)' }}>{preview.pictures_count}</b></span>
-        <span>Variacoes: <b style={{ color: 'var(--ink)' }}>{preview.variations_count}</b></span>
-        <span>Atributos: <b style={{ color: 'var(--ink)' }}>{preview.attributes_count}</b></span>
-        <span>Estoque: <b style={{ color: 'var(--ink)' }}>{preview.available_quantity}</b></span>
-        <span>Compat.: <b style={{ color: preview.has_compatibilities ? 'var(--success)' : 'var(--ink-faint)' }}>{preview.has_compatibilities ? 'Sim' : 'Nao'}</b></span>
-        <span>Desc.: <b style={{ color: 'var(--ink)' }}>{preview.description_length} chars</b></span>
-      </div>
-      {preview.permalink && (
-        <a href={preview.permalink} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-block', marginTop: 'var(--space-2)', fontSize: 'var(--text-xs)', fontWeight: 500 }}>
-          Ver no ML &rarr;
-        </a>
-      )}
-    </Card>
   );
 }
 
