@@ -77,6 +77,22 @@ export interface CompatSearchResult {
   title: string;
 }
 
+export interface Org {
+  id: string;
+  name: string;
+  email: string;
+  active: boolean;
+  payment_active: boolean;
+  created_at: string;
+}
+
+export interface OrgWithStats extends Org {
+  user_count: number;
+  seller_count: number;
+  copy_count: number;
+  compat_count: number;
+}
+
 export interface CompatCopyResult {
   total: number;
   success: number;

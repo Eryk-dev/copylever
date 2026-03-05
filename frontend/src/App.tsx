@@ -1,18 +1,41 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useAuth } from './hooks/useAuth';
+import { API_BASE } from './lib/api';
 import Login from './pages/Login';
+import Signup from './pages/Signup';
 import CopyPage from './pages/CopyPage';
 import Admin from './pages/Admin';
 import UsersPage from './pages/UsersPage';
 import CompatPage from './pages/CompatPage';
+import SuperAdminPage from './pages/SuperAdminPage';
+import BillingPage from './pages/BillingPage';
 
-type View = 'copy' | 'admin' | 'compat';
-type AdminSubView = 'sellers' | 'users';
+type View = 'copy' | 'admin' | 'compat' | 'super';
+type AdminSubView = 'sellers' | 'users' | 'billing';
+type AuthView = 'login' | 'signup';
 
 export default function App() {
   const auth = useAuth();
   const [view, setView] = useState<View>('copy');
   const [adminSubView, setAdminSubView] = useState<AdminSubView>('sellers');
+  const [authView, setAuthView] = useState<AuthView>('login');
+  const [billingAvailable, setBillingAvailable] = useState(false);
+  const [paymentActive, setPaymentActive] = useState(true);
+
+  useEffect(() => {
+    if (!auth.isAuthenticated) return;
+    fetch(`${API_BASE}/api/billing/status`, { headers: auth.headers() })
+      .then(res => {
+        if (res.status === 503) { setBillingAvailable(false); return null; }
+        if (!res.ok) { setBillingAvailable(false); return null; }
+        setBillingAvailable(true);
+        return res.json();
+      })
+      .then(data => {
+        if (data) setPaymentActive(data.payment_active);
+      })
+      .catch(() => setBillingAvailable(false));
+  }, [auth.isAuthenticated]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const visibleTabs = useMemo(() => {
     if (!auth.user) return [] as View[];
@@ -35,6 +58,11 @@ export default function App() {
       tabs.push('admin');
     }
 
+    // Show Plataforma tab for super-admins
+    if (u.is_super_admin) {
+      tabs.push('super');
+    }
+
     return tabs;
   }, [auth.user]);
 
@@ -44,7 +72,20 @@ export default function App() {
     : visibleTabs[0] ?? 'copy';
 
   if (!auth.isAuthenticated) {
-    return <Login onLogin={auth.login} />;
+    if (authView === 'signup') {
+      return (
+        <Signup
+          onSignup={auth.signup}
+          onNavigateToLogin={() => setAuthView('login')}
+        />
+      );
+    }
+    return (
+      <Login
+        onLogin={auth.login}
+        onNavigateToSignup={() => setAuthView('signup')}
+      />
+    );
   }
 
   return (
@@ -96,6 +137,11 @@ export default function App() {
                 Admin
               </ViewTab>
             )}
+            {visibleTabs.includes('super') && (
+              <ViewTab active={activeView === 'super'} onClick={() => setView('super')}>
+                Plataforma
+              </ViewTab>
+            )}
           </nav>
         </div>
 
@@ -105,7 +151,7 @@ export default function App() {
               fontSize: 'var(--text-xs)',
               color: 'var(--ink-muted)',
             }}>
-              {auth.user.username}
+              {auth.user.username}{auth.user.org_name ? ` - ${auth.user.org_name}` : ''}
             </span>
           )}
           <button
@@ -121,6 +167,30 @@ export default function App() {
         </div>
       </header>
 
+      {/* Payment Banner */}
+      {billingAvailable && !paymentActive && auth.user?.role === 'admin' && !auth.user?.is_super_admin && (
+        <div style={{
+          background: 'rgba(245,158,11,0.1)',
+          border: '1px solid rgba(245,158,11,0.3)',
+          borderRadius: 8,
+          padding: 'var(--space-3) var(--space-4)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          fontSize: 'var(--text-sm)',
+          color: 'var(--ink)',
+        }}>
+          <span>Assinatura pendente</span>
+          <button
+            className="btn-ghost"
+            style={{ fontSize: 'var(--text-xs)', padding: '4px 10px' }}
+            onClick={() => { setView('admin'); setAdminSubView('billing'); }}
+          >
+            Ver assinatura
+          </button>
+        </div>
+      )}
+
       {/* Content */}
       <div className="animate-in">
         {activeView === 'copy' && (
@@ -135,21 +205,33 @@ export default function App() {
               <ViewTab active={adminSubView === 'users'} onClick={() => setAdminSubView('users')}>
                 Usuários
               </ViewTab>
+              {billingAvailable && (
+                <ViewTab active={adminSubView === 'billing'} onClick={() => setAdminSubView('billing')}>
+                  Assinatura
+                </ViewTab>
+              )}
             </nav>
             {adminSubView === 'sellers' && (
               <Admin
                 sellers={auth.sellers}
                 loadSellers={auth.loadSellers}
                 disconnectSeller={auth.disconnectSeller}
+                headers={auth.headers}
               />
             )}
             {adminSubView === 'users' && auth.user && (
               <UsersPage headers={auth.headers} currentUserId={auth.user.id} />
             )}
+            {adminSubView === 'billing' && billingAvailable && (
+              <BillingPage headers={auth.headers} />
+            )}
           </div>
         )}
         {activeView === 'compat' && (
           <CompatPage sellers={auth.sellers} headers={auth.headers} />
+        )}
+        {activeView === 'super' && (
+          <SuperAdminPage headers={auth.headers} />
         )}
       </div>
     </div>

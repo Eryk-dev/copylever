@@ -1,16 +1,14 @@
 import { useState } from 'react';
-import { API_BASE } from '../lib/api';
 
 interface Props {
-  onLogin: (email: string, password: string) => Promise<boolean>;
-  onNavigateToSignup?: () => void;
+  onSignup: (email: string, password: string, companyName: string) => Promise<{success: boolean, error?: string}>;
+  onNavigateToLogin: () => void;
 }
 
-export default function Login({ onLogin, onNavigateToSignup }: Props) {
+export default function Signup({ onSignup, onNavigateToLogin }: Props) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [masterPassword, setMasterPassword] = useState('');
-  const [showAdmin, setShowAdmin] = useState(false);
+  const [companyName, setCompanyName] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [shake, setShake] = useState(false);
@@ -22,47 +20,18 @@ export default function Login({ onLogin, onNavigateToSignup }: Props) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.trim() || !password.trim()) return;
+    if (!email.trim() || !password.trim() || !companyName.trim()) return;
+    if (password.length < 6) {
+      setError('Senha deve ter pelo menos 6 caracteres');
+      triggerShake();
+      return;
+    }
     setLoading(true);
     setError('');
 
-    // Admin-promote flow
-    if (showAdmin && masterPassword.trim()) {
-      try {
-        const res = await fetch(`${API_BASE}/api/auth/admin-promote`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            username: email.trim(),
-            password,
-            master_password: masterPassword,
-          }),
-        });
-        if (!res.ok) {
-          const data = await res.json().catch(() => null);
-          setError(data?.detail || 'Erro ao promover admin');
-          triggerShake();
-          setLoading(false);
-          return;
-        }
-        // Admin created/promoted — now auto-login
-        const success = await onLogin(email.trim(), password);
-        if (!success) {
-          setError('Admin criado, mas falha ao fazer login');
-          triggerShake();
-        }
-      } catch {
-        setError('Erro de conexão');
-        triggerShake();
-      }
-      setLoading(false);
-      return;
-    }
-
-    // Normal login flow
-    const success = await onLogin(email.trim(), password);
-    if (!success) {
-      setError('Credenciais inválidas');
+    const result = await onSignup(email.trim(), password, companyName.trim());
+    if (!result.success) {
+      setError(result.error || 'Erro ao criar conta');
       triggerShake();
     }
     setLoading(false);
@@ -113,7 +82,7 @@ export default function Login({ onLogin, onNavigateToSignup }: Props) {
           marginBottom: 'var(--space-8)',
           fontSize: 'var(--text-sm)',
         }}>
-          Acesse com seu email e senha
+          Crie sua conta para comecar
         </p>
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
@@ -133,21 +102,20 @@ export default function Login({ onLogin, onNavigateToSignup }: Props) {
             value={password}
             onChange={e => { setPassword(e.target.value); setError(''); }}
             placeholder="Senha"
-            autoComplete="current-password"
+            autoComplete="new-password"
             className="input-base"
             style={inputStyle(!!error)}
           />
 
-          {showAdmin && (
-            <input
-              type="password"
-              value={masterPassword}
-              onChange={e => { setMasterPassword(e.target.value); setError(''); }}
-              placeholder="Senha Master"
-              className="input-base animate-in"
-              style={inputStyle(!!error)}
-            />
-          )}
+          <input
+            type="text"
+            value={companyName}
+            onChange={e => { setCompanyName(e.target.value); setError(''); }}
+            placeholder="Nome da Empresa"
+            autoComplete="organization"
+            className="input-base"
+            style={inputStyle(!!error)}
+          />
 
           {error && (
             <p className="animate-in" style={{ color: 'var(--danger)', fontSize: 'var(--text-sm)', textAlign: 'center' }}>
@@ -157,7 +125,7 @@ export default function Login({ onLogin, onNavigateToSignup }: Props) {
 
           <button
             type="submit"
-            disabled={loading || !email.trim() || !password.trim()}
+            disabled={loading || !email.trim() || !password.trim() || !companyName.trim()}
             className="btn-primary"
             style={{
               width: '100%',
@@ -170,13 +138,13 @@ export default function Login({ onLogin, onNavigateToSignup }: Props) {
             }}
           >
             {loading && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--paper)' }} />}
-            {loading ? 'Entrando...' : 'Entrar'}
+            {loading ? 'Criando...' : 'Criar Conta'}
           </button>
         </form>
 
         <button
           type="button"
-          onClick={() => { setShowAdmin(!showAdmin); setMasterPassword(''); setError(''); }}
+          onClick={onNavigateToLogin}
           style={{
             display: 'block',
             margin: 'var(--space-4) auto 0',
@@ -189,34 +157,8 @@ export default function Login({ onLogin, onNavigateToSignup }: Props) {
             opacity: 0.7,
           }}
         >
-          {showAdmin ? 'Voltar ao login normal' : 'Acesso Admin'}
+          Ja tem conta? Entrar
         </button>
-
-        {onNavigateToSignup && (
-          <p style={{
-            textAlign: 'center',
-            marginTop: 'var(--space-4)',
-            fontSize: 'var(--text-sm)',
-            color: 'var(--ink-muted)',
-          }}>
-            Ainda nao tem conta?{' '}
-            <button
-              type="button"
-              onClick={onNavigateToSignup}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--accent)',
-                fontSize: 'var(--text-sm)',
-                cursor: 'pointer',
-                textDecoration: 'underline',
-                padding: 0,
-              }}
-            >
-              Cadastre-se
-            </button>
-          </p>
-        )}
       </div>
 
       <style>{`

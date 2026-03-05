@@ -1,219 +1,94 @@
 {
-  "project": "COPY ANUNCIOS — User Auth & RBAC",
-  "branchName": "ralph/user-auth-rbac",
-  "description": "Replace single shared password with per-user login (username+password), role-based access control (admin/operator), granular per-seller permissions, and full audit logging.",
+  "project": "COPY ANUNCIOS — Multi-Tenant Fixes",
+  "branchName": "ralph/multi-tenant-saas",
+  "description": "Post-review fixes for the multi-tenant SaaS migration. Fix crashes, cross-tenant security holes, broken UI, and missing validations identified during code review.",
   "userStories": [
     {
-      "id": "US-001",
-      "title": "Database migration: auth tables",
-      "description": "As a developer, I want to create the database schema for users, sessions, permissions, and auth logs so that the backend can store and query auth data.",
+      "id": "US-FIX-001",
+      "title": "Fix admin-promote crash: missing org_id on user creation",
+      "description": "As a developer, I want admin-promote to work after the multi-tenant migration so that bootstrap admin creation does not crash.",
       "acceptanceCriteria": [
-        "Create migration file app/db/migrations/003_user_auth.sql",
-        "Table `users` created with columns: id (UUID PK DEFAULT gen_random_uuid()), username (TEXT UNIQUE NOT NULL), password_hash (TEXT NOT NULL), role (TEXT NOT NULL DEFAULT 'operator' CHECK IN ('admin','operator')), can_run_compat (BOOLEAN NOT NULL DEFAULT false), active (BOOLEAN NOT NULL DEFAULT true), created_at (TIMESTAMPTZ DEFAULT now()), last_login_at (TIMESTAMPTZ)",
-        "Table `user_sessions` created with columns: id (UUID PK DEFAULT gen_random_uuid()), user_id (UUID FK to users ON DELETE CASCADE), token (TEXT UNIQUE NOT NULL), created_at (TIMESTAMPTZ DEFAULT now()), expires_at (TIMESTAMPTZ NOT NULL)",
-        "Table `user_permissions` created with columns: id (UUID PK DEFAULT gen_random_uuid()), user_id (UUID FK to users ON DELETE CASCADE), seller_slug (TEXT NOT NULL), can_copy_from (BOOLEAN NOT NULL DEFAULT false), can_copy_to (BOOLEAN NOT NULL DEFAULT false), UNIQUE(user_id, seller_slug)",
-        "Table `auth_logs` created with columns: id (UUID PK DEFAULT gen_random_uuid()), user_id (UUID REFERENCES users(id) ON DELETE SET NULL), username (TEXT), action (TEXT NOT NULL), created_at (TIMESTAMPTZ DEFAULT now())",
-        "ALTER TABLE copy_logs ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE SET NULL",
-        "ALTER TABLE compat_logs ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE SET NULL",
+        "In app/routers/auth.py, the admin-promote endpoint's new user insert dict includes org_id set to the Lever Money UUID '00000000-0000-0000-0000-000000000001'",
+        "The new user insert dict also includes email set to req.username (so the user can log in via the email-based login flow)",
+        "When promoting an existing user (user already exists path), the logic remains unchanged",
         "Typecheck passes"
       ],
       "priority": 1,
       "passes": true,
-      "notes": "Use IF NOT EXISTS for all CREATE TABLE statements. The copy_logs and compat_logs tables already exist — only add the user_id column. Check existing migrations in app/db/migrations/ for style reference. Supabase uses PostgreSQL."
+      "notes": "The insert is at app/routers/auth.py around line 368-375. The new_user dict needs 'org_id': '00000000-0000-0000-0000-000000000001' and 'email': req.username. The Lever Money UUID is the deterministic one from migration 008. Do NOT change the promote path (when user already exists) — only fix the create path."
     },
     {
-      "id": "US-002",
-      "title": "Backend: auth endpoints (login, logout, me)",
-      "description": "As an operator, I want to log in with my username and password so that I have an individual session. Replace the old single-password auth system.",
+      "id": "US-FIX-002",
+      "title": "Fix cross-org permission access in admin_users.py",
+      "description": "As a platform owner, I want user permission endpoints to verify org membership so that admins cannot read or modify permissions for users in other organizations.",
       "acceptanceCriteria": [
-        "Rewrite app/routers/auth.py to use the new users/user_sessions tables instead of admin_config",
-        "POST /api/auth/login accepts {username, password}, verifies bcrypt hash against users table, creates session in user_sessions with UUID4 token and 7-day expiry, returns {token, user:{id, username, role, can_run_compat}}",
-        "POST /api/auth/login returns 401 with {detail: 'Credenciais inválidas'} if username not found, password wrong, or user.active is false",
-        "POST /api/auth/logout deletes the session row from user_sessions matching the token",
-        "GET /api/auth/me looks up token from X-Auth-Token header in user_sessions, checks not expired, returns {id, username, role, can_run_compat, permissions:[{seller_slug, can_copy_from, can_copy_to}]}",
-        "New FastAPI dependency require_user() extracts X-Auth-Token header, looks up user_sessions join users, returns user dict with permissions array. Raises 401 if token missing/invalid/expired",
-        "New FastAPI dependency require_admin() calls require_user() then checks role == 'admin', raises 403 if not",
-        "Login updates users.last_login_at to now()",
-        "Add ADMIN_MASTER_PASSWORD to app/config.py Settings class as optional string field (default None)",
-        "Old admin_config-based session_token/password_hash logic is removed from auth.py",
+        "GET /api/admin/users/{user_id}/permissions fetches the target user and verifies target_user['org_id'] == user['org_id'] before returning data. Returns 404 if mismatch.",
+        "PUT /api/admin/users/{user_id}/permissions fetches the target user and verifies target_user['org_id'] == user['org_id'] before upserting. Returns 404 if mismatch.",
+        "Use the same pattern already used in update_user() and delete_user() in the same file (fetch target, compare org_id, raise 404)",
         "Typecheck passes"
       ],
       "priority": 2,
       "passes": true,
-      "notes": "Current auth.py uses admin_config table with password_hash and session_token columns. The new system uses users + user_sessions tables. Keep using bcrypt for password hashing (already in requirements.txt). The require_admin dependency in the current code is used by auth_ml.py router — make sure the new require_admin works as a drop-in replacement. Import Header from fastapi for X-Auth-Token extraction."
+      "notes": "In app/routers/admin_users.py: get_user_permissions is at ~line 141. It already fetches sellers by org_id (line 148-151), but does NOT verify the target user_id belongs to the same org. Add a check at the top: fetch user by id, verify org_id matches. Same for update_user_permissions at ~line 175 — line 185 checks user exists but does not check org_id. Follow the exact pattern from update_user (~line 99) and delete_user (~line 132) which already do this correctly."
     },
     {
-      "id": "US-003",
-      "title": "Backend: admin-promote endpoint",
-      "description": "As the system owner, I want to use a master password from .env to create or promote the first admin user without manual database access.",
+      "id": "US-FIX-003",
+      "title": "Fix cross-org copy_logs update in copy.py",
+      "description": "As a platform owner, I want copy log updates to be org-scoped so that one org's dimension retry cannot affect another org's log entries.",
       "acceptanceCriteria": [
-        "POST /api/auth/admin-promote in app/routers/auth.py accepts {username, password, master_password}",
-        "If ADMIN_MASTER_PASSWORD is not set in config, return 403 with {detail: 'Master password not configured'}",
-        "If master_password does not match ADMIN_MASTER_PASSWORD, return 403 with {detail: 'Senha master inválida'}",
-        "If master_password is correct and user does not exist: create user with role='admin', can_run_compat=true, hash password with bcrypt, return created user (without password_hash)",
-        "If master_password is correct and user exists: update role to 'admin', update can_run_compat to true, update password_hash if provided, return updated user",
-        "Log action='admin_promote' to auth_logs table with the user_id and username",
+        "In copy_with_dims() endpoint: the copy_logs update that sets needs_dimensions status (around line 169-175) adds .eq('org_id', org_id) to the query",
+        "In retry_dimensions() endpoint: the final copy_logs update (around line 250-254) adds .eq('org_id', org_id) to the query",
         "Typecheck passes"
       ],
       "priority": 3,
       "passes": true,
-      "notes": "This endpoint does NOT require authentication (it's the bootstrap mechanism). Add it to the auth router alongside login/logout. Use the same bcrypt hashing pattern from the login endpoint."
+      "notes": "In app/routers/copy.py: The first update is around line 169: db.table('copy_logs').update({...}).eq('source_item_id', item_id).eq('source_seller', req.source).eq('status', 'needs_dimensions').execute() — add .eq('org_id', org_id) before .execute(). The second update is around line 250: db.table('copy_logs').update({...}).eq('id', req.log_id).execute() — add .eq('org_id', org_id) before .execute(). The org_id variable is already available in both functions."
     },
     {
-      "id": "US-004",
-      "title": "Backend: user CRUD API",
-      "description": "As an admin, I want API endpoints to create, list, update, and delete operator accounts.",
+      "id": "US-FIX-004",
+      "title": "Fix OAuth install button blocked by popup blocker",
+      "description": "As an org admin, I want the ML authorization button to work reliably so that I can connect Mercado Livre accounts without popup blockers interfering.",
       "acceptanceCriteria": [
-        "Create new router file app/routers/admin_users.py",
-        "Register the router in app/main.py with prefix /api/admin",
-        "GET /api/admin/users — returns list of all users with fields: id, username, role, can_run_compat, active, created_at, last_login_at. Never returns password_hash. Protected by require_admin()",
-        "POST /api/admin/users — accepts {username, password, role, can_run_compat}. Hashes password with bcrypt. Returns 409 if username already exists. Returns created user. Protected by require_admin()",
-        "PUT /api/admin/users/{user_id} — accepts partial body: {password?, role?, can_run_compat?, active?}. If password provided, hash it. Returns updated user. Protected by require_admin()",
-        "DELETE /api/admin/users/{user_id} — deletes user. Returns 400 with {detail: 'Não é possível deletar a si mesmo'} if user_id matches the requesting admin. Cascades to sessions and permissions via FK. Protected by require_admin()",
+        "In Admin.tsx handleInstall(): replace window.open(data.redirect_url, '_blank') with window.location.href = data.redirect_url",
+        "Before redirecting, the function works the same: fetch with auth headers, parse JSON, handle errors with toast",
+        "If the fetch fails (401, network error), show toast error and do NOT redirect",
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": true,
-      "notes": "Import require_admin from app/routers/auth. Use get_db() from app/db/supabase. Supabase client uses .table('users').select/insert/update/delete pattern. For password hashing use bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()."
+      "passes": false,
+      "notes": "In frontend/src/pages/Admin.tsx, handleInstall() is at ~line 20. The only change needed is line 34: replace `window.open(data.redirect_url, '_blank')` with `window.location.href = data.redirect_url`. The rest of the function (fetch, error handling, loading state) stays the same. Do NOT add a confirmation dialog — just redirect directly like the old flow did."
     },
     {
-      "id": "US-005",
-      "title": "Backend: permissions CRUD API",
-      "description": "As an admin, I want API endpoints to read and update per-seller permissions for each operator.",
+      "id": "US-FIX-005",
+      "title": "Show specific signup error messages from backend",
+      "description": "As a new user signing up, I want to see the specific reason my signup failed so that I can fix the problem and try again.",
       "acceptanceCriteria": [
-        "Add endpoints to app/routers/admin_users.py (same router as US-004)",
-        "GET /api/admin/users/{user_id}/permissions — returns list of {seller_slug, seller_name, can_copy_from, can_copy_to} for ALL connected sellers from copy_sellers table. Sellers without a row in user_permissions default to can_copy_from=false, can_copy_to=false. Protected by require_admin()",
-        "PUT /api/admin/users/{user_id}/permissions — accepts array [{seller_slug, can_copy_from, can_copy_to}]. For each entry, upsert into user_permissions (insert on conflict(user_id, seller_slug) update). Protected by require_admin()",
+        "In useAuth.ts: signup() return type changes from Promise<boolean> to Promise<{success: boolean, error?: string}>",
+        "On API error, signup() parses the response JSON and returns {success: false, error: data.detail || 'Erro ao criar conta'}",
+        "On network error, signup() returns {success: false, error: 'Erro de conexao'}",
+        "On success, signup() returns {success: true}",
+        "In Signup.tsx: the handleSubmit reads the error field from signup() result and displays it",
+        "In Signup.tsx: add client-side validation before submit — if password.length < 6, show 'Senha deve ter pelo menos 6 caracteres' without calling the API",
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": true,
-      "notes": "For the GET, fetch all sellers from copy_sellers, then fetch user_permissions for the user_id, then merge — sellers not in permissions get false/false defaults. For upsert in Supabase, use .upsert() with on_conflict='user_id,seller_slug'. The seller_name comes from copy_sellers.name column."
+      "passes": false,
+      "notes": "In frontend/src/hooks/useAuth.ts: signup() is at ~line 84. Currently returns boolean. Change to: on !res.ok, parse error with `const data = await res.json().catch(() => null)` and return `{success: false, error: data?.detail || 'Erro ao criar conta'}`. On success return `{success: true}`. On catch return `{success: false, error: 'Erro de conexao'}`. In frontend/src/pages/Signup.tsx: handleSubmit at ~line 21 currently does `const success = await onSignup(...)`. Change to `const result = await onSignup(...)`. If !result.success, setError(result.error || 'Erro ao criar conta'). The onSignup prop type changes from `(e,p,c) => Promise<boolean>` to `(e,p,c) => Promise<{success: boolean, error?: string}>`. Add password length check before calling onSignup."
     },
     {
-      "id": "US-006",
-      "title": "Backend: permission enforcement in copy and compat endpoints",
-      "description": "As a system, I want to validate user permissions server-side on every copy and compat operation so that operators cannot bypass UI restrictions.",
+      "id": "US-FIX-006",
+      "title": "Protect debug endpoint with super-admin auth",
+      "description": "As a platform owner, I want the debug environment endpoint to require authentication so that server configuration is not exposed publicly.",
       "acceptanceCriteria": [
-        "In app/routers/copy.py: replace require_admin with require_user in all endpoints",
-        "POST /api/copy and POST /api/copy/with-dimensions: check user has can_copy_from for source_seller and can_copy_to for each dest_seller. Admin users bypass checks. Return 403 with specific message listing the disallowed seller(s) if not permitted",
-        "GET /api/copy/preview/{item_id}: require_user() only (any authenticated user can preview)",
-        "In app/routers/compat.py: replace require_admin with require_user in all endpoints",
-        "POST /api/compat/copy: check user.can_run_compat is true. Admin users bypass. Return 403 if not",
-        "POST /api/compat/search-sku: require_user(). Filter seller list to only sellers the user has can_copy_to permission (admin gets all sellers)",
-        "GET /api/compat/preview/{item_id}: require_user() and check can_run_compat. Admin bypass",
-        "In app/routers/auth_ml.py: keep require_admin() for seller management (connect/disconnect sellers) — only admins manage sellers",
+        "The /api/debug/env endpoint in app/main.py uses Depends(require_super_admin) as a parameter",
+        "Import require_super_admin from app.routers.auth",
+        "Unauthenticated requests get 401",
+        "Non-super-admin users get 403",
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": true,
-      "notes": "The require_user dependency from US-002 returns a dict with {id, username, role, can_run_compat, permissions:[{seller_slug, can_copy_from, can_copy_to}]}. To check permissions, iterate user['permissions'] looking for matching seller_slug. If user['role'] == 'admin', skip all checks. Helper function check_seller_permission(user, seller_slug, direction) could be useful."
-    },
-    {
-      "id": "US-007",
-      "title": "Backend: audit logging with user_id",
-      "description": "As an admin, I want every operation to record which user performed it so I have full traceability.",
-      "acceptanceCriteria": [
-        "In app/routers/copy.py: pass the authenticated user's id when inserting into copy_logs (user_id column added in US-001)",
-        "In app/services/compat_copier.py: accept user_id parameter in copy_compat_to_targets and pass it when inserting into compat_logs",
-        "In app/routers/compat.py: pass user.id to compat_copier functions",
-        "In app/routers/auth.py: insert into auth_logs on login success (action='login'), login failure (action='login_failed'), logout (action='logout')",
-        "GET /api/copy/logs: if user.role == 'operator', filter by user_id. If admin, return all. Include username in response (join users table or add username to log row)",
-        "GET /api/compat/logs: same operator/admin filtering as copy logs. Include username in response",
-        "Typecheck passes"
-      ],
-      "priority": 7,
-      "passes": true,
-      "notes": "copy_logs insertion happens in app/services/item_copier.py (look for db.table('copy_logs').insert). Add user_id to the insert dict. compat_logs insertion is in app/services/compat_copier.py. For the logs endpoints, use .eq('user_id', user['id']) filter for operators. For username, either join or just store username alongside user_id at insert time."
-    },
-    {
-      "id": "US-008",
-      "title": "Frontend: Login page with username and password",
-      "description": "As an operator, I want a login screen with username and password fields to authenticate individually.",
-      "acceptanceCriteria": [
-        "Update frontend/src/pages/Login.tsx to show two input fields: 'Usuário' (text) and 'Senha' (password) plus 'Entrar' button",
-        "Submitting calls POST /api/auth/login with {username, password}",
-        "On success, stores token in localStorage key 'copy-auth-token' and calls onLogin callback",
-        "On failure (401), shows inline error message with shake animation (reuse existing pattern from current Login.tsx)",
-        "Discrete text link 'Acesso Admin' below the login form toggles visibility of a third field 'Senha Master'",
-        "When 'Senha Master' field is visible and filled, submit calls POST /api/auth/admin-promote with {username, password, master_password} instead of login. On success, auto-login the user",
-        "Old single-password login flow is completely removed",
-        "Typecheck passes"
-      ],
-      "priority": 8,
-      "passes": true,
-      "notes": "Current Login.tsx has a single password field and calls /api/auth/login with just {password}. Update to {username, password}. The localStorage key changes from 'copy-admin-token' to 'copy-auth-token'. The admin-promote flow: call /api/auth/admin-promote first, if success then call /api/auth/login with same username/password to get a session token."
-    },
-    {
-      "id": "US-009",
-      "title": "Frontend: useAuth hook and navbar update",
-      "description": "As an operator, I want the app to show my name, adapt navigation to my permissions, and let me log out.",
-      "acceptanceCriteria": [
-        "Update frontend/src/hooks/useAuth.ts to call GET /api/auth/me on mount and store full user object: {id, username, role, can_run_compat, permissions:[{seller_slug, can_copy_from, can_copy_to}]}",
-        "All API requests from useAuth use X-Auth-Token header with token from localStorage 'copy-auth-token'",
-        "If GET /api/auth/me returns 401, clear localStorage token and set authed=false (triggers login redirect)",
-        "Update frontend/src/App.tsx navbar to display the logged-in username",
-        "Add logout button in navbar that calls POST /api/auth/logout, clears localStorage 'copy-auth-token', and redirects to login",
-        "Hide 'Admin' tab in navbar if user.role !== 'admin'",
-        "Hide 'Compatibilidade' tab if user.can_run_compat is false",
-        "Hide 'Copiar' tab if user has zero can_copy_from OR zero can_copy_to sellers in permissions array",
-        "Typecheck passes"
-      ],
-      "priority": 9,
-      "passes": true,
-      "notes": "Current useAuth stores: authed, sellers, login(), logout(), etc. Expand to also store 'user' object. The navbar in App.tsx renders tab buttons — add conditional rendering. The localStorage key was 'copy-admin-token', now 'copy-auth-token'. Make sure to update all references. The user.permissions array has {seller_slug, can_copy_from, can_copy_to} — check if any has can_copy_from=true and any has can_copy_to=true to show Copiar tab."
-    },
-    {
-      "id": "US-010",
-      "title": "Frontend: Admin users management page",
-      "description": "As an admin, I want a UI to create, edit, and delete operator accounts inside the Admin section.",
-      "acceptanceCriteria": [
-        "Create frontend/src/pages/UsersPage.tsx accessible from Admin section (add as sub-tab or section alongside existing Sellers management in Admin.tsx)",
-        "Display table of users with columns: Usuário, Role (admin/operador), Compat (sim/não), Status (ativo/inativo), Último Login (formatted date or 'Nunca')",
-        "Button 'Novo Usuário' opens inline form with fields: username (text), senha (password), role (select: admin/operador), pode rodar compat (toggle/checkbox)",
-        "Each user row has edit button that opens inline form to change: senha (optional blank=no change), role, can_run_compat, active toggle",
-        "Each user row has delete button with confirmation dialog. Delete button disabled/hidden for current logged-in user",
-        "All actions call /api/admin/users endpoints with X-Auth-Token header and show toast feedback on success/error",
-        "Follow existing design system (CSS variables, button classes, table styling from CopyPage/CompatPage)",
-        "Typecheck passes"
-      ],
-      "priority": 10,
-      "passes": true,
-      "notes": "Look at Admin.tsx for the existing layout pattern and how sellers are listed. Reuse the same card/table styling. For the inline form, look at how CopyForm.tsx handles form state. Use the Toast component for feedback. The API endpoints are /api/admin/users (GET, POST) and /api/admin/users/{id} (PUT, DELETE). Add navigation to UsersPage from Admin.tsx or App.tsx."
-    },
-    {
-      "id": "US-011",
-      "title": "Frontend: Admin permissions panel per user",
-      "description": "As an admin, I want to set per-seller copy permissions for each operator using simple checkboxes.",
-      "acceptanceCriteria": [
-        "Each user row in UsersPage has a 'Permissões' button that expands or opens a permissions panel below the row",
-        "Panel fetches and displays all connected sellers with two checkboxes each: 'Origem' (can_copy_from) and 'Destino' (can_copy_to)",
-        "Panel loads current permissions from GET /api/admin/users/{id}/permissions and pre-checks the boxes accordingly",
-        "Button 'Salvar' calls PUT /api/admin/users/{id}/permissions with the full array and shows toast on success",
-        "For admin-role users, panel shows message 'Admins têm acesso total a todos os sellers' instead of checkboxes (no editing needed)",
-        "Follow existing design system styling",
-        "Typecheck passes"
-      ],
-      "priority": 11,
-      "passes": true,
-      "notes": "The permissions API returns [{seller_slug, seller_name, can_copy_from, can_copy_to}] for all sellers. Render as a grid/table with seller name + two checkboxes. On save, send the full array back. Use useState to track permission changes locally before saving."
-    },
-    {
-      "id": "US-012",
-      "title": "Frontend: filter sellers and features by user permissions",
-      "description": "As an operator, I want to only see the sellers and features I have access to, keeping the UI clean and focused.",
-      "acceptanceCriteria": [
-        "In CopyPage.tsx (or CopyForm.tsx), filter the source seller list to only sellers where user has can_copy_from=true. If user is admin, show all sellers",
-        "In CopyPage.tsx (or CopyForm.tsx), filter the destination seller list to only sellers where user has can_copy_to=true. If user is admin, show all sellers",
-        "In CompatPage.tsx, the SKU search only considers sellers the user has can_copy_to permission for (either filter client-side before sending or rely on backend filtering from US-006)",
-        "If user has no permitted origin or destination sellers, CopyPage shows a friendly message like 'Nenhum seller disponível. Peça ao admin para liberar acesso.'",
-        "If user.can_run_compat is false and they navigate to /compat, redirect them to the first available page",
-        "Follow existing design system styling for empty states",
-        "Typecheck passes"
-      ],
-      "priority": 12,
-      "passes": true,
-      "notes": "The user permissions are available in the useAuth hook from US-009 as user.permissions array. Filter sellers by matching seller.slug against permissions. In CopyForm.tsx, the sellers prop is already passed down — filter before rendering. For compat, the backend (US-006) already filters, but the frontend should also hide the tab (US-009 handles that)."
+      "passes": false,
+      "notes": "In app/main.py at ~line 56: change `async def debug_env():` to `async def debug_env(user: dict = Depends(require_super_admin)):`. Add imports at top: `from fastapi import Depends` (may already be imported) and `from app.routers.auth import require_super_admin`. The function body stays the same."
     }
   ]
 }

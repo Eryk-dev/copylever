@@ -14,7 +14,7 @@ from app.routers.auth import require_admin
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
-USER_FIELDS = "id, username, role, can_run_compat, active, created_at, last_login_at"
+USER_FIELDS = "id, username, email, role, org_id, can_run_compat, active, created_at, last_login_at"
 
 
 def _hash_password(password: str) -> str:
@@ -49,7 +49,7 @@ class UpdatePermissionsRequest(BaseModel):
 async def list_users(user: dict = Depends(require_admin)):
     """List all users (admin only). Never returns password_hash."""
     db = get_db()
-    result = db.table("users").select(USER_FIELDS).execute()
+    result = db.table("users").select(USER_FIELDS).eq("org_id", user["org_id"]).execute()
     return result.data or []
 
 
@@ -58,8 +58,14 @@ async def create_user(req: CreateUserRequest, user: dict = Depends(require_admin
     """Create a new user account (admin only)."""
     db = get_db()
 
-    # Check for duplicate username
-    existing = db.table("users").select("id").eq("username", req.username).execute()
+    # Check for duplicate username within org
+    existing = (
+        db.table("users")
+        .select("id")
+        .eq("username", req.username)
+        .eq("org_id", user["org_id"])
+        .execute()
+    )
     if existing.data:
         raise HTTPException(status_code=409, detail="Usuário já existe")
 
@@ -69,6 +75,7 @@ async def create_user(req: CreateUserRequest, user: dict = Depends(require_admin
         "role": req.role,
         "can_run_compat": req.can_run_compat,
         "active": True,
+        "org_id": user["org_id"],
     }
     created = db.table("users").insert(new_user).execute()
     row = created.data[0]
@@ -88,6 +95,11 @@ async def update_user(user_id: str, req: UpdateUserRequest, user: dict = Depends
     """Update an existing user (admin only)."""
     db = get_db()
 
+    # Verify target user belongs to same org
+    target = db.table("users").select("id, org_id").eq("id", user_id).execute()
+    if not target.data or target.data[0]["org_id"] != user["org_id"]:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
     update_data: dict = {}
     if req.password is not None:
         update_data["password_hash"] = _hash_password(req.password)
@@ -101,9 +113,7 @@ async def update_user(user_id: str, req: UpdateUserRequest, user: dict = Depends
     if not update_data:
         raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
 
-    result = db.table("users").update(update_data).eq("id", user_id).execute()
-    if not result.data:
-        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    db.table("users").update(update_data).eq("id", user_id).execute()
 
     # Return updated user without password_hash
     updated = db.table("users").select(USER_FIELDS).eq("id", user_id).execute()
@@ -117,9 +127,13 @@ async def delete_user(user_id: str, user: dict = Depends(require_admin)):
         raise HTTPException(status_code=400, detail="Não é possível deletar a si mesmo")
 
     db = get_db()
-    result = db.table("users").delete().eq("id", user_id).execute()
-    if not result.data:
+
+    # Verify target user belongs to same org
+    target = db.table("users").select("id, org_id").eq("id", user_id).execute()
+    if not target.data or target.data[0]["org_id"] != user["org_id"]:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+    db.table("users").delete().eq("id", user_id).execute()
 
     return {"status": "ok"}
 
@@ -129,8 +143,18 @@ async def get_user_permissions(user_id: str, user: dict = Depends(require_admin)
     """Get per-seller permissions for a user. Returns all connected sellers with defaults."""
     db = get_db()
 
-    # Fetch all connected sellers
-    sellers_result = db.table("copy_sellers").select("slug, name").execute()
+    # Verify target user belongs to same org
+    target = db.table("users").select("id, org_id").eq("id", user_id).execute()
+    if not target.data or target.data[0]["org_id"] != user["org_id"]:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+    # Fetch all connected sellers for this org
+    sellers_result = (
+        db.table("copy_sellers")
+        .select("slug, name")
+        .eq("org_id", user["org_id"])
+        .execute()
+    )
     all_sellers = sellers_result.data or []
 
     # Fetch existing permissions for this user
@@ -162,9 +186,9 @@ async def update_user_permissions(
     """Upsert per-seller permissions for a user."""
     db = get_db()
 
-    # Verify the user exists
-    user_result = db.table("users").select("id").eq("id", user_id).execute()
-    if not user_result.data:
+    # Verify target user belongs to same org
+    target = db.table("users").select("id, org_id").eq("id", user_id).execute()
+    if not target.data or target.data[0]["org_id"] != user["org_id"]:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
 
     # Upsert each permission entry
@@ -175,6 +199,7 @@ async def update_user_permissions(
                 "seller_slug": entry.seller_slug,
                 "can_copy_from": entry.can_copy_from,
                 "can_copy_to": entry.can_copy_to,
+                "org_id": user["org_id"],
             },
             on_conflict="user_id,seller_slug",
         ).execute()

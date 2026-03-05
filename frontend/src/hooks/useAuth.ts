@@ -12,7 +12,11 @@ export interface UserPermission {
 export interface AuthUser {
   id: string;
   username: string;
+  email: string;
   role: 'admin' | 'operator';
+  org_id: string;
+  org_name: string;
+  is_super_admin: boolean;
   can_run_compat: boolean;
   permissions: UserPermission[];
 }
@@ -56,12 +60,12 @@ export function useAuth() {
     }
   }, [clearAuth]);
 
-  const login = useCallback(async (username: string, password: string): Promise<boolean> => {
+  const login = useCallback(async (email: string, password: string): Promise<boolean> => {
     try {
       const res = await fetch(`${API_BASE}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ email, password }),
       });
       if (!res.ok) return false;
       const data = await res.json();
@@ -74,6 +78,30 @@ export function useAuth() {
       return true;
     } catch {
       return false;
+    }
+  }, [fetchMe]);
+
+  const signup = useCallback(async (email: string, password: string, companyName: string): Promise<{success: boolean, error?: string}> => {
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, company_name: companyName }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        return { success: false, error: data?.detail || 'Erro ao criar conta' };
+      }
+      const data = await res.json();
+      const newToken = data.token;
+      setToken(newToken);
+      localStorage.setItem(TOKEN_KEY, newToken);
+      const me = await fetchMe(newToken);
+      if (!me) return { success: false, error: 'Erro ao criar conta' };
+      setUser(me);
+      return { success: true };
+    } catch {
+      return { success: false, error: 'Erro de conexao' };
     }
   }, [fetchMe]);
 
@@ -151,6 +179,7 @@ export function useAuth() {
     token,
     user,
     login,
+    signup,
     logout,
     sellers,
     loadingSellers,

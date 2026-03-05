@@ -68,7 +68,10 @@ async def require_user(x_auth_token: str = Header(...)) -> dict:
     return {
         "id": user["id"],
         "username": user["username"],
+        "email": user.get("email"),
         "role": user["role"],
+        "org_id": user["org_id"],
+        "is_super_admin": user.get("is_super_admin", False),
         "can_run_compat": user["can_run_compat"],
         "permissions": permissions,
     }
@@ -82,9 +85,46 @@ async def require_admin(x_auth_token: str = Header(...)) -> dict:
     return user
 
 
+async def require_super_admin(x_auth_token: str = Header(...)) -> dict:
+    """Dependency: verify user is a super-admin."""
+    user = await require_user(x_auth_token)
+    if not user.get("is_super_admin"):
+        raise HTTPException(status_code=403, detail="Acesso restrito ao super-admin")
+    return user
+
+
+async def require_active_org(x_auth_token: str = Header(...)) -> dict:
+    """Dependency: verify user belongs to an active org."""
+    user = await require_user(x_auth_token)
+
+    # Super-admins bypass org checks
+    if user.get("is_super_admin"):
+        return user
+
+    db = get_db()
+    org_result = db.table("orgs").select(
+        "active, payment_active"
+    ).eq("id", user["org_id"]).single().execute()
+
+    if not org_result.data or not org_result.data.get("active"):
+        raise HTTPException(status_code=403, detail="Organizacao desativada")
+
+    # Enable when Stripe is configured
+    # if not org_result.data.get("payment_active"):
+    #     raise HTTPException(status_code=403, detail="Assinatura pendente")
+
+    return user
+
+
 class LoginRequest(BaseModel):
-    username: str
+    email: str
     password: str
+
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+    company_name: str
 
 
 class AdminPromoteRequest(BaseModel):
@@ -95,20 +135,22 @@ class AdminPromoteRequest(BaseModel):
 
 @router.post("/login")
 async def login(req: LoginRequest):
-    """Authenticate with username and password. Returns session token + user info."""
+    """Authenticate with email and password. Returns session token + user info."""
     db = get_db()
 
-    # Find user
-    result = db.table("users").select("*").eq("username", req.username).execute()
+    # Find user by email first, fallback to username for backward compatibility
+    result = db.table("users").select("*").eq("email", req.email).execute()
+    if not result.data:
+        result = db.table("users").select("*").eq("username", req.email).execute()
     if not result.data:
         # Log failed login attempt (user not found)
         try:
             db.table("auth_logs").insert({
-                "username": req.username,
+                "username": req.email,
                 "action": "login_failed",
             }).execute()
         except Exception:
-            logger.warning("Failed to log login_failed for unknown user %s", req.username)
+            logger.warning("Failed to log login_failed for unknown user %s", req.email)
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
     user = result.data[0]
@@ -118,11 +160,11 @@ async def login(req: LoginRequest):
         try:
             db.table("auth_logs").insert({
                 "user_id": user["id"],
-                "username": req.username,
+                "username": user["username"],
                 "action": "login_failed",
             }).execute()
         except Exception:
-            logger.warning("Failed to log login_failed for inactive user %s", req.username)
+            logger.warning("Failed to log login_failed for inactive user %s", user["username"])
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
     if not _verify_password(req.password, user["password_hash"]):
@@ -130,11 +172,11 @@ async def login(req: LoginRequest):
         try:
             db.table("auth_logs").insert({
                 "user_id": user["id"],
-                "username": req.username,
+                "username": user["username"],
                 "action": "login_failed",
             }).execute()
         except Exception:
-            logger.warning("Failed to log login_failed for user %s", req.username)
+            logger.warning("Failed to log login_failed for user %s", user["username"])
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
     # Create session
@@ -173,6 +215,85 @@ async def login(req: LoginRequest):
     }
 
 
+@router.post("/signup")
+async def signup(req: SignupRequest):
+    """Create a new org and admin user. Returns session token + user/org info."""
+    db = get_db()
+
+    # Validate inputs
+    if not req.email or not req.email.strip():
+        raise HTTPException(status_code=400, detail="Email e obrigatorio")
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Senha deve ter pelo menos 6 caracteres")
+    if not req.company_name or not req.company_name.strip():
+        raise HTTPException(status_code=400, detail="Nome da empresa e obrigatorio")
+
+    email = req.email.strip().lower()
+
+    # Check if email already exists
+    existing = db.table("users").select("id").eq("email", email).execute()
+    if existing.data:
+        raise HTTPException(status_code=409, detail="Email ja cadastrado")
+
+    # Create org
+    org_result = db.table("orgs").insert({
+        "name": req.company_name.strip(),
+        "email": email,
+        "active": True,
+        "payment_active": True,
+    }).execute()
+    org = org_result.data[0]
+
+    # Create user
+    user_result = db.table("users").insert({
+        "email": email,
+        "username": email,
+        "password_hash": _hash_password(req.password),
+        "role": "admin",
+        "can_run_compat": True,
+        "org_id": org["id"],
+        "is_super_admin": False,
+        "active": True,
+    }).execute()
+    user = user_result.data[0]
+
+    # Create session
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_EXPIRY_DAYS)
+
+    db.table("user_sessions").insert({
+        "user_id": user["id"],
+        "token": token,
+        "expires_at": expires_at.isoformat(),
+    }).execute()
+
+    # Log signup
+    try:
+        db.table("auth_logs").insert({
+            "user_id": user["id"],
+            "username": user["username"],
+            "org_id": org["id"],
+            "action": "signup",
+        }).execute()
+    except Exception:
+        logger.warning("Failed to log signup for user %s", email)
+
+    return {
+        "token": token,
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "email": user["email"],
+            "role": user["role"],
+            "can_run_compat": user["can_run_compat"],
+        },
+        "org": {
+            "id": org["id"],
+            "name": org["name"],
+        },
+    }
+
+
 @router.post("/logout")
 async def logout(x_auth_token: str = Header(None)):
     """Invalidate session token."""
@@ -201,8 +322,14 @@ async def logout(x_auth_token: str = Header(None)):
 
 @router.get("/me")
 async def me(user: dict = Depends(require_user)):
-    """Return current user info with permissions."""
-    return user
+    """Return current user info with permissions and org context."""
+    db = get_db()
+    org_name = None
+    if user.get("org_id"):
+        org_result = db.table("orgs").select("name").eq("id", user["org_id"]).single().execute()
+        if org_result.data:
+            org_name = org_result.data["name"]
+    return {**user, "org_name": org_name}
 
 
 @router.post("/admin-promote")
@@ -240,10 +367,12 @@ async def admin_promote(req: AdminPromoteRequest):
         # User does not exist — create as admin
         new_user = {
             "username": req.username,
+            "email": req.username,
             "password_hash": _hash_password(req.password),
             "role": "admin",
             "can_run_compat": True,
             "active": True,
+            "org_id": "00000000-0000-0000-0000-000000000001",
         }
         created = db.table("users").insert(new_user).execute()
         user_row = created.data[0]

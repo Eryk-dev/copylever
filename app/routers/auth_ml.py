@@ -7,11 +7,11 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 
 from app.config import settings
 from app.db.supabase import get_db
-from app.routers.auth import require_admin
+from app.routers.auth import require_user
 from app.services.ml_api import exchange_code, fetch_user_info
 
 logger = logging.getLogger(__name__)
@@ -20,15 +20,17 @@ router = APIRouter(tags=["ml"])
 
 @router.get("/api/ml/install")
 @router.get("/ml/install")
-async def install():
-    """Redirect to ML OAuth for seller authorization."""
+async def install(user: dict = Depends(require_user)):
+    """Return ML OAuth URL with org_id encoded in state."""
+    org_id = user["org_id"]
     params = urlencode({
         "response_type": "code",
         "client_id": settings.ml_app_id,
         "redirect_uri": settings.ml_redirect_uri,
-        "state": "_install",
+        "state": f"org_{org_id}",
     })
-    return RedirectResponse(f"https://auth.mercadolivre.com.br/authorization?{params}")
+    redirect_url = f"https://auth.mercadolivre.com.br/authorization?{params}"
+    return {"redirect_url": redirect_url}
 
 
 @router.get("/api/ml/callback")
@@ -37,6 +39,14 @@ async def callback(code: str, state: str = ""):
     """Callback from ML OAuth. Exchange code for tokens, save to copy_sellers."""
     if not state:
         raise HTTPException(status_code=400, detail="Missing state")
+
+    # Parse org_id from state
+    org_id = None
+    if state.startswith("org_"):
+        org_id = state[4:]
+
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Missing org_id in state")
 
     try:
         token_data = await exchange_code(code)
@@ -78,17 +88,17 @@ async def callback(code: str, state: str = ""):
     try:
         db = get_db()
 
-        # Look up existing seller by ml_user_id (immutable ML identifier)
+        # Look up existing seller by ml_user_id scoped to this org
         result = db.table("copy_sellers").select(
             "slug, ml_refresh_token"
-        ).eq("ml_user_id", ml_user_id).execute()
+        ).eq("ml_user_id", ml_user_id).eq("org_id", org_id).execute()
         existing_row = result.data[0] if result.data else None
 
-        # Fallback: look up by slug (covers manual row creation edge case)
+        # Fallback: look up by slug within org
         if not existing_row:
             result = db.table("copy_sellers").select(
                 "slug, ml_refresh_token"
-            ).eq("slug", slug).execute()
+            ).eq("slug", slug).eq("org_id", org_id).execute()
             existing_row = result.data[0] if result.data else None
 
         effective_refresh_token = refresh_token or (existing_row or {}).get("ml_refresh_token")
@@ -99,14 +109,15 @@ async def callback(code: str, state: str = ""):
             "ml_refresh_token": effective_refresh_token,
             "ml_token_expires_at": expires_at.isoformat(),
             "active": True,
+            "org_id": org_id,
         }
 
         if existing_row:
             db.table("copy_sellers").update({
                 "name": nickname,
                 **seller_data,
-            }).eq("slug", existing_row["slug"]).execute()
-            logger.info(f"OAuth: updated tokens for existing copy_seller {existing_row['slug']}")
+            }).eq("slug", existing_row["slug"]).eq("org_id", org_id).execute()
+            logger.info(f"OAuth: updated tokens for existing copy_seller {existing_row['slug']} (org={org_id})")
             return _success_page(existing_row["slug"], already_exists=True, has_refresh=bool(effective_refresh_token))
 
         # Create new seller
@@ -116,7 +127,7 @@ async def callback(code: str, state: str = ""):
             **seller_data,
         }).execute()
 
-        logger.info(f"OAuth: new copy_seller created — slug={slug}, ml_user_id={ml_user_id}")
+        logger.info(f"OAuth: new copy_seller created — slug={slug}, ml_user_id={ml_user_id}, org={org_id}")
         return _success_page(slug, already_exists=False, has_refresh=bool(effective_refresh_token))
 
     except Exception as e:
@@ -124,13 +135,13 @@ async def callback(code: str, state: str = ""):
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
 
-@router.get("/api/sellers", dependencies=[Depends(require_admin)])
-async def list_sellers():
-    """List all connected sellers with valid tokens."""
+@router.get("/api/sellers")
+async def list_sellers(user: dict = Depends(require_user)):
+    """List connected sellers for the user's org."""
     db = get_db()
     result = db.table("copy_sellers").select(
         "slug, name, ml_user_id, ml_token_expires_at, active, created_at"
-    ).eq("active", True).order("created_at").execute()
+    ).eq("active", True).eq("org_id", user["org_id"]).order("created_at").execute()
 
     sellers = []
     now = datetime.now(timezone.utc)
@@ -151,16 +162,16 @@ async def list_sellers():
     return sellers
 
 
-@router.delete("/api/sellers/{slug}", dependencies=[Depends(require_admin)])
-async def disconnect_seller(slug: str):
-    """Disconnect a seller (clear tokens)."""
+@router.delete("/api/sellers/{slug}")
+async def disconnect_seller(slug: str, user: dict = Depends(require_user)):
+    """Disconnect a seller (clear tokens), scoped by org."""
     db = get_db()
     result = db.table("copy_sellers").update({
         "ml_access_token": None,
         "ml_refresh_token": None,
         "ml_token_expires_at": None,
         "active": False,
-    }).eq("slug", slug).execute()
+    }).eq("slug", slug).eq("org_id", user["org_id"]).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail=f"Seller '{slug}' not found")

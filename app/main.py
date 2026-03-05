@@ -5,13 +5,14 @@ Copia anuncios do Mercado Livre entre contas internas.
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
-from app.routers import admin_users, auth, auth_ml, compat, copy
+from app.routers import admin_users, auth, auth_ml, billing, compat, copy, super_admin
+from app.routers.auth import require_super_admin
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,8 +42,10 @@ app.add_middleware(
 app.include_router(admin_users.router)
 app.include_router(auth.router)
 app.include_router(auth_ml.router)
+app.include_router(billing.router)
 app.include_router(copy.router)
 app.include_router(compat.router)
+app.include_router(super_admin.router)
 
 
 @app.get("/api/health")
@@ -52,7 +55,7 @@ async def health():
 
 
 @app.get("/api/debug/env")
-async def debug_env():
+async def debug_env(user: dict = Depends(require_super_admin)):
     """Check which env vars are configured (values masked)."""
     return {
         "ml_app_id": f"...{settings.ml_app_id[-4:]}" if settings.ml_app_id else "MISSING",

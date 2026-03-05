@@ -54,6 +54,7 @@ def _log_api_debug(
     attempt_number: int = 1,
     adjustments: list[str] | None = None,
     resolved: bool = False,
+    org_id: str | None = None,
 ) -> None:
     """Insert a debug log row into api_debug_logs. Never raises."""
     try:
@@ -78,6 +79,8 @@ def _log_api_debug(
             row["user_id"] = user_id
         if copy_log_id:
             row["copy_log_id"] = copy_log_id
+        if org_id:
+            row["org_id"] = org_id
         db.table("api_debug_logs").insert(row).execute()
     except Exception as e:
         logger.warning("Failed to write api_debug_log: %s", e)
@@ -621,6 +624,7 @@ async def copy_single_item(
     user_email: str | None = None,
     user_id: str | None = None,
     copy_log_id: int | None = None,
+    org_id: str = "",
 ) -> dict:
     """
     Copy a single item from source_seller to dest_seller.
@@ -637,16 +641,16 @@ async def copy_single_item(
     try:
         # 1. GET full item data from source
         logger.info(f"Fetching item {item_id} from {source_seller}")
-        item = await get_item(source_seller, item_id)
+        item = await get_item(source_seller, item_id, org_id=org_id)
 
         # 2. GET description
-        description_data = await get_item_description(source_seller, item_id)
+        description_data = await get_item_description(source_seller, item_id, org_id=org_id)
         plain_text = description_data.get("plain_text", "")
 
         # 3. Check for compatibilities
         has_compat = False
         try:
-            compat = await get_item_compatibilities(source_seller, item_id)
+            compat = await get_item_compatibilities(source_seller, item_id, org_id=org_id)
             if compat and isinstance(compat, dict):
                 has_compat = len(compat.get("products", [])) > 0
             elif compat:
@@ -681,7 +685,7 @@ async def copy_single_item(
                     if title:
                         payload["title"] = title
             try:
-                new_item = await create_item(dest_seller, payload)
+                new_item = await create_item(dest_seller, payload, org_id=org_id)
                 break
             except MlApiError as exc:
                 last_exc = exc
@@ -694,7 +698,7 @@ async def copy_single_item(
                 # Handle official_store_id error for brand accounts
                 if _is_official_store_id_error(exc) and not adjusted_payload.get("official_store_id"):
                     try:
-                        osi = await get_seller_official_store_id(dest_seller)
+                        osi = await get_seller_official_store_id(dest_seller, org_id=org_id)
                         if osi:
                             adjusted_payload["official_store_id"] = osi
                             actions.append(f"added official_store_id={osi} for brand account")
@@ -736,6 +740,7 @@ async def copy_single_item(
                     error_message=exc.detail,
                     attempt_number=attempt,
                     adjustments=actions if actions else None,
+                    org_id=org_id,
                 )
 
                 if actions and adjusted_payload != payload:
@@ -799,7 +804,7 @@ async def copy_single_item(
         # 5. POST description
         if plain_text:
             try:
-                await set_item_description(dest_seller, new_item_id, plain_text)
+                await set_item_description(dest_seller, new_item_id, plain_text, org_id=org_id)
                 logger.info(f"Description set for {new_item_id}")
             except Exception as e:
                 logger.warning(f"Failed to set description for {new_item_id}: {e}")
@@ -816,6 +821,7 @@ async def copy_single_item(
                     response_status=e.status_code if isinstance(e, MlApiError) else None,
                     response_body=e.payload if isinstance(e, MlApiError) and isinstance(e.payload, dict) else None,
                     error_message=str(e),
+                    org_id=org_id,
                 )
 
         # 6. Copy compatibilities (using ML native copy)
@@ -824,7 +830,7 @@ async def copy_single_item(
                 # Pre-fetch source compat products for User Product fallback
                 source_compat_products = None
                 try:
-                    compat_data = await get_item_compatibilities(source_seller, item_id)
+                    compat_data = await get_item_compatibilities(source_seller, item_id, org_id=org_id)
                     if compat_data and isinstance(compat_data, dict):
                         source_compat_products = compat_data.get("products")
                 except Exception:
@@ -832,6 +838,7 @@ async def copy_single_item(
                 await copy_item_compatibilities(
                     dest_seller, new_item_id, item_id,
                     source_compat_products=source_compat_products,
+                    org_id=org_id,
                 )
                 logger.info(f"Compatibilities copied for {new_item_id} from {item_id}")
             except Exception as e:
@@ -849,6 +856,7 @@ async def copy_single_item(
                     response_status=e.status_code if isinstance(e, MlApiError) else None,
                     response_body=e.payload if isinstance(e, MlApiError) and isinstance(e.payload, dict) else None,
                     error_message=str(e),
+                    org_id=org_id,
                 )
 
         result["status"] = "success"
@@ -875,6 +883,7 @@ async def copy_single_item(
             response_status=e.status_code,
             response_body=e.payload if isinstance(e.payload, dict) else {"raw": str(e.payload)},
             error_message=e.detail,
+            org_id=org_id,
         )
     except Exception as e:
         logger.error(f"Failed to copy {item_id} to {dest_seller}: {e}")
@@ -888,6 +897,7 @@ async def copy_single_item(
             user_id=user_id,
             copy_log_id=copy_log_id,
             error_message=str(e),
+            org_id=org_id,
         )
 
     return result
@@ -899,6 +909,7 @@ async def copy_items(
     item_ids: list[str],
     user_email: str | None = None,
     user_id: str | None = None,
+    org_id: str = "",
 ) -> list[dict]:
     """
     Copy multiple items to multiple destination sellers.
@@ -924,6 +935,8 @@ async def copy_items(
             }
             if user_id:
                 log_insert["user_id"] = user_id
+            if org_id:
+                log_insert["org_id"] = org_id
             log_row = db.table("copy_logs").insert(log_insert).execute()
             log_id = log_row.data[0]["id"] if log_row.data else None
         except Exception as e:
@@ -936,7 +949,7 @@ async def copy_items(
         for dest_seller in dest_sellers:
             result = await copy_single_item(
                 source_seller, dest_seller, item_id, user_email,
-                user_id=user_id, copy_log_id=log_id,
+                user_id=user_id, copy_log_id=log_id, org_id=org_id,
             )
             all_results.append(result)
 
@@ -980,6 +993,8 @@ async def copy_items(
                 }
                 if user_id:
                     fallback["user_id"] = user_id
+                if org_id:
+                    fallback["org_id"] = org_id
                 db.table("copy_logs").insert(fallback).execute()
         except Exception as e:
             logger.error(f"Failed to update log for {item_id}: {e}")
@@ -992,6 +1007,7 @@ async def copy_with_dimensions(
     dest_sellers: list[str],
     item_id: str,
     dimensions: dict,
+    org_id: str = "",
 ) -> list[dict]:
     """
     Apply shipping dimensions to the source item, then copy to destinations.
@@ -1001,7 +1017,7 @@ async def copy_with_dimensions(
 
     # 1. Update source item with dimensions
     try:
-        await update_item(source_seller, item_id, {"attributes": dim_attrs})
+        await update_item(source_seller, item_id, {"attributes": dim_attrs}, org_id=org_id)
         logger.info(f"Dimensions applied to source item {item_id} on {source_seller}")
     except Exception as e:
         logger.error(f"Failed to apply dimensions to {item_id}: {e}")
@@ -1016,7 +1032,7 @@ async def copy_with_dimensions(
     # 2. Re-copy to all destinations (normal copy flow, item now has dimensions)
     results = []
     for dest_seller in dest_sellers:
-        result = await copy_single_item(source_seller, dest_seller, item_id)
+        result = await copy_single_item(source_seller, dest_seller, item_id, org_id=org_id)
         results.append(result)
 
     return results
