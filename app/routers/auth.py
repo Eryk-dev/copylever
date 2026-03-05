@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.db.supabase import get_db
+from app.services.email import send_reset_email
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -333,7 +334,8 @@ async def forgot_password(req: ForgotPasswordRequest):
     """Generate a password reset token. Always returns 200 regardless of email existence."""
     db = get_db()
 
-    result = db.table("users").select("id").eq("email", req.email.strip().lower()).execute()
+    email = req.email.strip().lower()
+    result = db.table("users").select("id").eq("email", email).execute()
     if result.data:
         user_id = result.data[0]["id"]
         token = secrets.token_urlsafe(32)
@@ -344,6 +346,11 @@ async def forgot_password(req: ForgotPasswordRequest):
             "expires_at": expires_at.isoformat(),
         }).execute()
         logger.info("Password reset token created for user %s", user_id)
+
+        try:
+            send_reset_email(email, token)
+        except Exception:
+            logger.error("Failed to send reset email to %s, token still created", email)
 
     return {"message": "Se o email existir, enviaremos instrucoes"}
 
