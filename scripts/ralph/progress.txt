@@ -68,3 +68,16 @@ Started: Thu Mar  5 10:43:47 -03 2026
   - /me now returns org_name by querying orgs table with user's org_id
   - auth_logs in login still use `username` field from the user row (not from request)
 ---
+
+## 2026-03-05 - US-007
+- Added org_id parameter to _get_token() and all public functions in ml_api.py
+- Added .eq('org_id', org_id) filters to all copy_sellers queries (_get_token, get_seller_official_store_id, search_items_by_sku)
+- exchange_code() and fetch_user_info() have org_id with default="" for API consistency (no query changes)
+- All other functions default org_id="" for backward compat until callers are updated
+- Files changed: app/services/ml_api.py
+- **Learnings for future iterations:**
+  - Functions that query copy_sellers directly: _get_token, get_seller_official_store_id, search_items_by_sku
+  - _get_token also has token-clearing and token-saving queries that need org_id scope
+  - copy_item_compatibilities calls _get_token but doesn't query copy_sellers directly
+  - Callers in item_copier.py, compat_copier.py, and routers need updating next (US-008, US-009, US-010+)
+---

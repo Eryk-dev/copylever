@@ -125,7 +125,7 @@
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": "This is a mechanical change: add org_id parameter to every public function, thread it to _get_token() calls. The _get_token() function at line ~112 queries copy_sellers by slug — add .eq('org_id', org_id) to that query. search_items_by_sku() at line ~343 also queries copy_sellers directly — add .eq('org_id', org_id) there too. get_seller_official_store_id() at line ~196 queries copy_sellers — add org_id filter. exchange_code() and fetch_user_info() don't query sellers so org_id is just passed through for API consistency. IMPORTANT: After this change, all callers in item_copier.py, compat_copier.py, and routers will fail typecheck until updated in subsequent stories."
     },
     {
