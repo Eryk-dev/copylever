@@ -141,7 +141,7 @@
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "notes": "copy_single_item() is the main function (~line 617). It calls: get_item(), get_item_description(), get_item_compatibilities(), create_item(), set_item_description(), copy_item_compatibilities(), get_seller_official_store_id(). Add org_id= to each call. copy_items() (~line 896) creates copy_logs rows — add 'org_id': org_id to log_insert dict. _log_api_debug() (~line 40) inserts into api_debug_logs — add org_id to the row dict and the function signature."
     },
     {

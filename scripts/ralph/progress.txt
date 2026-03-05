@@ -81,3 +81,16 @@ Started: Thu Mar  5 10:43:47 -03 2026
   - copy_item_compatibilities calls _get_token but doesn't query copy_sellers directly
   - Callers in item_copier.py, compat_copier.py, and routers need updating next (US-008, US-009, US-010+)
 ---
+
+## 2026-03-05 - US-008
+- Added org_id parameter to _log_api_debug(), copy_single_item(), copy_items(), copy_with_dimensions()
+- All ml_api calls in copy_single_item() now pass org_id: get_item, get_item_description, get_item_compatibilities, create_item, set_item_description, copy_item_compatibilities, get_seller_official_store_id
+- All _log_api_debug() calls pass org_id
+- copy_logs inserts (both in_progress and fallback) include org_id
+- copy_with_dimensions() passes org_id to update_item() and copy_single_item()
+- Files changed: app/services/item_copier.py
+- **Learnings for future iterations:**
+  - _log_api_debug has 5 call sites in copy_single_item: create_item retry, set_description, copy_compat, MlApiError final, Exception final
+  - copy_items has 2 log insert points: in_progress initial insert and fallback insert
+  - copy_with_dimensions calls update_item (for source) and copy_single_item (for each dest)
+---
