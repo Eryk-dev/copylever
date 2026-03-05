@@ -64,3 +64,66 @@ Started: Thu Mar  5 15:46:25 -03 2026
   - AbortError is a DOMException with `name === 'AbortError'` — check both instanceof and name
   - The pattern `if (abortRef.current) abortRef.current.abort()` at the start of resolveAll ensures only the latest request survives
 ---
+
+## 2026-03-05 - US-105
+- Disabled "Selecionar todos" button during resolve: added `disabled={resolving}` and `opacity: 0.5` when resolving
+- Disabled individual destination chip buttons during resolve: added `disabled={resolving}`, `opacity: 0.5`, and `pointerEvents: 'none'`
+- Auto-cleanup of conflicting destinations: already handled by `setDestinations([])` in resolveAll (line 65) + `validDests` filtering by sourceSlugs
+- Files changed: `frontend/src/components/CopyForm.tsx`
+- **Learnings for future iterations:**
+  - `validDests` is derived from `sourceSlugs` which comes from `resolvedSources` — conflicting destinations are automatically excluded from the list
+  - `setDestinations([])` in resolveAll already clears all destinations when a new resolve starts, so no extra cleanup needed after resolve
+  - Use `pointerEvents: 'none' as const` in inline styles to satisfy TypeScript (CSSProperties expects specific string literal)
+---
+
+## 2026-03-05 - US-111
+- After password update in reset-password endpoint, now deletes ALL user_sessions for the user
+- Deletes ALL password_reset_tokens for the user (not just the used one)
+- Logs the action in auth_logs with action 'password_reset_sessions_cleared'
+- Extracted `user_id = token_row["user_id"]` to avoid repetition
+- Files changed: `app/routers/auth.py`
+- **Learnings for future iterations:**
+  - The reset-password endpoint is at line 358 in auth.py
+  - `password_reset_tokens` table has user_id column — can delete all tokens for a user
+  - auth_logs pattern: wrap insert in try/except with logger.warning fallback (consistent with login/logout handlers)
+---
+
+## 2026-03-05 - US-112
+- Removed username fallback in login endpoint (was line 153 in auth.py)
+- Login now only searches by email — no username fallback
+- Updated error messages from 'Credenciais inválidas' to 'Email ou senha incorretos' (3 occurrences in backend, 1 in frontend)
+- Frontend already used email-only (type="email", placeholder="Email") — no frontend changes needed beyond error message
+- LoginRequest model already had `email: str` — no model change needed
+- Files changed: `app/routers/auth.py`, `frontend/src/pages/Login.tsx`
+- **Learnings for future iterations:**
+  - The login endpoint had 3 error paths (user not found, inactive user, wrong password) — all needed the same error message update
+  - Frontend Login.tsx is at `frontend/src/pages/Login.tsx` (not LoginPage.tsx)
+  - The useAuth hook in `frontend/src/hooks/useAuth.ts` already sends `{ email, password }` to the login endpoint
+---
+
+## 2026-03-05 - US-113
+- Added `_check_last_admin` helper that queries for other active admins in the org (using `count="exact"` + `neq("id", target)`)
+- DELETE endpoint: removed blanket self-delete block, added last-admin check before deleting admins
+- PUT endpoint: added last-admin check before demoting (role change) or deactivating an admin
+- Extended target user queries to include `role, active` fields
+- Files changed: `app/routers/admin_users.py`
+- **Learnings for future iterations:**
+  - Supabase Python client supports `select("id", count="exact")` — `result.count` gives the count without fetching all rows
+  - The blanket self-delete block was removed; last-admin protection covers the dangerous case (self-delete of last admin)
+  - `_check_last_admin` counts admins != target, so deleting one of two admins is always allowed
+  - Both demote (role change) AND deactivation (active=false) need the check — both effectively remove an admin
+---
+
+## 2026-03-05 - US-107
+- Added per-seller asyncio.Lock to prevent concurrent token refreshes from invalidating each other
+- Module-level `_token_locks: dict[str, asyncio.Lock]` and `_get_seller_lock()` helper
+- `_get_token` now acquires the seller lock before refreshing, with double-check pattern (re-read from DB after acquiring lock to see if another coroutine already refreshed)
+- Uses `asyncio.wait_for(lock.acquire(), timeout=30)` to prevent deadlocks
+- Uses `try/finally` for lock release (not `async with` since we use `wait_for`)
+- Files changed: `app/services/ml_api.py`
+- **Learnings for future iterations:**
+  - `asyncio.wait_for(lock.acquire(), timeout=N)` + `try/finally lock.release()` is the pattern for timeout-safe async locking
+  - Double-check pattern: after acquiring lock, re-read DB state because another coroutine may have refreshed while we waited
+  - `_token_locks` dict is safe for single-worker uvicorn (Docker uses 1 worker) — no cross-process coordination needed
+  - The lock is keyed by `seller_slug` only (not org_id) since seller slugs are unique within the system
+---

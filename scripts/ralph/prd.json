@@ -94,7 +94,7 @@
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": "In CopyForm.tsx: the 'Selecionar todos' button is around line 286-293. Add disabled={resolving} prop. The chip buttons are around line 298-316. Add disabled={resolving} and conditional style. For auto-cleanup of conflicting destinations: in the resolveAll success path (after setResolvedSources), the validDests is already computed from resolved sources. Destinations state is already cleared on line 60 (setDestinations([])), so this may already work. Verify the flow."
     },
     {
@@ -110,7 +110,7 @@
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": "In app/routers/auth.py: the reset-password endpoint is around line 382-388. After the password update query, add the session deletion query. The password_reset_tokens table stores tokens — delete all for the user, not just the used one. The auth_logs insert follows the existing pattern in the file (check login/logout handlers for the format)."
     },
     {
@@ -126,7 +126,7 @@
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "notes": "In app/routers/auth.py: the login endpoint (~line 150-153) first tries email match, then falls back to username match. Remove the username fallback entirely. The LoginRequest model has a field (check if it's called 'login', 'email', or 'username'). Rename to 'email' with type EmailStr if not already. In the frontend: LoginPage.tsx has the login form — update the input label and placeholder. This is a breaking change for users who log in by username, but the user explicitly decided to remove this."
     },
     {
@@ -143,7 +143,7 @@
         "Typecheck passes"
       ],
       "priority": 9,
-      "passes": false,
+      "passes": true,
       "notes": "In app/routers/admin_users.py: the DELETE endpoint and PUT endpoint handle user management. Before any operation that would remove an admin (delete, change role to operator, set active=false), query the users table to count other active admins. Use: db.table('users').select('id', count='exact').eq('org_id', org_id).eq('role', 'admin').eq('active', True).neq('id', target_user_id).execute(). If count == 0, reject with 400."
     },
     {
@@ -161,7 +161,7 @@
         "Typecheck passes"
       ],
       "priority": 10,
-      "passes": false,
+      "passes": true,
       "notes": "In app/services/ml_api.py: _get_token is the function that checks token expiry and refreshes if needed. It's called from multiple concurrent requests. The fix: _token_locks = {} at module level. def _get_seller_lock(slug): if slug not in _token_locks: _token_locks[slug] = asyncio.Lock(); return _token_locks[slug]. In _get_token: async with await asyncio.wait_for(_get_seller_lock(slug).acquire(), timeout=30): re-read token from DB, check if still expired, only then do the refresh. Use try/finally to release lock. With 1 uvicorn worker in Docker, this handles all concurrent requests within the process."
     },
     {

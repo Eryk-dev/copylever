@@ -16,6 +16,16 @@ MP_API = "https://api.mercadopago.com"
 
 logger = logging.getLogger(__name__)
 
+# Per-seller locks to prevent concurrent token refreshes from invalidating each other
+_token_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_seller_lock(seller_slug: str) -> asyncio.Lock:
+    """Return (or create) an asyncio.Lock for the given seller."""
+    if seller_slug not in _token_locks:
+        _token_locks[seller_slug] = asyncio.Lock()
+    return _token_locks[seller_slug]
+
 
 class MlApiError(RuntimeError):
     """Structured Mercado Livre/Mercado Pago HTTP error."""
@@ -110,7 +120,12 @@ def _get_seller_credentials(seller: dict) -> tuple[str, str]:
 
 
 async def _get_token(seller_slug: str, org_id: str) -> str:
-    """Get access_token for seller. Auto-refresh if expired."""
+    """Get access_token for seller. Auto-refresh if expired.
+
+    Uses a per-seller lock so concurrent requests don't race to refresh
+    the same token (which would invalidate the refresh_token and disconnect
+    the seller).
+    """
     db = get_db()
     result = db.table("copy_sellers").select(
         "ml_access_token, ml_refresh_token, ml_token_expires_at, ml_app_id, ml_secret_key, active"
@@ -128,43 +143,66 @@ async def _get_token(seller_slug: str, org_id: str) -> str:
     if expires_at and expires_at > datetime.now(timezone.utc):
         return s["ml_access_token"]
 
-    # Refresh token
-    old_refresh = s["ml_refresh_token"]
-    if not old_refresh:
-        raise RuntimeError(f"Seller '{seller_slug}' has no refresh_token. Reconnect via /api/ml/install")
+    # Token expired — acquire per-seller lock before refreshing
+    lock = _get_seller_lock(seller_slug)
+    try:
+        await asyncio.wait_for(lock.acquire(), timeout=30)
+    except asyncio.TimeoutError:
+        raise RuntimeError(f"Timeout waiting for token refresh lock for seller '{seller_slug}'")
 
-    app_id, secret = _get_seller_credentials(s)
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(f"{MP_API}/oauth/token", json={
-            "grant_type": "refresh_token",
-            "client_id": app_id,
-            "client_secret": secret,
-            "refresh_token": old_refresh,
-        })
+    try:
+        # Double-check: another coroutine may have refreshed while we waited
+        result2 = db.table("copy_sellers").select(
+            "ml_access_token, ml_refresh_token, ml_token_expires_at, ml_app_id, ml_secret_key, active"
+        ).eq("slug", seller_slug).eq("org_id", org_id).execute()
 
-    if resp.status_code in (400, 401):
-        logger.warning("Refresh token invalid/revoked for seller '%s' — clearing tokens", seller_slug)
+        if not result2.data:
+            raise RuntimeError(f"Seller '{seller_slug}' not found")
+
+        s = result2.data[0]
+        expires_at = datetime.fromisoformat(s["ml_token_expires_at"]) if s.get("ml_token_expires_at") else None
+        if expires_at and expires_at > datetime.now(timezone.utc):
+            return s["ml_access_token"]
+
+        # Still expired — do the refresh
+        old_refresh = s["ml_refresh_token"]
+        if not old_refresh:
+            raise RuntimeError(f"Seller '{seller_slug}' has no refresh_token. Reconnect via /api/ml/install")
+
+        app_id, secret = _get_seller_credentials(s)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(f"{MP_API}/oauth/token", json={
+                "grant_type": "refresh_token",
+                "client_id": app_id,
+                "client_secret": secret,
+                "refresh_token": old_refresh,
+            })
+
+        if resp.status_code in (400, 401):
+            logger.warning("Refresh token invalid/revoked for seller '%s' — clearing tokens", seller_slug)
+            db.table("copy_sellers").update({
+                "ml_access_token": None,
+                "ml_refresh_token": None,
+                "ml_token_expires_at": None,
+            }).eq("slug", seller_slug).eq("org_id", org_id).execute()
+            raise RuntimeError(
+                f"Seller '{seller_slug}': refresh token inválido ou revogado. "
+                f"Reconecte via /api/ml/install"
+            )
+
+        _raise_for_status(resp, "Mercado Livre API")
+        data = resp.json()
+
+        new_expires = datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 21600))
         db.table("copy_sellers").update({
-            "ml_access_token": None,
-            "ml_refresh_token": None,
-            "ml_token_expires_at": None,
+            "ml_access_token": data["access_token"],
+            "ml_refresh_token": data["refresh_token"],
+            "ml_token_expires_at": new_expires.isoformat(),
         }).eq("slug", seller_slug).eq("org_id", org_id).execute()
-        raise RuntimeError(
-            f"Seller '{seller_slug}': refresh token inválido ou revogado. "
-            f"Reconecte via /api/ml/install"
-        )
 
-    _raise_for_status(resp, "Mercado Livre API")
-    data = resp.json()
-
-    new_expires = datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 21600))
-    db.table("copy_sellers").update({
-        "ml_access_token": data["access_token"],
-        "ml_refresh_token": data["refresh_token"],
-        "ml_token_expires_at": new_expires.isoformat(),
-    }).eq("slug", seller_slug).eq("org_id", org_id).execute()
-
-    return data["access_token"]
+        return data["access_token"]
+    finally:
+        lock.release()
 
 
 async def exchange_code(code: str, org_id: str = "") -> dict:
