@@ -243,3 +243,17 @@ Started: Thu Mar  5 10:43:47 -03 2026
   - SuperAdminPage placeholder accepts headers prop for consistency with other pages
   - AuthView type controls login/signup toggle without React Router (simple state-based routing)
 ---
+
+## 2026-03-05 - US-020
+- Implemented full SuperAdminPage.tsx: fetches GET /api/super/orgs, displays table with all org stats
+- Table columns: Empresa, Email, Status, Pagamento, Usuarios, Sellers, Copias (30d), Compats (30d), Criado em
+- Toggle button per row to activate/deactivate org via PUT /api/super/orgs/{id}
+- Used Card component from CopyPage, same th/td styling patterns
+- StatusBadge for active/inactive states with green/red coloring
+- Files changed: frontend/src/pages/SuperAdminPage.tsx
+- **Learnings for future iterations:**
+  - Card component is exported from CopyPage.tsx — import as `{ Card }` from './CopyPage'
+  - OrgWithStats type is in api.ts — matches backend response shape exactly
+  - Table styling: thStyle uses uppercase, letterSpacing 0.05em, var(--text-xs) font
+  - Optimistic update for toggle: update local state immediately without refetching
+---

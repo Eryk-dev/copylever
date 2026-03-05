@@ -340,7 +340,7 @@
         "Typecheck passes"
       ],
       "priority": 20,
-      "passes": false,
+      "passes": true,
       "notes": "Import Card from './CopyPage' (it's already exported). Use the same table styling pattern (th with uppercase labels, td with padding). For the toggle, use a simple button that calls PUT with {active: !current_active}. Refresh the list after toggle. The API returns OrgWithStats shape from US-016 types. Format dates with toLocaleString('pt-BR')."
     },
     {
