@@ -25,6 +25,7 @@ function isDimensionError(log: CopyLog): boolean {
 
 export default function CopyPage({ sellers, headers, user }: Props) {
   const [results, setResults] = useState<(CopyResponse & { source?: string }) | null>(null);
+  const [sourceMap, setSourceMap] = useState<Record<string, string>>({});
   const [copying, setCopying] = useState(false);
   const [logs, setLogs] = useState<CopyLog[]>([]);
   const [logsLoaded, setLogsLoaded] = useState(false);
@@ -82,6 +83,15 @@ export default function CopyPage({ sellers, headers, user }: Props) {
     let totalSuccess = 0;
     let totalErrors = 0;
     let totalDims = 0;
+
+    // Build sourceMap: item_id → seller_slug
+    const newSourceMap: Record<string, string> = {};
+    for (const group of groups) {
+      for (const id of group.itemIds) {
+        newSourceMap[id] = group.source;
+      }
+    }
+    setSourceMap(newSourceMap);
 
     for (const group of groups) {
       try {
@@ -294,6 +304,7 @@ export default function CopyPage({ sellers, headers, user }: Props) {
       {results && (
         <CopyProgress
           results={results}
+          sourceMap={sourceMap}
           headers={headers}
           onDimensionRetry={(updated) => setResults({ ...updated, source: results.source })}
         />

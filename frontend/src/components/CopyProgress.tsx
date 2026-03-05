@@ -4,11 +4,12 @@ import DimensionForm, { type Dimensions } from './DimensionForm';
 
 interface Props {
   results: CopyResponse;
+  sourceMap?: Record<string, string>;
   headers: () => Record<string, string>;
   onDimensionRetry?: (updated: CopyResponse) => void;
 }
 
-export default function CopyProgress({ results, headers, onDimensionRetry }: Props) {
+export default function CopyProgress({ results, sourceMap, headers, onDimensionRetry }: Props) {
   // Group needs_dimensions results by SKU (fallback to item_id if no SKU)
   const dimGroups = new Map<string, { itemIds: string[]; results: CopyResult[] }>();
   for (const r of results.results) {
@@ -24,7 +25,7 @@ export default function CopyProgress({ results, headers, onDimensionRetry }: Pro
     const group = dimGroups.get(groupKey);
     if (!group) return;
 
-    const source = (results as any).source || '';
+    const fallbackSource = (results as any).source || '';
     const allRetryResults: CopyResult[] = [];
     const processedItemIds = new Set<string>();
 
@@ -33,6 +34,7 @@ export default function CopyProgress({ results, headers, onDimensionRetry }: Pro
       if (processedItemIds.has(r.source_item_id)) continue;
       processedItemIds.add(r.source_item_id);
 
+      const source = sourceMap?.[r.source_item_id] || fallbackSource;
       const itemDests = group.results.filter(rr => rr.source_item_id === r.source_item_id).map(rr => rr.dest_seller);
       try {
         const res = await fetch(`${API_BASE}/api/copy/with-dimensions`, {
