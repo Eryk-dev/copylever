@@ -367,10 +367,12 @@ async def admin_promote(req: AdminPromoteRequest):
         # User does not exist — create as admin
         new_user = {
             "username": req.username,
+            "email": req.username,
             "password_hash": _hash_password(req.password),
             "role": "admin",
             "can_run_compat": True,
             "active": True,
+            "org_id": "00000000-0000-0000-0000-000000000001",
         }
         created = db.table("users").insert(new_user).execute()
         user_row = created.data[0]
