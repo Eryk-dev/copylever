@@ -2,11 +2,12 @@ import { useState } from 'react';
 import { API_BASE } from '../lib/api';
 
 interface Props {
-  onLogin: (username: string, password: string) => Promise<boolean>;
+  onLogin: (email: string, password: string) => Promise<boolean>;
+  onNavigateToSignup?: () => void;
 }
 
-export default function Login({ onLogin }: Props) {
-  const [username, setUsername] = useState('');
+export default function Login({ onLogin, onNavigateToSignup }: Props) {
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [masterPassword, setMasterPassword] = useState('');
   const [showAdmin, setShowAdmin] = useState(false);
@@ -21,7 +22,7 @@ export default function Login({ onLogin }: Props) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !password.trim()) return;
+    if (!email.trim() || !password.trim()) return;
     setLoading(true);
     setError('');
 
@@ -32,7 +33,7 @@ export default function Login({ onLogin }: Props) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            username: username.trim(),
+            username: email.trim(),
             password,
             master_password: masterPassword,
           }),
@@ -45,7 +46,7 @@ export default function Login({ onLogin }: Props) {
           return;
         }
         // Admin created/promoted — now auto-login
-        const success = await onLogin(username.trim(), password);
+        const success = await onLogin(email.trim(), password);
         if (!success) {
           setError('Admin criado, mas falha ao fazer login');
           triggerShake();
@@ -59,7 +60,7 @@ export default function Login({ onLogin }: Props) {
     }
 
     // Normal login flow
-    const success = await onLogin(username.trim(), password);
+    const success = await onLogin(email.trim(), password);
     if (!success) {
       setError('Credenciais inválidas');
       triggerShake();
@@ -112,17 +113,17 @@ export default function Login({ onLogin }: Props) {
           marginBottom: 'var(--space-8)',
           fontSize: 'var(--text-sm)',
         }}>
-          Acesse com seu usuário e senha
+          Acesse com seu email e senha
         </p>
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
           <input
-            type="text"
-            value={username}
-            onChange={e => { setUsername(e.target.value); setError(''); }}
-            placeholder="Usuário"
+            type="email"
+            value={email}
+            onChange={e => { setEmail(e.target.value); setError(''); }}
+            placeholder="Email"
             autoFocus
-            autoComplete="username"
+            autoComplete="email"
             className="input-base"
             style={inputStyle(!!error)}
           />
@@ -156,7 +157,7 @@ export default function Login({ onLogin }: Props) {
 
           <button
             type="submit"
-            disabled={loading || !username.trim() || !password.trim()}
+            disabled={loading || !email.trim() || !password.trim()}
             className="btn-primary"
             style={{
               width: '100%',
@@ -190,6 +191,32 @@ export default function Login({ onLogin }: Props) {
         >
           {showAdmin ? 'Voltar ao login normal' : 'Acesso Admin'}
         </button>
+
+        {onNavigateToSignup && (
+          <p style={{
+            textAlign: 'center',
+            marginTop: 'var(--space-4)',
+            fontSize: 'var(--text-sm)',
+            color: 'var(--ink-muted)',
+          }}>
+            Ainda nao tem conta?{' '}
+            <button
+              type="button"
+              onClick={onNavigateToSignup}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--accent)',
+                fontSize: 'var(--text-sm)',
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                padding: 0,
+              }}
+            >
+              Cadastre-se
+            </button>
+          </p>
+        )}
       </div>
 
       <style>{`
