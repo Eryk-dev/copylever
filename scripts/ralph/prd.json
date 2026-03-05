@@ -1,150 +1,216 @@
 {
-  "project": "COPY ANUNCIOS — Customer Experience",
-  "branchName": "ralph/customer-experience",
-  "description": "Improve customer onboarding and payment flow: auto-detect payment after Stripe, show pricing, first-use guide, better signup page, and forgot password.",
+  "project": "COPY ANUNCIOS — Edge Cases Fase 2 (Alta Severidade)",
+  "branchName": "ralph/edge-cases-fase2",
+  "description": "Fix 13 high-severity edge cases: DimensionForm source map, retry/race fixes, deduplication, token refresh lock, permission filtering, auth hardening, and last admin protection.",
   "userStories": [
     {
-      "id": "US-001",
-      "title": "Auto-detect payment after Stripe return",
-      "description": "As a customer returning from Stripe checkout, I want the app to detect my payment automatically so I don't get stuck on the paywall.",
+      "id": "US-110",
+      "title": "Pass user_id in copy_with_dimensions for audit logs",
+      "description": "As an admin, I want all copy operations to record who executed them so I have complete audit trails.",
       "acceptanceCriteria": [
-        "In App.tsx: on mount, check URL for ?billing=success param",
-        "When ?billing=success is present, start polling GET /api/billing/status every 2 seconds (max 10 attempts)",
-        "When payment_active returns true during polling, update paymentActive state to true (paywall disappears)",
-        "If after 10 attempts payment_active is still false, show message 'Pagamento em processamento. Atualize a pagina em alguns segundos.' on the paywall screen",
-        "After processing, remove ?billing=success from URL using window.history.replaceState (no page reload)",
-        "When ?billing=cancel is in URL, show message 'Assinatura cancelada' on the paywall screen and remove the param",
-        "Polling cleanup: clear interval on unmount or when payment detected",
+        "In app/services/item_copier.py: add user_id parameter to copy_with_dimensions function signature (default None)",
+        "In copy_with_dimensions: propagate user_id to each call of copy_single_item",
+        "In app/routers/copy.py POST /api/copy/with-dimensions endpoint: pass user['id'] as user_id to copy_with_dimensions",
+        "In app/routers/copy.py POST /api/copy/retry-dimensions endpoint: pass user['id'] as user_id to copy_with_dimensions",
+        "Verify that copy_logs entries created by copy_with_dimensions include user_id",
         "Typecheck passes"
       ],
       "priority": 1,
       "passes": true,
-      "notes": "In frontend/src/App.tsx: Add a useEffect that checks window.location.search for billing=success on mount. Use setInterval for polling. The existing billing status fetch (line ~25-38) already calls GET /api/billing/status — reuse the same pattern. When polling detects payment_active=true, call setPaymentActive(true) which will cause the paywall conditional to pass. Use window.history.replaceState(null, '', window.location.pathname) to clean the URL. For billing=cancel, just show a one-time message and clean URL."
+      "notes": "In app/services/item_copier.py: copy_with_dimensions is around line 1020-1040. It calls copy_single_item which already accepts user_id. Just add the parameter and pass it through. In app/routers/copy.py: the with-dimensions endpoint is around line 200-240, retry-dimensions around line 240-260. Both have access to user dict from require_active_org dependency. Simple parameter threading."
     },
     {
-      "id": "US-002",
-      "title": "Show pricing on paywall and billing page",
-      "description": "As a customer on the paywall screen, I want to see the subscription price so I know how much I'll pay before clicking subscribe.",
+      "id": "US-109",
+      "title": "Fix retry-dimensions to use org_id from original log",
+      "description": "As a super admin, I want retry-dimensions to use the org_id from the original log so the operation works correctly when I retry logs from other organizations.",
       "acceptanceCriteria": [
-        "In App.tsx paywall screen: add text 'Plano mensal — R$ 349,90/mes' between the warning box and the BillingPage component",
-        "Style: fontSize var(--text-sm), color var(--ink-muted), fontWeight 600, centered",
-        "In BillingPage.tsx: when payment_active is false, show 'Plano mensal — R$ 349,90/mes' above the 'Assinar' button",
+        "In app/routers/copy.py retry-dimensions endpoint: after fetching the log row, extract log_org_id = log['org_id']",
+        "Use log_org_id (not user['org_id']) when calling copy_with_dimensions",
+        "Use log_org_id (not user['org_id']) when updating the copy_logs entry after retry",
+        "Super admin can still access the log (existing behavior — super admin skips org filter)",
         "Typecheck passes"
       ],
       "priority": 2,
       "passes": true,
-      "notes": "In frontend/src/App.tsx: the paywall block is the section starting with 'if (billingAvailable && !paymentActive && !auth.user?.is_super_admin)'. Add a <p> element with the pricing text right before the <BillingPage> component. In frontend/src/pages/BillingPage.tsx: add the same pricing text inside the !payment_active branch, above the 'Assinar' button (around line 147)."
+      "notes": "In app/routers/copy.py: the retry-dimensions endpoint (~line 241) calls copy_with_dimensions with org_id from the user session. For super_admin, this is the super_admin's org, not the original log's org. The fix: use log['org_id'] from the fetched copy_log row instead. The log query already fetches the row (check around line 245-250). Also update the log update query to use log_org_id for the .eq('org_id', ...) filter."
     },
     {
-      "id": "US-003",
-      "title": "First-use onboarding guide",
-      "description": "As a new customer who just paid, I want to see a quick guide so I know how to start using the system.",
+      "id": "US-106",
+      "title": "Deduplicate item IDs in frontend and backend",
+      "description": "As an operator, I want duplicate IDs to be automatically removed so I don't trigger redundant API calls or duplicate copies.",
       "acceptanceCriteria": [
-        "In App.tsx: after the header and before the content area, show a welcome card if localStorage key 'onboarding-done' is not set",
-        "The card has title 'Bem-vindo ao Copy Anuncios!' and 3 numbered steps:",
-        "Step 1: 'Conecte sua conta do Mercado Livre na aba Admin > Sellers'",
-        "Step 2: 'Cole os IDs dos anuncios que deseja copiar'",
-        "Step 3: 'Selecione origem e destino e clique Copiar'",
-        "The card has a button 'Entendi' that sets localStorage 'onboarding-done' to 'true' and hides the card",
-        "Card uses same design system: Card-like styling with var(--surface) background, rounded corners, padding",
-        "Only shows for non-super-admin users",
+        "In frontend/src/components/CopyForm.tsx normalizeAndResolve: after splitting and normalizing IDs, deduplicate them preserving order",
+        "Show a small info message below the textarea when duplicates were removed: '{N} duplicata(s) removida(s)' styled with color var(--ink-faint), fontSize var(--text-xs)",
+        "The textarea content is updated to show only unique IDs",
+        "In app/routers/copy.py copy endpoint: after cleaning item_ids, apply clean_ids = list(dict.fromkeys(clean_ids))",
+        "In app/routers/copy.py resolve-sellers endpoint: deduplicate item_ids before processing",
         "Typecheck passes"
       ],
       "priority": 3,
       "passes": true,
-      "notes": "In frontend/src/App.tsx: add a state `const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('onboarding-done'))`. Render the card between the header and the {/* Content */} section, only when showOnboarding && !auth.user?.is_super_admin. On 'Entendi' click: localStorage.setItem('onboarding-done', 'true') and setShowOnboarding(false). Use inline styles matching the existing design system (var(--surface), var(--space-*), var(--text-*), rounded corners)."
+      "notes": "Frontend: in CopyForm.tsx normalizeAndResolve (~line 101-106), after const ids = normalized.split('\\n').filter(Boolean), add dedup: const unique = [...new Set(ids)], track removed count, update textarea with unique.join('\\n'). Add a state variable for the dedup message. Backend: in app/routers/copy.py, the copy endpoint cleans IDs around line 112. Add clean_ids = list(dict.fromkeys(clean_ids)) after the existing cleaning. Same for resolve_sellers_endpoint around line 390-408."
     },
     {
-      "id": "US-004",
-      "title": "Improve signup page with product info and pricing",
-      "description": "As a visitor on the signup page, I want to understand what the product does so I feel confident creating an account.",
+      "id": "US-102",
+      "title": "Allow retry of resolve after network failure",
+      "description": "As an operator, I want to be able to re-paste the same IDs after a network failure without clearing the textarea first.",
       "acceptanceCriteria": [
-        "In Signup.tsx: below the existing subtitle 'Crie sua conta para comecar', add a new subtitle: 'Copie anuncios e compatibilidades entre contas do Mercado Livre'",
-        "Below that subtitle, add 3 bullet points with checkmark prefix: 'Copia em massa entre contas', 'Compatibilidades veiculares automaticas', 'Gerenciamento multi-conta'",
-        "Below the form (before the 'Ja tem conta?' link), add text: 'Plano mensal: R$ 349,90/mes'",
-        "Bullet points use fontSize var(--text-xs), color var(--ink-muted), left-aligned within the card",
-        "Pricing text uses fontSize var(--text-xs), color var(--ink-faint), centered",
+        "In frontend/src/components/CopyForm.tsx resolveAll: move lastResolvedKey.current = key to AFTER setResolvedSources (inside the success path)",
+        "On error (catch block), lastResolvedKey.current is NOT updated so same IDs can be retried",
+        "Add a 'Tentar novamente' button that appears when resolveError is set",
+        "The retry button clears lastResolvedKey.current and calls normalizeAndResolve",
+        "Button styled as btn-ghost with fontSize var(--text-xs), placed next to the error message",
         "Typecheck passes"
       ],
       "priority": 4,
       "passes": true,
-      "notes": "In frontend/src/pages/Signup.tsx: The subtitle is at ~line 74-81. Add the product description below it (before the <form>). For bullet points, use a simple div with 3 <p> elements, each with a checkmark character. For pricing, add a <p> between the </form> and the 'Ja tem conta?' button (~line 139). Keep the same styling patterns used in the file."
+      "notes": "In CopyForm.tsx: resolveAll (~line 51-99) sets lastResolvedKey.current = key at line 55, BEFORE the fetch. Move it to after setResolvedSources(sources) around line 88. In the catch block, do NOT set lastResolvedKey. For the retry button: add it next to the resolveError paragraph (~line 206-210). On click: lastResolvedKey.current = ''; normalizeAndResolve()."
     },
     {
-      "id": "US-005",
-      "title": "Forgot password — database migration",
-      "description": "As a developer, I want a password_reset_tokens table so that reset tokens can be stored and validated.",
+      "id": "US-103",
+      "title": "Prevent race condition between paste and blur resolve",
+      "description": "As an operator, I want pasting IDs and pressing Tab quickly to not cause duplicate resolve requests.",
       "acceptanceCriteria": [
-        "Create migration file app/db/migrations/009_password_reset_tokens.sql",
-        "Table password_reset_tokens with columns: id SERIAL PRIMARY KEY, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, token TEXT UNIQUE NOT NULL, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ DEFAULT now()",
-        "Create index idx_password_reset_tokens_token ON password_reset_tokens(token)",
-        "Create index idx_password_reset_tokens_user ON password_reset_tokens(user_id)",
-        "Use IF NOT EXISTS for CREATE TABLE and CREATE INDEX",
+        "In frontend/src/components/CopyForm.tsx: add an AbortController ref to cancel in-flight resolve requests when a new one starts",
+        "In resolveAll: if there is an existing AbortController, abort it before starting a new request",
+        "Create a new AbortController, pass its signal to the fetch call",
+        "On abort (AbortError), do not set resolveError — silently ignore",
+        "The final result always reflects the last triggered resolve, not an earlier one",
         "Typecheck passes"
       ],
       "priority": 5,
       "passes": true,
-      "notes": "Follow the existing migration pattern in app/db/migrations/ (files 001-008 exist). Use IF NOT EXISTS for idempotency. The user_id FK references users(id) with ON DELETE CASCADE so tokens are cleaned up when a user is deleted."
+      "notes": "In CopyForm.tsx: add const abortRef = useRef<AbortController | null>(null). In resolveAll: at the top, if (abortRef.current) abortRef.current.abort(); then abortRef.current = new AbortController(). Pass { signal: abortRef.current.signal } to the fetch options (merge with existing headers). In the catch block, check if error is AbortError: if (e instanceof DOMException && e.name === 'AbortError') return; — otherwise set resolveError normally."
     },
     {
-      "id": "US-006",
-      "title": "Forgot password — backend endpoints",
-      "description": "As a developer, I want forgot-password and reset-password endpoints so that customers can recover their accounts.",
+      "id": "US-105",
+      "title": "Disable destination selection during resolve",
+      "description": "As an operator, I want destination selection to be disabled while seller detection is running so I don't select invalid destinations.",
       "acceptanceCriteria": [
-        "Add POST /api/auth/forgot-password endpoint in app/routers/auth.py",
-        "ForgotPasswordRequest model with field: email (str)",
-        "Endpoint looks up user by email. If found, generates token via secrets.token_urlsafe(32), inserts into password_reset_tokens with expires_at = now + 1 hour",
-        "Always returns 200 with {message: 'Se o email existir, enviaremos instrucoes'} regardless of whether user exists (security)",
-        "Add POST /api/auth/reset-password endpoint in app/routers/auth.py",
-        "ResetPasswordRequest model with fields: token (str), new_password (str)",
-        "Validates new_password >= 6 chars, returns 400 if too short",
-        "Looks up token in password_reset_tokens, checks not expired, returns 400 'Link expirado ou invalido' if invalid",
-        "Updates user password_hash using existing _hash_password(), deletes the token row, returns 200 {message: 'Senha alterada com sucesso'}",
-        "Both endpoints are public (no auth required)",
+        "In frontend/src/components/CopyForm.tsx: the 'Selecionar todos' button is disabled when resolving === true",
+        "Individual destination chip buttons are disabled (not clickable, visually dimmed) when resolving === true",
+        "Add opacity: 0.5 and pointerEvents: 'none' to chips during resolving",
+        "After resolve completes, destinations that now conflict with source sellers are automatically removed",
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": true,
-      "notes": "In app/routers/auth.py: add two new endpoints after the existing /logout endpoint. Use the same patterns: Pydantic BaseModel for request, get_db() for queries, _hash_password() for hashing. The forgot-password endpoint must NOT reveal whether the email exists. For token lookup: db.table('password_reset_tokens').select('*').eq('token', req.token).execute(). Check expires_at > now(utc). After successful reset, delete token: db.table('password_reset_tokens').delete().eq('id', token_row['id']).execute(). No email sending in this story — that's US-008."
+      "passes": false,
+      "notes": "In CopyForm.tsx: the 'Selecionar todos' button is around line 286-293. Add disabled={resolving} prop. The chip buttons are around line 298-316. Add disabled={resolving} and conditional style. For auto-cleanup of conflicting destinations: in the resolveAll success path (after setResolvedSources), the validDests is already computed from resolved sources. Destinations state is already cleared on line 60 (setDestinations([])), so this may already work. Verify the flow."
     },
     {
-      "id": "US-007",
-      "title": "Forgot password — frontend pages",
-      "description": "As a customer who forgot their password, I want a flow in the login screen to reset it.",
+      "id": "US-111",
+      "title": "Invalidate all sessions after password reset",
+      "description": "As a user, I want all my sessions invalidated when I reset my password so that a stolen token loses access.",
       "acceptanceCriteria": [
-        "In Login.tsx: add link 'Esqueci minha senha' below the submit button, styled like the 'Ainda nao tem conta?' link",
-        "Clicking it calls an onNavigateToForgotPassword callback prop (optional, same pattern as onNavigateToSignup)",
-        "Create frontend/src/pages/ForgotPassword.tsx: same card layout as Login.tsx, with email input and 'Enviar link' button",
-        "On submit, POST /api/auth/forgot-password. Always show message 'Se o email existir, enviaremos instrucoes de redefinicao.' with a 'Voltar ao login' link",
-        "Create frontend/src/pages/ResetPassword.tsx: same card layout, with 'Nova senha' and 'Confirmar senha' inputs and 'Redefinir' button",
-        "Validates passwords match before submit. If mismatch, show 'Senhas nao conferem'",
-        "On submit, POST /api/auth/reset-password with {token, new_password}. On success show 'Senha alterada com sucesso' with 'Ir para login' button. On error show 'Link expirado. Solicite um novo.'",
-        "In App.tsx: add authView states 'forgot' and 'reset'. Check URL for ?reset_token=xxx on mount — if present, show ResetPassword with that token",
-        "Wire all navigation callbacks in App.tsx (login->forgot, forgot->login, reset->login)",
+        "In app/routers/auth.py reset-password endpoint: after updating the password hash, delete ALL user_sessions for that user_id",
+        "Use db.table('user_sessions').delete().eq('user_id', user_id).execute()",
+        "Also delete all password_reset_tokens for the same user (not just the used token)",
+        "The user must log in again after resetting their password",
+        "Log the action in auth_logs with action 'password_reset_sessions_cleared'",
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": true,
-      "notes": "In frontend/src/App.tsx: extend AuthView type to 'login' | 'signup' | 'forgot' | 'reset'. Add useEffect to check for ?reset_token= in URL on mount. The ForgotPassword and ResetPassword pages follow the exact same pattern as Login.tsx and Signup.tsx: same card, same inputStyle, same button styles. ForgotPassword props: {onSubmit: (email) => Promise<void>, onNavigateToLogin: () => void}. ResetPassword props: {token: string, onNavigateToLogin: () => void}. In ResetPassword, the component handles the API call internally since it needs to show success/error states."
+      "passes": false,
+      "notes": "In app/routers/auth.py: the reset-password endpoint is around line 382-388. After the password update query, add the session deletion query. The password_reset_tokens table stores tokens — delete all for the user, not just the used one. The auth_logs insert follows the existing pattern in the file (check login/logout handlers for the format)."
     },
     {
-      "id": "US-008",
-      "title": "Send password reset email via SMTP",
-      "description": "As the system, I want to send an email with the reset link so the customer can actually reset their password.",
+      "id": "US-112",
+      "title": "Remove username login — require email only",
+      "description": "As a platform admin, I want login to require email (not username) to prevent cross-tenant username collisions.",
       "acceptanceCriteria": [
-        "Add SMTP config to app/config.py: smtp_host: str = '', smtp_port: int = 587, smtp_user: str = '', smtp_password: str = '', smtp_from: str = ''",
-        "Create app/services/email.py with function send_reset_email(to_email: str, reset_token: str)",
-        "The function builds the reset link: f'{settings.base_url}?reset_token={reset_token}'",
-        "Email subject: 'Copy Anuncios — Redefinir senha'",
-        "Email body (plain text): 'Voce solicitou a redefinicao de senha.\\n\\nClique no link abaixo:\\n{link}\\n\\nEste link expira em 1 hora.\\n\\nSe voce nao solicitou, ignore este email.'",
-        "Uses Python smtplib with STARTTLS for sending",
-        "If smtp_host is empty, log warning 'Email not configured, skipping reset email' and return without error",
-        "In app/routers/auth.py forgot-password endpoint: after creating the token, call send_reset_email(). Wrap in try/except — if email fails, log error but still return 200",
+        "In app/routers/auth.py login endpoint: remove the fallback that tries to find user by username",
+        "Login only accepts email field — search users table by email only",
+        "If user not found by email, return 401 'Email ou senha incorretos'",
+        "Update the LoginRequest model: rename field to 'email' if it's currently 'username' or 'login'",
+        "Frontend login form (frontend/src/pages/LoginPage.tsx): update label and placeholder to say 'Email' instead of 'Email ou usuario'",
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": true,
-      "notes": "Create new file app/services/email.py. Use smtplib.SMTP(settings.smtp_host, settings.smtp_port) with starttls() and login(). Build email with email.mime.text.MIMEText. In the forgot-password endpoint in auth.py, import and call send_reset_email after inserting the token. The call must be in a try/except so email failures don't break the endpoint. Check settings.smtp_host before attempting to send."
+      "passes": false,
+      "notes": "In app/routers/auth.py: the login endpoint (~line 150-153) first tries email match, then falls back to username match. Remove the username fallback entirely. The LoginRequest model has a field (check if it's called 'login', 'email', or 'username'). Rename to 'email' with type EmailStr if not already. In the frontend: LoginPage.tsx has the login form — update the input label and placeholder. This is a breaking change for users who log in by username, but the user explicitly decided to remove this."
+    },
+    {
+      "id": "US-113",
+      "title": "Prevent deleting or demoting last admin of org",
+      "description": "As an admin, I want the system to prevent the organization from having zero admins so there is always someone with control.",
+      "acceptanceCriteria": [
+        "In app/routers/admin_users.py DELETE user endpoint: before deleting, if user is admin, check if there's at least 1 other active admin in the same org",
+        "In app/routers/admin_users.py PUT user endpoint: before changing role from admin to operator, same check",
+        "In app/routers/admin_users.py PUT user endpoint: before setting active=false on an admin, same check",
+        "If would leave org with zero admins: return 400 'Nao e possivel remover o ultimo administrador da organizacao'",
+        "Self-delete and self-demote allowed only if another admin exists",
+        "Query: SELECT count(*) FROM users WHERE org_id = X AND role = 'admin' AND active = true AND id != target_user_id",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": "In app/routers/admin_users.py: the DELETE endpoint and PUT endpoint handle user management. Before any operation that would remove an admin (delete, change role to operator, set active=false), query the users table to count other active admins. Use: db.table('users').select('id', count='exact').eq('org_id', org_id).eq('role', 'admin').eq('active', True).neq('id', target_user_id).execute(). If count == 0, reject with 400."
+    },
+    {
+      "id": "US-107",
+      "title": "Token refresh lock per seller to prevent disconnection",
+      "description": "As an admin, I want the system to use a per-seller lock when refreshing ML tokens so concurrent requests don't invalidate the refresh token and disconnect the seller.",
+      "acceptanceCriteria": [
+        "In app/services/ml_api.py: create a module-level dict _token_locks: dict[str, asyncio.Lock] for per-seller locks",
+        "Add a helper function _get_seller_lock(seller_slug) that returns or creates a lock for the seller",
+        "In _get_token: acquire the seller lock before checking/refreshing the token",
+        "After acquiring the lock, re-check if token was already refreshed by another coroutine (compare ml_token_expires_at with current time)",
+        "If already refreshed, use the new token without calling ML API again",
+        "Use asyncio.wait_for with timeout=30 seconds to prevent deadlocks",
+        "Existing sellers continue working — no re-auth needed",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": "In app/services/ml_api.py: _get_token is the function that checks token expiry and refreshes if needed. It's called from multiple concurrent requests. The fix: _token_locks = {} at module level. def _get_seller_lock(slug): if slug not in _token_locks: _token_locks[slug] = asyncio.Lock(); return _token_locks[slug]. In _get_token: async with await asyncio.wait_for(_get_seller_lock(slug).acquire(), timeout=30): re-read token from DB, check if still expired, only then do the refresh. Use try/finally to release lock. With 1 uvicorn worker in Docker, this handles all concurrent requests within the process."
+    },
+    {
+      "id": "US-108",
+      "title": "Filter resolve-sellers results by can_copy_from permission",
+      "description": "As an admin, I want resolve-sellers to only return sellers the operator has can_copy_from permission for, preventing information leakage about item ownership.",
+      "acceptanceCriteria": [
+        "In app/routers/copy.py resolve_sellers_endpoint: after resolving sellers, filter results based on user permissions",
+        "For non-admin users: only include results where the user has can_copy_from for that seller_slug",
+        "Items whose seller the operator lacks permission for go to the errors list with message 'Sem permissao para este seller'",
+        "Admin users see all results (bypass permission check)",
+        "Use the same permission check pattern as the copy endpoint (_check_seller_permission or direct query)",
+        "The frontend already filters client-side (CopyForm.tsx:81-86) but the backend must be the source of truth",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": "In app/routers/copy.py: resolve_sellers_endpoint is around line 390-408. It uses require_active_org which gives the user dict. After resolving items to sellers, check permissions: query user_permissions for the user's can_copy_from permissions. If user.role != 'admin', filter results. Move items with unauthorized sellers to the errors array. The _check_seller_permission helper (if refactored to shared module in US-008 Fase 1) can be reused, otherwise query user_permissions directly."
+    },
+    {
+      "id": "US-101",
+      "title": "DimensionForm uses correct source seller per item",
+      "description": "As an operator, I want dimension retry to use the correct source seller when I copied items from multiple sellers, so the correction actually works.",
+      "acceptanceCriteria": [
+        "In frontend/src/pages/CopyPage.tsx: build a sourceMap (Record<string, string> mapping item_id to seller_slug) from copy groups and pass it to CopyProgress",
+        "In frontend/src/components/CopyProgress.tsx: accept sourceMap prop instead of single source string",
+        "In CopyProgress handleDimensionSubmit: look up the correct source seller from sourceMap using the item_id",
+        "The POST /api/copy/with-dimensions request sends the correct source for each item",
+        "When copying from SellerA and SellerB, retry for SellerB items uses SellerB as source (not SellerA)",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": "In CopyPage.tsx: when building groups in handleCopy (~line 73-118), also build a sourceMap from the groups: const sourceMap: Record<string, string> = {}; groups.forEach(g => g.itemIds.forEach(id => sourceMap[id] = g.source)). Pass sourceMap to CopyProgress (currently passes source as a single string via results.source). In CopyProgress.tsx: the component receives results with .source. Change to accept sourceMap. In handleDimensionSubmit, use sourceMap[itemId] instead of the single source. CopyProgress.tsx is in frontend/src/components/."
+    },
+    {
+      "id": "US-114",
+      "title": "Limit SKUs in compat search endpoint",
+      "description": "As an admin, I want SKU search to be limited to 50 per request to prevent API overload.",
+      "acceptanceCriteria": [
+        "In app/routers/compat.py SearchSkuRequest model: add Pydantic validator to limit skus to max 50",
+        "If exceeded: raise validation error 'Maximo de 50 SKUs por busca'",
+        "In the search-sku endpoint: add asyncio.Semaphore(10) to limit concurrent ML API requests",
+        "Frontend compat form: show SKU count and a warning when approaching 50",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": "In app/routers/compat.py: SearchSkuRequest has skus: List[str]. Add @field_validator('skus') to check len(v) <= 50. For the semaphore: in the search-sku handler, create sem = asyncio.Semaphore(10) and wrap each ML API call task with async with sem. The frontend compat page has a SKU textarea — add a counter showing '{count}/50 SKUs' and warning styling when count > 45."
     }
   ]
 }

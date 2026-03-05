@@ -37,6 +37,7 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
   const [confirming, setConfirming] = useState(false);
   const lastResolvedKey = useRef('');
   const pendingResolve = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   const itemIds = itemIdsText.split(/[\n,]+/).map(normalizeItemId).filter(id => id.length > 0);
 
@@ -54,6 +55,9 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
     if (!ids.length) return;
     const key = ids.join(',');
     if (key === lastResolvedKey.current) return;
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setResolving(true);
     setResolveError('');
     setResolvedSources({});
@@ -65,6 +69,7 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
         method: 'POST',
         headers: headers(),
         body: JSON.stringify({ item_ids: ids }),
+        signal: controller.signal,
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: 'Erro ao detectar sellers' }));
@@ -94,9 +99,10 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
         setResolveError(`Sem permissao de copia a partir do(s) seller(s): ${deniedSlugs.join(', ')}`);
       }
     } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return;
       setResolveError(String(e));
     } finally {
-      setResolving(false);
+      if (!controller.signal.aborted) setResolving(false);
     }
   }, [headers, sourceSellers]);
 
