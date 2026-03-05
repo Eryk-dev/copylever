@@ -32,6 +32,7 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
   const [unresolvedIds, setUnresolvedIds] = useState<string[]>([]);
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState('');
+  const [dedupMsg, setDedupMsg] = useState('');
   const [destinations, setDestinations] = useState<string[]>([]);
   const [confirming, setConfirming] = useState(false);
   const lastResolvedKey = useRef('');
@@ -100,10 +101,13 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
   }, [headers, sourceSellers]);
 
   const normalizeAndResolve = useCallback(() => {
-    const normalized = itemIdsText.split(/[\n,]+/).map(normalizeItemId).filter(Boolean).join('\n');
-    if (normalized !== itemIdsText.trim()) setItemIdsText(normalized);
-    const ids = normalized.split('\n').filter(Boolean);
-    if (ids.length > 0) resolveAll(ids);
+    const normalized = itemIdsText.split(/[\n,]+/).map(normalizeItemId).filter(Boolean);
+    const unique = [...new Set(normalized)];
+    const removedCount = normalized.length - unique.length;
+    setDedupMsg(removedCount > 0 ? `${removedCount} duplicata(s) removida(s)` : '');
+    const text = unique.join('\n');
+    if (text !== itemIdsText.trim()) setItemIdsText(text);
+    if (unique.length > 0) resolveAll(unique);
   }, [itemIdsText, resolveAll]);
 
   // Auto-resolve after paste
@@ -203,6 +207,11 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
             lineHeight: 'var(--leading-normal)',
           }}
         />
+        {dedupMsg && (
+          <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-2)' }}>
+            {dedupMsg}
+          </p>
+        )}
         {resolving && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginTop: 'var(--space-2)', color: 'var(--ink-faint)', fontSize: 'var(--text-xs)' }}>
             <span className="spinner spinner-sm" />

@@ -108,6 +108,8 @@ async def copy_anuncios(req: CopyRequest, user: dict = Depends(require_active_or
             if part:
                 clean_ids.append(part)
 
+    clean_ids = list(dict.fromkeys(clean_ids))
+
     if not clean_ids:
         raise HTTPException(status_code=400, detail="No valid item IDs provided")
 
@@ -391,7 +393,7 @@ class ResolveSellersRequest(BaseModel):
 @router.post("/resolve-sellers")
 async def resolve_sellers_endpoint(req: ResolveSellersRequest, user: dict = Depends(require_active_org)):
     """Bulk-resolve which seller owns each item."""
-    clean_ids = [_normalize_item_id(iid) for iid in req.item_ids if iid.strip()]
+    clean_ids = list(dict.fromkeys(_normalize_item_id(iid) for iid in req.item_ids if iid.strip()))
     if not clean_ids:
         return {"results": [], "errors": []}
 
