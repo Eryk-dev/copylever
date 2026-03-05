@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 async def search_sku_all_sellers(
     skus: list[str],
     allowed_sellers: list[str] | None = None,
+    org_id: str = "",
 ) -> list[dict[str, Any]]:
     """Search for items matching the given SKUs across connected sellers.
 
@@ -29,7 +30,10 @@ async def search_sku_all_sellers(
     Returns a list of dicts with: seller_slug, seller_name, item_id, sku, title.
     """
     db = get_db()
-    sellers_resp = db.table("copy_sellers").select("slug, name, ml_user_id").eq("active", True).execute()
+    query = db.table("copy_sellers").select("slug, name, ml_user_id").eq("active", True)
+    if org_id:
+        query = query.eq("org_id", org_id)
+    sellers_resp = query.execute()
     sellers = sellers_resp.data or []
 
     if allowed_sellers is not None:
@@ -39,7 +43,7 @@ async def search_sku_all_sellers(
     tasks: list[tuple[dict[str, Any], str, asyncio.Task[list[str]]]] = []
     for seller in sellers:
         for sku in skus:
-            task = asyncio.create_task(search_items_by_sku(seller["slug"], sku))
+            task = asyncio.create_task(search_items_by_sku(seller["slug"], sku, org_id=org_id))
             tasks.append((seller, sku, task))
 
     # Await all search tasks in parallel
@@ -53,7 +57,7 @@ async def search_sku_all_sellers(
             logger.warning("SKU search failed for seller %s, sku %s", seller["slug"], sku)
             continue
         for item_id in item_ids:
-            info_task = asyncio.create_task(get_item(seller["slug"], item_id))
+            info_task = asyncio.create_task(get_item(seller["slug"], item_id, org_id=org_id))
             item_info_tasks.append((seller, sku, item_id, info_task))
 
     for seller, sku, item_id, info_task in item_info_tasks:
@@ -74,13 +78,16 @@ async def search_sku_all_sellers(
     return results
 
 
-async def _resolve_source_seller(source_item_id: str) -> str | None:
+async def _resolve_source_seller(source_item_id: str, org_id: str = "") -> str | None:
     """Find which connected seller owns the source item."""
     db = get_db()
-    sellers = (db.table("copy_sellers").select("slug").eq("active", True).execute()).data or []
+    query = db.table("copy_sellers").select("slug").eq("active", True)
+    if org_id:
+        query = query.eq("org_id", org_id)
+    sellers = (query.execute()).data or []
     for s in sellers:
         try:
-            await get_item(s["slug"], source_item_id)
+            await get_item(s["slug"], source_item_id, org_id=org_id)
             return s["slug"]
         except Exception:
             continue
@@ -92,6 +99,7 @@ async def copy_compat_to_targets(
     targets: list[dict[str, str]],
     skus: list[str] | None = None,
     log_id: int | None = None,
+    org_id: str = "",
 ) -> list[dict[str, Any]]:
     """Copy compatibilities from source item to each target item.
 
@@ -102,10 +110,10 @@ async def copy_compat_to_targets(
     """
     # Pre-fetch source compatibilities once (needs source seller's token).
     source_compat_products: list[dict] | None = None
-    source_seller = await _resolve_source_seller(source_item_id)
+    source_seller = await _resolve_source_seller(source_item_id, org_id=org_id)
     if source_seller:
         try:
-            compat = await get_item_compatibilities(source_seller, source_item_id)
+            compat = await get_item_compatibilities(source_seller, source_item_id, org_id=org_id)
             if compat and isinstance(compat, dict):
                 source_compat_products = compat.get("products")
         except Exception:
@@ -122,6 +130,7 @@ async def copy_compat_to_targets(
             await copy_item_compatibilities(
                 target["seller_slug"], target["item_id"], source_item_id,
                 source_compat_products=source_compat_products,
+                org_id=org_id,
             )
             results.append({
                 "seller_slug": target["seller_slug"],
@@ -153,6 +162,7 @@ async def copy_compat_to_targets(
                 response_status=exc.status_code if isinstance(exc, MlApiError) else None,
                 response_body=exc.payload if isinstance(exc, MlApiError) and isinstance(exc.payload, dict) else None,
                 error_message=str(exc),
+                org_id=org_id,
             )
 
     # Determine final status
@@ -165,12 +175,14 @@ async def copy_compat_to_targets(
 
     # Update or insert compat_logs
     db = get_db()
-    log_data = {
+    log_data: dict[str, Any] = {
         "targets": results,
         "success_count": success_count,
         "error_count": error_count,
         "status": final_status,
     }
+    if org_id:
+        log_data["org_id"] = org_id
     if log_id:
         db.table("compat_logs").update(log_data).eq("id", log_id).execute()
     else:
