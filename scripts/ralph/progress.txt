@@ -94,3 +94,16 @@ Started: Thu Mar  5 10:43:47 -03 2026
   - copy_items has 2 log insert points: in_progress initial insert and fallback insert
   - copy_with_dimensions calls update_item (for source) and copy_single_item (for each dest)
 ---
+
+## 2026-03-05 - US-009
+- Added org_id parameter to search_sku_all_sellers(), _resolve_source_seller(), copy_compat_to_targets()
+- Added .eq('org_id', org_id) to copy_sellers queries in search_sku_all_sellers and _resolve_source_seller
+- Passed org_id to all ml_api calls: search_items_by_sku, get_item, get_item_compatibilities, copy_item_compatibilities
+- Added org_id to _log_api_debug() call in error handler
+- Added org_id to compat_logs insert (both update and fallback insert paths)
+- Files changed: app/services/compat_copier.py
+- **Learnings for future iterations:**
+  - compat_copier has 2 functions that query copy_sellers directly: search_sku_all_sellers, _resolve_source_seller
+  - copy_compat_to_targets has 2 log paths: update existing log_id, or insert new row — both need org_id
+  - _log_api_debug is imported from item_copier, already has org_id param from US-008
+---

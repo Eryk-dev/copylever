@@ -156,7 +156,7 @@
         "Typecheck passes"
       ],
       "priority": 9,
-      "passes": false,
+      "passes": true,
       "notes": "search_sku_all_sellers() at line ~22 queries copy_sellers — add .eq('org_id', org_id). It calls search_items_by_sku() and get_item() — pass org_id. _resolve_source_seller() at line ~77 queries copy_sellers — add .eq('org_id', org_id). copy_compat_to_targets() at line ~90 writes to compat_logs — add org_id to the insert dicts."
     },
     {
