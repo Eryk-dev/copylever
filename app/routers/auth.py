@@ -117,7 +117,7 @@ async def require_active_org(x_auth_token: str = Header(...)) -> dict:
 
 
 class LoginRequest(BaseModel):
-    username: str
+    email: str
     password: str
 
 
@@ -135,20 +135,22 @@ class AdminPromoteRequest(BaseModel):
 
 @router.post("/login")
 async def login(req: LoginRequest):
-    """Authenticate with username and password. Returns session token + user info."""
+    """Authenticate with email and password. Returns session token + user info."""
     db = get_db()
 
-    # Find user
-    result = db.table("users").select("*").eq("username", req.username).execute()
+    # Find user by email first, fallback to username for backward compatibility
+    result = db.table("users").select("*").eq("email", req.email).execute()
+    if not result.data:
+        result = db.table("users").select("*").eq("username", req.email).execute()
     if not result.data:
         # Log failed login attempt (user not found)
         try:
             db.table("auth_logs").insert({
-                "username": req.username,
+                "username": req.email,
                 "action": "login_failed",
             }).execute()
         except Exception:
-            logger.warning("Failed to log login_failed for unknown user %s", req.username)
+            logger.warning("Failed to log login_failed for unknown user %s", req.email)
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
     user = result.data[0]
@@ -158,11 +160,11 @@ async def login(req: LoginRequest):
         try:
             db.table("auth_logs").insert({
                 "user_id": user["id"],
-                "username": req.username,
+                "username": user["username"],
                 "action": "login_failed",
             }).execute()
         except Exception:
-            logger.warning("Failed to log login_failed for inactive user %s", req.username)
+            logger.warning("Failed to log login_failed for inactive user %s", user["username"])
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
     if not _verify_password(req.password, user["password_hash"]):
@@ -170,11 +172,11 @@ async def login(req: LoginRequest):
         try:
             db.table("auth_logs").insert({
                 "user_id": user["id"],
-                "username": req.username,
+                "username": user["username"],
                 "action": "login_failed",
             }).execute()
         except Exception:
-            logger.warning("Failed to log login_failed for user %s", req.username)
+            logger.warning("Failed to log login_failed for user %s", user["username"])
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
     # Create session
@@ -320,8 +322,14 @@ async def logout(x_auth_token: str = Header(None)):
 
 @router.get("/me")
 async def me(user: dict = Depends(require_user)):
-    """Return current user info with permissions."""
-    return user
+    """Return current user info with permissions and org context."""
+    db = get_db()
+    org_name = None
+    if user.get("org_id"):
+        org_result = db.table("orgs").select("name").eq("id", user["org_id"]).single().execute()
+        if org_result.data:
+            org_name = org_result.data["name"]
+    return {**user, "org_name": org_name}
 
 
 @router.post("/admin-promote")
