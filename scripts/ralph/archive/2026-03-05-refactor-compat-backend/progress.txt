@@ -1,0 +1,38 @@
+# Ralph Progress Log
+Started: Thu Mar  5 11:37:38 -03 2026
+---
+
+## Codebase Patterns
+- admin-promote endpoint creates users in `users` table — must include `org_id` and `email` for multi-tenant schema
+- Lever Money bootstrap org UUID: `00000000-0000-0000-0000-000000000001` (from migration 008)
+- Frontend typecheck: `cd frontend && npx tsc --noEmit`
+- All admin endpoints with `user_id` path param must verify org membership: fetch target user, compare org_id, raise 404 on mismatch
+- Every Supabase UPDATE/DELETE on multi-tenant tables must include `.eq("org_id", org_id)` — audit all write queries
+---
+
+## 2026-03-05 - US-FIX-001
+- Added `org_id` and `email` fields to the new_user insert dict in admin-promote endpoint
+- Files changed: `app/routers/auth.py` (line 368-376)
+- **Learnings for future iterations:**
+  - The admin-promote endpoint has two paths: promote existing user vs create new user. Only the create path needed fixing.
+  - `email` is set to `req.username` because after multi-tenant migration, login is email-based
+  - The `org_id` must be set to the Lever Money UUID for bootstrap admin
+---
+
+## 2026-03-05 - US-FIX-002
+- Added org_id verification to `get_user_permissions` and `update_user_permissions` endpoints
+- Files changed: `app/routers/admin_users.py` (lines 146-149, 189-192)
+- **Learnings for future iterations:**
+  - All admin endpoints that take a `user_id` path param must verify the target user belongs to the same org
+  - The org_id check pattern is: fetch target user with `select("id, org_id")`, compare `target.data[0]["org_id"] != user["org_id"]`, raise 404
+  - `update_user_permissions` previously only checked user existence, not org membership — always check both
+---
+
+## 2026-03-05 - US-FIX-003
+- Added `.eq("org_id", org_id)` to two copy_logs update queries in `copy_with_dims` and `retry_dimensions`
+- Files changed: `app/routers/copy.py` (lines 175, 254)
+- **Learnings for future iterations:**
+  - Every Supabase update/delete query on a multi-tenant table must include `.eq("org_id", org_id)` to prevent cross-org data modification
+  - The `org_id` variable is already available in all copy endpoints via `user["org_id"]`
+  - Read queries (SELECT) may already be scoped by user_id or explicit org_id check, but write queries are the critical ones to audit
+---
