@@ -108,7 +108,7 @@
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": "In the login endpoint, first try: db.table('users').select('*').eq('email', req.email).execute(). If not result.data, fallback: db.table('users').select('*').eq('username', req.email).execute(). This lets existing users (who have username but no email) still log in. For /me, after getting user, query: db.table('orgs').select('name').eq('id', user['org_id']).single().execute() and add org_name to response."
     },
     {

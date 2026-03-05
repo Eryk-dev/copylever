@@ -57,3 +57,14 @@ Started: Thu Mar  5 10:43:47 -03 2026
   - New orgs get payment_active=true by default (billing enforcement deferred)
   - auth_logs insert includes org_id for signup events
 ---
+
+## 2026-03-05 - US-006
+- Changed LoginRequest model to use `email` field instead of `username`
+- Login now looks up user by email first, falls back to username for backward compat
+- Updated /me endpoint to query orgs table and return `org_name`
+- Files changed: app/routers/auth.py
+- **Learnings for future iterations:**
+  - Login fallback pattern: try email lookup, then username, for backward compat with pre-email users
+  - /me now returns org_name by querying orgs table with user's org_id
+  - auth_logs in login still use `username` field from the user row (not from request)
+---
