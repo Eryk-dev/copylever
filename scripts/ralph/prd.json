@@ -1,378 +1,94 @@
 {
-  "project": "COPY ANUNCIOS — Multi-Tenant SaaS Migration",
+  "project": "COPY ANUNCIOS — Multi-Tenant Fixes",
   "branchName": "ralph/multi-tenant-saas",
-  "description": "Convert single-tenant internal tool to multi-tenant SaaS. Each client (org) gets their own sellers, users, and operations. Shared schema with org_id on all tables. Self-service signup with email+password+company. Super-admin panel for platform owner. Stripe billing integration (ready but deferred).",
+  "description": "Post-review fixes for the multi-tenant SaaS migration. Fix crashes, cross-tenant security holes, broken UI, and missing validations identified during code review.",
   "userStories": [
     {
-      "id": "US-001",
-      "title": "Database migration: orgs table and org_id columns",
-      "description": "As a developer, I want to create the orgs table and add org_id to all existing tables so that data can be isolated per organization.",
+      "id": "US-FIX-001",
+      "title": "Fix admin-promote crash: missing org_id on user creation",
+      "description": "As a developer, I want admin-promote to work after the multi-tenant migration so that bootstrap admin creation does not crash.",
       "acceptanceCriteria": [
-        "Create migration file app/db/migrations/007_multi_tenant.sql",
-        "Table `orgs` created with columns: id (UUID PK DEFAULT gen_random_uuid()), name (TEXT NOT NULL), email (TEXT UNIQUE NOT NULL), active (BOOLEAN NOT NULL DEFAULT true), stripe_customer_id (TEXT UNIQUE), stripe_subscription_id (TEXT UNIQUE), payment_active (BOOLEAN NOT NULL DEFAULT false), created_at (TIMESTAMPTZ DEFAULT now()), updated_at (TIMESTAMPTZ DEFAULT now())",
-        "Add org_id UUID column (nullable initially) with FK REFERENCES orgs(id) ON DELETE CASCADE to: users, copy_sellers, user_permissions",
-        "Add org_id UUID column (nullable initially) with FK REFERENCES orgs(id) ON DELETE SET NULL to: copy_logs, compat_logs, api_debug_logs, auth_logs",
-        "Add is_super_admin BOOLEAN NOT NULL DEFAULT false column to users table",
-        "Add email TEXT column to users table",
-        "Create index idx_orgs_email ON orgs(email)",
-        "Create index idx_orgs_stripe_customer ON orgs(stripe_customer_id)",
-        "Create indexes idx_{table}_org ON each table for the org_id column",
+        "In app/routers/auth.py, the admin-promote endpoint's new user insert dict includes org_id set to the Lever Money UUID '00000000-0000-0000-0000-000000000001'",
+        "The new user insert dict also includes email set to req.username (so the user can log in via the email-based login flow)",
+        "When promoting an existing user (user already exists path), the logic remains unchanged",
         "Typecheck passes"
       ],
       "priority": 1,
       "passes": true,
-      "notes": "Use IF NOT EXISTS for all CREATE TABLE and CREATE INDEX. Use ADD COLUMN IF NOT EXISTS for ALTER TABLE. Check existing migrations in app/db/migrations/ for style (001 through 006 exist). Supabase uses PostgreSQL. Do NOT add NOT NULL to org_id yet — that happens after data backfill in US-002. Do NOT change unique constraints yet — US-002 handles that."
+      "notes": "The insert is at app/routers/auth.py around line 368-375. The new_user dict needs 'org_id': '00000000-0000-0000-0000-000000000001' and 'email': req.username. The Lever Money UUID is the deterministic one from migration 008. Do NOT change the promote path (when user already exists) — only fix the create path."
     },
     {
-      "id": "US-002",
-      "title": "Database migration: backfill existing data and finalize constraints",
-      "description": "As a developer, I want to migrate existing data to a 'Lever Money' org and enforce org-scoped constraints so that the system is ready for multi-tenancy.",
+      "id": "US-FIX-002",
+      "title": "Fix cross-org permission access in admin_users.py",
+      "description": "As a platform owner, I want user permission endpoints to verify org membership so that admins cannot read or modify permissions for users in other organizations.",
       "acceptanceCriteria": [
-        "Create migration file app/db/migrations/008_backfill_org_data.sql",
-        "INSERT INTO orgs with a deterministic UUID '00000000-0000-0000-0000-1ev3rm0ney01', name='Lever Money', email='eryk@levermoney.com.br', active=true, payment_active=true",
-        "UPDATE all rows in users, copy_sellers, copy_logs, compat_logs, api_debug_logs, auth_logs, user_permissions to SET org_id = the Lever Money UUID WHERE org_id IS NULL",
-        "UPDATE users SET is_super_admin = true WHERE username = 'eryk'",
-        "ALTER TABLE users ALTER COLUMN org_id SET NOT NULL",
-        "ALTER TABLE copy_sellers ALTER COLUMN org_id SET NOT NULL",
-        "ALTER TABLE user_permissions ALTER COLUMN org_id SET NOT NULL",
-        "Drop old unique constraint on users(username) and create new UNIQUE INDEX idx_users_org_username ON users(org_id, username)",
-        "Create UNIQUE INDEX idx_users_email ON users(email) WHERE email IS NOT NULL",
-        "Drop old unique constraint on copy_sellers(slug) and create new UNIQUE INDEX idx_copy_sellers_org_slug ON copy_sellers(org_id, slug)",
+        "GET /api/admin/users/{user_id}/permissions fetches the target user and verifies target_user['org_id'] == user['org_id'] before returning data. Returns 404 if mismatch.",
+        "PUT /api/admin/users/{user_id}/permissions fetches the target user and verifies target_user['org_id'] == user['org_id'] before upserting. Returns 404 if mismatch.",
+        "Use the same pattern already used in update_user() and delete_user() in the same file (fetch target, compare org_id, raise 404)",
         "Typecheck passes"
       ],
       "priority": 2,
       "passes": true,
-      "notes": "This migration MUST run after 007_multi_tenant.sql. Use IF NOT EXISTS for indexes. The deterministic UUID uses hex chars only (no special chars). For dropping constraints safely, use: ALTER TABLE users DROP CONSTRAINT IF EXISTS users_username_key; and ALTER TABLE copy_sellers DROP CONSTRAINT IF EXISTS copy_sellers_slug_key;. Log tables (copy_logs, compat_logs, api_debug_logs, auth_logs) keep org_id nullable for edge cases."
+      "notes": "In app/routers/admin_users.py: get_user_permissions is at ~line 141. It already fetches sellers by org_id (line 148-151), but does NOT verify the target user_id belongs to the same org. Add a check at the top: fetch user by id, verify org_id matches. Same for update_user_permissions at ~line 175 — line 185 checks user exists but does not check org_id. Follow the exact pattern from update_user (~line 99) and delete_user (~line 132) which already do this correctly."
     },
     {
-      "id": "US-003",
-      "title": "Config: add Stripe settings to app/config.py",
-      "description": "As a developer, I want Stripe configuration variables available so that billing endpoints can use them later.",
+      "id": "US-FIX-003",
+      "title": "Fix cross-org copy_logs update in copy.py",
+      "description": "As a platform owner, I want copy log updates to be org-scoped so that one org's dimension retry cannot affect another org's log entries.",
       "acceptanceCriteria": [
-        "Add stripe_secret_key: str = '' to Settings class in app/config.py",
-        "Add stripe_webhook_secret: str = '' to Settings class",
-        "Add stripe_price_id: str = '' to Settings class",
+        "In copy_with_dims() endpoint: the copy_logs update that sets needs_dimensions status (around line 169-175) adds .eq('org_id', org_id) to the query",
+        "In retry_dimensions() endpoint: the final copy_logs update (around line 250-254) adds .eq('org_id', org_id) to the query",
         "Typecheck passes"
       ],
       "priority": 3,
       "passes": true,
-      "notes": "Simple change — just add 3 fields to the existing Settings(BaseSettings) class in app/config.py. They default to empty string so they're optional. No other files need changes."
+      "notes": "In app/routers/copy.py: The first update is around line 169: db.table('copy_logs').update({...}).eq('source_item_id', item_id).eq('source_seller', req.source).eq('status', 'needs_dimensions').execute() — add .eq('org_id', org_id) before .execute(). The second update is around line 250: db.table('copy_logs').update({...}).eq('id', req.log_id).execute() — add .eq('org_id', org_id) before .execute(). The org_id variable is already available in both functions."
     },
     {
-      "id": "US-004",
-      "title": "Backend: update require_user to return org_id and add require_super_admin",
-      "description": "As a developer, I want auth dependencies to include org context so that all downstream code can scope queries by org.",
+      "id": "US-FIX-004",
+      "title": "Fix OAuth install button blocked by popup blocker",
+      "description": "As an org admin, I want the ML authorization button to work reliably so that I can connect Mercado Livre accounts without popup blockers interfering.",
       "acceptanceCriteria": [
-        "Modify require_user() in app/routers/auth.py to return org_id, is_super_admin, and email in the user dict",
-        "The user dict returned is: {id, username, email, role, org_id, is_super_admin, can_run_compat, permissions}",
-        "Add new async dependency require_super_admin() that calls require_user() then checks is_super_admin is True, raises HTTPException 403 with detail 'Acesso restrito ao super-admin' if not",
-        "Add new async dependency require_active_org() that calls require_user(), fetches org from orgs table by org_id, raises HTTPException 403 if org.active is False. For super_admin users, skip the check. Add a commented-out block for payment_active check with comment '# Enable when Stripe is configured'",
+        "In Admin.tsx handleInstall(): replace window.open(data.redirect_url, '_blank') with window.location.href = data.redirect_url",
+        "Before redirecting, the function works the same: fetch with auth headers, parse JSON, handle errors with toast",
+        "If the fetch fails (401, network error), show toast error and do NOT redirect",
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": true,
-      "notes": "In require_user(), the current code fetches from users table and _get_user_permissions(). Just add the new fields from the users row: user['org_id'], user.get('is_super_admin', False), user.get('email'). The users table already has these columns from US-001/002. require_active_org uses get_db().table('orgs').select('active, payment_active').eq('id', user['org_id']).single().execute()."
+      "passes": false,
+      "notes": "In frontend/src/pages/Admin.tsx, handleInstall() is at ~line 20. The only change needed is line 34: replace `window.open(data.redirect_url, '_blank')` with `window.location.href = data.redirect_url`. The rest of the function (fetch, error handling, loading state) stays the same. Do NOT add a confirmation dialog — just redirect directly like the old flow did."
     },
     {
-      "id": "US-005",
-      "title": "Backend: signup endpoint",
-      "description": "As a new customer, I want to sign up with email, password and company name so that I can start using the platform.",
+      "id": "US-FIX-005",
+      "title": "Show specific signup error messages from backend",
+      "description": "As a new user signing up, I want to see the specific reason my signup failed so that I can fix the problem and try again.",
       "acceptanceCriteria": [
-        "Add POST /api/auth/signup endpoint in app/routers/auth.py",
-        "Request model SignupRequest with fields: email (str), password (str), company_name (str)",
-        "Validate email is not empty and doesn't already exist in users table (return 409 'Email ja cadastrado')",
-        "Validate password is at least 6 chars (return 400 'Senha deve ter pelo menos 6 caracteres')",
-        "Validate company_name is not empty (return 400 'Nome da empresa e obrigatorio')",
-        "Create org row: name=company_name, email=email, active=true, payment_active=true",
-        "Create user row: email=email, username=email (use email as username), password_hash=bcrypt(password), role='admin', can_run_compat=true, org_id=org.id, is_super_admin=false",
-        "Create session token (same pattern as login: secrets.token_urlsafe(32), 7 day expiry)",
-        "Return {token, user: {id, username, email, role, can_run_compat}, org: {id, name}}",
-        "Log action='signup' to auth_logs with user_id, username, and org_id",
+        "In useAuth.ts: signup() return type changes from Promise<boolean> to Promise<{success: boolean, error?: string}>",
+        "On API error, signup() parses the response JSON and returns {success: false, error: data.detail || 'Erro ao criar conta'}",
+        "On network error, signup() returns {success: false, error: 'Erro de conexao'}",
+        "On success, signup() returns {success: true}",
+        "In Signup.tsx: the handleSubmit reads the error field from signup() result and displays it",
+        "In Signup.tsx: add client-side validation before submit — if password.length < 6, show 'Senha deve ter pelo menos 6 caracteres' without calling the API",
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": true,
-      "notes": "Follow the exact same patterns from the existing login endpoint in auth.py for password hashing (bcrypt.hashpw), session creation (user_sessions insert), and token generation (secrets.token_urlsafe(32)). The new org has payment_active=true initially — billing enforcement is deferred. Username is set to email for simplicity."
+      "passes": false,
+      "notes": "In frontend/src/hooks/useAuth.ts: signup() is at ~line 84. Currently returns boolean. Change to: on !res.ok, parse error with `const data = await res.json().catch(() => null)` and return `{success: false, error: data?.detail || 'Erro ao criar conta'}`. On success return `{success: true}`. On catch return `{success: false, error: 'Erro de conexao'}`. In frontend/src/pages/Signup.tsx: handleSubmit at ~line 21 currently does `const success = await onSignup(...)`. Change to `const result = await onSignup(...)`. If !result.success, setError(result.error || 'Erro ao criar conta'). The onSignup prop type changes from `(e,p,c) => Promise<boolean>` to `(e,p,c) => Promise<{success: boolean, error?: string}>`. Add password length check before calling onSignup."
     },
     {
-      "id": "US-006",
-      "title": "Backend: update login to accept email",
-      "description": "As a user, I want to log in with my email so that the login flow matches the signup flow.",
+      "id": "US-FIX-006",
+      "title": "Protect debug endpoint with super-admin auth",
+      "description": "As a platform owner, I want the debug environment endpoint to require authentication so that server configuration is not exposed publicly.",
       "acceptanceCriteria": [
-        "Modify LoginRequest model in app/routers/auth.py to have field 'email' instead of 'username'",
-        "POST /api/auth/login looks up user by email field first",
-        "If email lookup fails, fallback to looking up by username (backward compatibility for existing users who may not have email set)",
-        "The rest of the login flow (bcrypt verify, session creation, auth_logs) stays the same",
-        "GET /api/auth/me returns org info: add org_name by joining/querying orgs table using user's org_id",
-        "The /me response adds: email, org_id, org_name, is_super_admin to the returned dict",
+        "The /api/debug/env endpoint in app/main.py uses Depends(require_super_admin) as a parameter",
+        "Import require_super_admin from app.routers.auth",
+        "Unauthenticated requests get 401",
+        "Non-super-admin users get 403",
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": true,
-      "notes": "In the login endpoint, first try: db.table('users').select('*').eq('email', req.email).execute(). If not result.data, fallback: db.table('users').select('*').eq('username', req.email).execute(). This lets existing users (who have username but no email) still log in. For /me, after getting user, query: db.table('orgs').select('name').eq('id', user['org_id']).single().execute() and add org_name to response."
-    },
-    {
-      "id": "US-007",
-      "title": "Backend: thread org_id through ml_api.py",
-      "description": "As a developer, I want all ML API functions to accept org_id so that seller token lookups are scoped per organization.",
-      "acceptanceCriteria": [
-        "Add org_id: str parameter to _get_token() and add .eq('org_id', org_id) to the copy_sellers query",
-        "Add org_id: str parameter to get_item(), get_item_description(), get_item_compatibilities(), create_item(), set_item_description(), set_item_compatibilities(), update_item() — all pass org_id to _get_token()",
-        "Add org_id: str parameter to search_items_by_sku() — add .eq('org_id', org_id) to copy_sellers query AND pass org_id to _get_token()",
-        "Add org_id: str parameter to copy_item_compatibilities() — pass org_id to _get_token()",
-        "Add org_id: str parameter to get_seller_official_store_id() — add .eq('org_id', org_id) to copy_sellers query AND pass org_id to _get_token()",
-        "Add org_id: str parameter to exchange_code() and fetch_user_info() — these don't need it for queries but keep consistent signature (no query changes needed)",
-        "Typecheck passes"
-      ],
-      "priority": 7,
-      "passes": true,
-      "notes": "This is a mechanical change: add org_id parameter to every public function, thread it to _get_token() calls. The _get_token() function at line ~112 queries copy_sellers by slug — add .eq('org_id', org_id) to that query. search_items_by_sku() at line ~343 also queries copy_sellers directly — add .eq('org_id', org_id) there too. get_seller_official_store_id() at line ~196 queries copy_sellers — add org_id filter. exchange_code() and fetch_user_info() don't query sellers so org_id is just passed through for API consistency. IMPORTANT: After this change, all callers in item_copier.py, compat_copier.py, and routers will fail typecheck until updated in subsequent stories."
-    },
-    {
-      "id": "US-008",
-      "title": "Backend: thread org_id through item_copier.py",
-      "description": "As a developer, I want the copy service to pass org_id to all ML API calls so that seller lookups are org-scoped.",
-      "acceptanceCriteria": [
-        "Add org_id: str parameter to copy_single_item() and pass it to all ml_api function calls (get_item, get_item_description, get_item_compatibilities, create_item, set_item_description, copy_item_compatibilities, get_seller_official_store_id)",
-        "Add org_id: str parameter to copy_items() and pass to copy_single_item()",
-        "Add org_id: str parameter to copy_with_dimensions() and pass to update_item() and copy_single_item()",
-        "Add org_id field to _log_api_debug() function and include it in the insert row dict",
-        "All copy_logs inserts in copy_items() include org_id in the insert dict",
-        "Typecheck passes"
-      ],
-      "priority": 8,
-      "passes": true,
-      "notes": "copy_single_item() is the main function (~line 617). It calls: get_item(), get_item_description(), get_item_compatibilities(), create_item(), set_item_description(), copy_item_compatibilities(), get_seller_official_store_id(). Add org_id= to each call. copy_items() (~line 896) creates copy_logs rows — add 'org_id': org_id to log_insert dict. _log_api_debug() (~line 40) inserts into api_debug_logs — add org_id to the row dict and the function signature."
-    },
-    {
-      "id": "US-009",
-      "title": "Backend: thread org_id through compat_copier.py",
-      "description": "As a developer, I want the compat service to pass org_id to all ML API calls so that seller lookups are org-scoped.",
-      "acceptanceCriteria": [
-        "Add org_id: str parameter to search_sku_all_sellers() and add .eq('org_id', org_id) to the copy_sellers query, pass org_id to search_items_by_sku() and get_item() calls",
-        "Add org_id: str parameter to _resolve_source_seller() and add .eq('org_id', org_id) to the copy_sellers query, pass org_id to get_item() calls",
-        "Add org_id: str parameter to copy_compat_to_targets() and pass org_id to _resolve_source_seller(), get_item_compatibilities(), copy_item_compatibilities(). Include org_id in compat_logs inserts",
-        "Pass org_id to _log_api_debug() calls in the error handler",
-        "Typecheck passes"
-      ],
-      "priority": 9,
-      "passes": true,
-      "notes": "search_sku_all_sellers() at line ~22 queries copy_sellers — add .eq('org_id', org_id). It calls search_items_by_sku() and get_item() — pass org_id. _resolve_source_seller() at line ~77 queries copy_sellers — add .eq('org_id', org_id). copy_compat_to_targets() at line ~90 writes to compat_logs — add org_id to the insert dicts."
-    },
-    {
-      "id": "US-010",
-      "title": "Backend: org-scope auth_ml.py (OAuth + sellers)",
-      "description": "As a developer, I want the OAuth flow and seller management to be org-scoped so that each org manages their own ML connections.",
-      "acceptanceCriteria": [
-        "GET /api/ml/install requires authentication via Depends(require_user), extracts org_id from user, encodes org_id in OAuth state parameter as 'org_{org_id}', returns JSON {redirect_url: '...'} instead of RedirectResponse",
-        "GET /api/ml/callback parses org_id from state parameter (strip 'org_' prefix), includes org_id in copy_sellers insert/update, scopes existing seller lookup by org_id",
-        "GET /api/sellers adds .eq('org_id', user['org_id']) to copy_sellers query. Uses Depends(require_user) instead of Depends(require_admin) so any authenticated user can see their org's sellers",
-        "DELETE /api/sellers/{slug} adds .eq('org_id', user['org_id']) to the update query to prevent cross-org deletion",
-        "The callback success page still works (HTML response)",
-        "Typecheck passes"
-      ],
-      "priority": 10,
-      "passes": true,
-      "notes": "Current install() at line ~21 returns RedirectResponse. Change to return JSON: {redirect_url: url}. The frontend will open this URL. Add 'from app.routers.auth import require_user' if not already imported. In callback() at line ~36, parse state: if state.startswith('org_'): org_id = state[4:]. The existing seller lookup by ml_user_id needs .eq('org_id', org_id) because the same ML user could be connected by different orgs. The callback does NOT require auth (it's a redirect from ML). list_sellers currently uses require_admin — change to require_user so operators can also see sellers."
-    },
-    {
-      "id": "US-011",
-      "title": "Backend: org-scope copy.py router",
-      "description": "As a developer, I want copy endpoints to be org-scoped so that each org only sees and operates on their own data.",
-      "acceptanceCriteria": [
-        "Extract org_id = user['org_id'] in all endpoints that use Depends(require_user)",
-        "Pass org_id to copy_items() and copy_with_dimensions() calls",
-        "_resolve_item_seller() accepts org_id parameter, adds .eq('org_id', org_id) to copy_sellers query",
-        "preview_item() passes org_id to _resolve_item_seller() and get_item() calls",
-        "copy_logs() adds .eq('org_id', user['org_id']) filter. For super-admin (user.get('is_super_admin')), skip the org_id filter to see all logs",
-        "retry_dimensions() scopes copy_logs lookup by org_id",
-        "Typecheck passes"
-      ],
-      "priority": 11,
-      "passes": true,
-      "notes": "In copy_anuncios() at line ~84, extract org_id = user['org_id'] and pass to copy_items(). In copy_with_dims(), same. In preview_item(), pass org_id to _resolve_item_seller() and get_item(). In copy_logs(), the current admin check is 'if user[\"role\"] != \"admin\"' — change to also check is_super_admin: super-admins see all, org admins see their org, operators see their own. _resolve_item_seller() queries copy_sellers — add .eq('org_id', org_id)."
-    },
-    {
-      "id": "US-012",
-      "title": "Backend: org-scope compat.py router",
-      "description": "As a developer, I want compat endpoints to be org-scoped so that each org only sees their own data.",
-      "acceptanceCriteria": [
-        "Extract org_id = user['org_id'] in all endpoints",
-        "_resolve_item_seller() accepts org_id, adds .eq('org_id', org_id) to copy_sellers query",
-        "preview_item() passes org_id to _resolve_item_seller(), get_item(), get_item_compatibilities(). Scopes first-seller fallback query by org_id",
-        "search_sku() passes org_id to search_sku_all_sellers()",
-        "copy_compat() includes org_id in compat_logs insert, passes org_id to copy_compat_to_targets()",
-        "compat_logs() adds .eq('org_id', user['org_id']) filter. Super-admin sees all",
-        "Typecheck passes"
-      ],
-      "priority": 12,
-      "passes": true,
-      "notes": "Same pattern as US-011 for copy.py. The _resolve_item_seller() in compat.py is a duplicate of the one in copy.py — both need the same change. preview_item() at line ~52 has a fallback: db.table('copy_sellers').select('slug').limit(1).execute() — add .eq('org_id', org_id) and .eq('active', True) to this. copy_compat() at line ~161 inserts into compat_logs — add org_id to log_insert dict."
-    },
-    {
-      "id": "US-013",
-      "title": "Backend: org-scope admin_users.py router",
-      "description": "As a developer, I want user management endpoints scoped by org so that each org admin only manages their own users.",
-      "acceptanceCriteria": [
-        "list_users() adds .eq('org_id', user['org_id']) to users query",
-        "create_user() includes org_id=user['org_id'] in the insert dict. Checks username uniqueness within org (not globally)",
-        "update_user() verifies target user belongs to same org before updating",
-        "delete_user() verifies target user belongs to same org before deleting",
-        "get_user_permissions() scopes copy_sellers query by .eq('org_id', user['org_id'])",
-        "update_user_permissions() adds org_id to the upsert dict",
-        "Typecheck passes"
-      ],
-      "priority": 13,
-      "passes": true,
-      "notes": "In list_users() at line ~48, add .eq('org_id', user['org_id']). In create_user() at line ~57, add 'org_id': user['org_id'] to new_user dict. For uniqueness check, change .eq('username', req.username) to also .eq('org_id', user['org_id']). In update_user()/delete_user(), first fetch the target user and verify target_user['org_id'] == user['org_id'], return 404 if not. In get_user_permissions(), the sellers query at line ~133 should add .eq('org_id', user['org_id'])."
-    },
-    {
-      "id": "US-014",
-      "title": "Backend: super-admin router",
-      "description": "As the platform owner, I want API endpoints to see all organizations, their usage stats, and toggle their active status.",
-      "acceptanceCriteria": [
-        "Create new file app/routers/super_admin.py with APIRouter(prefix='/api/super', tags=['super-admin'])",
-        "All endpoints use Depends(require_super_admin) from app.routers.auth",
-        "GET /api/super/orgs returns list of all orgs, each with: id, name, email, active, payment_active, created_at, user_count, seller_count, copy_count (last 30 days), compat_count (last 30 days)",
-        "PUT /api/super/orgs/{org_id} accepts {active?: bool, payment_active?: bool} and updates the org",
-        "Register the router in app/main.py: app.include_router(super_admin.router)",
-        "Typecheck passes"
-      ],
-      "priority": 14,
-      "passes": true,
-      "notes": "For the stats, use separate count queries: db.table('users').select('id', count='exact').eq('org_id', org_id).execute() → result.count. Same pattern for copy_sellers (add .eq('active', True)), copy_logs (add date filter for last 30 days using .gte('created_at', thirty_days_ago.isoformat())), compat_logs. Import require_super_admin from app.routers.auth. Import get_db from app.db.supabase. Use datetime for 30-day calculation."
-    },
-    {
-      "id": "US-015",
-      "title": "Backend: billing router (Stripe)",
-      "description": "As a developer, I want billing endpoints ready so that Stripe can be configured later without code changes.",
-      "acceptanceCriteria": [
-        "Create new file app/routers/billing.py with APIRouter(prefix='/api/billing', tags=['billing'])",
-        "Add 'stripe' to requirements.txt",
-        "POST /api/billing/create-checkout (Depends(require_user), must be org admin): creates Stripe Checkout Session with mode='subscription', returns {checkout_url}. Creates Stripe customer if org has no stripe_customer_id. Saves stripe_customer_id to org.",
-        "POST /api/billing/create-portal (Depends(require_user), must be org admin): creates Stripe Customer Portal session, returns {portal_url}. Returns 400 if org has no stripe_customer_id.",
-        "POST /api/billing/webhook (no auth): verifies Stripe signature, handles events: checkout.session.completed (set payment_active=true, save subscription_id), customer.subscription.deleted (set payment_active=false), customer.subscription.updated (check status)",
-        "GET /api/billing/status (Depends(require_user)): returns org's {payment_active, stripe_subscription_id} for current user's org",
-        "Register the router in app/main.py",
-        "If stripe_secret_key is empty, all endpoints return 503 with 'Billing not configured'",
-        "Typecheck passes"
-      ],
-      "priority": 15,
-      "passes": true,
-      "notes": "Import stripe, set stripe.api_key = settings.stripe_secret_key. For create-checkout: stripe.checkout.Session.create(mode='subscription', line_items=[{price: settings.stripe_price_id, quantity: 1}], customer=stripe_customer_id or None, customer_email=org_email, success_url=f'{settings.base_url}?billing=success', cancel_url=f'{settings.base_url}?billing=cancel', client_reference_id=str(org_id)). For webhook: stripe.Webhook.construct_event(payload, sig_header, settings.stripe_webhook_secret). The webhook endpoint must accept raw body — use Request object and await request.body(). For admin check within require_user: if user['role'] != 'admin': raise HTTPException(403)."
-    },
-    {
-      "id": "US-016",
-      "title": "Frontend: update types and useAuth for multi-tenant",
-      "description": "As a developer, I want the frontend types and auth hook updated so that all components have access to org context.",
-      "acceptanceCriteria": [
-        "In frontend/src/lib/api.ts: add Org interface {id: string, name: string, email: string, active: boolean, payment_active: boolean, created_at: string}",
-        "In frontend/src/lib/api.ts: add OrgWithStats interface extending Org with {user_count: number, seller_count: number, copy_count: number, compat_count: number}",
-        "In frontend/src/hooks/useAuth.ts: update AuthUser interface to add: email: string, org_id: string, org_name: string, is_super_admin: boolean",
-        "In useAuth.ts: add signup() method that calls POST /api/auth/signup with {email, password, company_name}, stores token, fetches /me, returns boolean success",
-        "In useAuth.ts: fetchMe() parses new fields from /api/auth/me response (org_id, org_name, is_super_admin, email)",
-        "Typecheck passes"
-      ],
-      "priority": 16,
-      "passes": true,
-      "notes": "In useAuth.ts, the AuthUser interface is at line ~12. Add the 4 new fields. The signup() method follows the same pattern as login(): POST to API, store token, call fetchMe(). The /api/auth/me endpoint now returns org_name (from US-006). For the api.ts types, add them after the existing interfaces."
-    },
-    {
-      "id": "US-017",
-      "title": "Frontend: signup page",
-      "description": "As a new customer, I want a signup page so that I can create an account for my company.",
-      "acceptanceCriteria": [
-        "Create frontend/src/pages/Signup.tsx with fields: Email (email input), Senha (password input), Nome da Empresa (text input)",
-        "Submit button 'Criar Conta' calls auth.signup(email, password, companyName)",
-        "On success, redirects to main app (parent handles via auth state change)",
-        "On failure, shows inline error message with same styling as Login.tsx",
-        "Link at bottom: 'Ja tem conta? Entrar' that navigates to login view",
-        "Follow existing design system (CSS variables, card styling from Login.tsx)",
-        "Typecheck passes"
-      ],
-      "priority": 17,
-      "passes": true,
-      "notes": "Copy the structure of Login.tsx for styling. The signup page uses the same card layout, input styling, and error display pattern. The auth.signup() method was added in US-016. The parent App.tsx will handle routing between Login/Signup views in US-019."
-    },
-    {
-      "id": "US-018",
-      "title": "Frontend: update Login page for email",
-      "description": "As a user, I want the login page to accept email and link to signup.",
-      "acceptanceCriteria": [
-        "Change 'Usuario' label to 'Email' in Login.tsx",
-        "Change input type from 'text' to 'email'",
-        "The login call sends {email: value, password: value} instead of {username: value, password: value}",
-        "Add link below the form: 'Ainda nao tem conta? Cadastre-se' that calls an onNavigateToSignup callback prop",
-        "Keep the 'Acesso Admin' master password flow for backward compat (it still sends username field)",
-        "Typecheck passes"
-      ],
-      "priority": 18,
-      "passes": true,
-      "notes": "In Login.tsx, the login function currently sends {username, password}. Change to {email: username_value, password}. The onNavigateToSignup prop will be passed from App.tsx. Keep the admin-promote flow as-is since it's used for bootstrap. Add the signup link with the same styling as other text links in the app."
-    },
-    {
-      "id": "US-019",
-      "title": "Frontend: App.tsx routing for signup, super-admin tab, org display",
-      "description": "As a user, I want the app to handle signup routing, show org name in header, and show super-admin tab when applicable.",
-      "acceptanceCriteria": [
-        "Add authView state ('login' | 'signup') for unauthenticated routing. Default to 'login'",
-        "When !isAuthenticated: show Login if authView='login', Signup if authView='signup'",
-        "Pass onNavigateToSignup callback to Login that sets authView='signup'",
-        "Pass onNavigateToLogin callback to Signup (for the 'Ja tem conta?' link)",
-        "In header, display org name next to username: '{username} - {org_name}'",
-        "If user.is_super_admin, add 'Plataforma' tab to visibleTabs that shows SuperAdminPage",
-        "Typecheck passes"
-      ],
-      "priority": 19,
-      "passes": true,
-      "notes": "In App.tsx, add 'super' to the View type. The visibleTabs useMemo already conditionally adds tabs — add: if (u.is_super_admin) tabs.push('super'). For the unauthenticated view, wrap the Login/Signup toggle in the existing !isAuthenticated block. The SuperAdminPage component will be created in US-020. For now, render a placeholder div if the component doesn't exist yet."
-    },
-    {
-      "id": "US-020",
-      "title": "Frontend: super-admin page",
-      "description": "As the platform owner, I want a page to see all organizations, their payment status, and usage stats.",
-      "acceptanceCriteria": [
-        "Create frontend/src/pages/SuperAdminPage.tsx",
-        "Fetch GET /api/super/orgs on mount, display table with columns: Empresa, Email, Status (Ativo/Inativo badge), Pagamento (Ativo/Inativo badge), Usuarios, Sellers, Copias (30d), Compats (30d), Criado em",
-        "Each row has a toggle button to activate/deactivate org (PUT /api/super/orgs/{id})",
-        "Use same table styling as CopyPage logs table (th/td styles, StatusBadge pattern)",
-        "Follow existing design system (Card component from CopyPage, CSS variables)",
-        "Typecheck passes"
-      ],
-      "priority": 20,
-      "passes": true,
-      "notes": "Import Card from './CopyPage' (it's already exported). Use the same table styling pattern (th with uppercase labels, td with padding). For the toggle, use a simple button that calls PUT with {active: !current_active}. Refresh the list after toggle. The API returns OrgWithStats shape from US-016 types. Format dates with toLocaleString('pt-BR')."
-    },
-    {
-      "id": "US-021",
-      "title": "Frontend: billing page and payment banner",
-      "description": "As an org admin, I want to see billing status and subscribe via Stripe, and see a banner if payment is pending.",
-      "acceptanceCriteria": [
-        "Create frontend/src/pages/BillingPage.tsx accessible from Admin tab as a sub-section",
-        "Show current billing status from GET /api/billing/status: payment active/inactive",
-        "If payment inactive: show 'Assinar' button that calls POST /api/billing/create-checkout and redirects to checkout_url",
-        "If payment active: show 'Gerenciar Assinatura' button that calls POST /api/billing/create-portal and redirects to portal_url",
-        "In App.tsx: if user is org admin and org.payment_active is false, show a subtle banner below header: 'Assinatura pendente' with link to billing",
-        "If billing endpoints return 503 (not configured), hide the billing section entirely",
-        "Typecheck passes"
-      ],
-      "priority": 21,
-      "passes": true,
-      "notes": "The billing status comes from GET /api/billing/status. If it returns 503, set a 'billingAvailable=false' state and hide the section. For the Assinar button, POST /api/billing/create-checkout returns {checkout_url} — use window.location.href = checkout_url to redirect. Same for portal. Add BillingPage as a sub-tab in the Admin section alongside Sellers and Usuarios. The payment banner in App.tsx should be a simple div with warning styling."
-    },
-    {
-      "id": "US-022",
-      "title": "Frontend: update Admin page for OAuth install flow",
-      "description": "As an org admin, I want the ML seller install to work with the new authenticated flow.",
-      "acceptanceCriteria": [
-        "In Admin.tsx (or wherever the ML install link is), change from direct link to fetching GET /api/ml/install with auth headers",
-        "The API now returns {redirect_url} — open it with window.open(redirect_url, '_blank') or window.location.href",
-        "If the fetch fails with 401, show error message",
-        "Typecheck passes"
-      ],
-      "priority": 22,
-      "passes": true,
-      "notes": "The current Admin.tsx likely has an <a href> link to /api/ml/install. Since this endpoint now requires auth (X-Auth-Token header) and returns JSON instead of redirecting, we need to fetch it programmatically. Use fetch() with headers() from props, parse JSON, then window.open() the redirect_url. This is a small change — just update the install button/link handler."
+      "passes": false,
+      "notes": "In app/main.py at ~line 56: change `async def debug_env():` to `async def debug_env(user: dict = Depends(require_super_admin)):`. Add imports at top: `from fastapi import Depends` (may already be imported) and `from app.routers.auth import require_super_admin`. The function body stays the same."
     }
   ]
 }

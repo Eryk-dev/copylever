@@ -172,7 +172,7 @@ async def copy_with_dims(req: CopyWithDimensionsRequest, user: dict = Depends(re
                 "error_details": new_errors or None,
             }).eq("source_item_id", item_id).eq(
                 "source_seller", req.source
-            ).eq("status", "needs_dimensions").execute()
+            ).eq("status", "needs_dimensions").eq("org_id", org_id).execute()
         except Exception as e:
             logger.warning(f"Failed to update needs_dimensions logs for {item_id}: {e}")
 
@@ -251,7 +251,7 @@ async def retry_dimensions(req: RetryDimensionsRequest, user: dict = Depends(req
         "status": new_status,
         "dest_item_ids": dest_item_ids or None,
         "error_details": new_errors or None,
-    }).eq("id", req.log_id).execute()
+    }).eq("id", req.log_id).eq("org_id", org_id).execute()
 
     return {
         "log_id": req.log_id,
