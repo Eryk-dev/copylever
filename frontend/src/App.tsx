@@ -34,7 +34,11 @@ export default function App() {
   const [paymentActive, setPaymentActive] = useState(true);
   const [billingMessage, setBillingMessage] = useState<string | null>(null);
   const [paywallLoading, setPaywallLoading] = useState(false);
-  const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('onboarding-done'));
+  const [connectingMl, setConnectingMl] = useState(false);
+  const [trialCopiesUsed, setTrialCopiesUsed] = useState(0);
+  const [trialCopiesLimit, setTrialCopiesLimit] = useState(20);
+  const [trialActive, setTrialActive] = useState(false);
+  const [trialExhausted, setTrialExhausted] = useState(false);
 
   // Reset to landing page on logout
   useEffect(() => {
@@ -53,7 +57,13 @@ export default function App() {
         return res.json();
       })
       .then(data => {
-        if (data) setPaymentActive(data.payment_active);
+        if (data) {
+          setPaymentActive(data.payment_active);
+          setTrialCopiesUsed(data.trial_copies_used ?? 0);
+          setTrialCopiesLimit(data.trial_copies_limit ?? 20);
+          setTrialActive(data.trial_active ?? false);
+          setTrialExhausted(data.trial_exhausted ?? false);
+        }
       })
       .catch(() => setBillingAvailable(false));
   }, [auth.isAuthenticated]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -80,18 +90,20 @@ export default function App() {
         .then(data => {
           if (data?.payment_active) {
             setPaymentActive(true);
+            setTrialActive(false);
+            setTrialExhausted(false);
             clearInterval(interval);
             window.history.replaceState(null, '', window.location.pathname);
           } else if (attempts >= maxAttempts) {
             clearInterval(interval);
-            setBillingMessage('Pagamento em processamento. Atualize a pagina em alguns segundos.');
+            setBillingMessage('Pagamento em processamento. Atualize a página em alguns segundos.');
             window.history.replaceState(null, '', window.location.pathname);
           }
         })
         .catch(() => {
           if (attempts >= maxAttempts) {
             clearInterval(interval);
-            setBillingMessage('Pagamento em processamento. Atualize a pagina em alguns segundos.');
+            setBillingMessage('Pagamento em processamento. Atualize a página em alguns segundos.');
             window.history.replaceState(null, '', window.location.pathname);
           }
         });
@@ -179,8 +191,8 @@ export default function App() {
     );
   }
 
-  // Paywall: billing configured, not paid, not super-admin
-  if (billingAvailable && !paymentActive && !auth.user?.is_super_admin) {
+  // Paywall: billing configured, not paid, trial exhausted, not super-admin
+  if (billingAvailable && !paymentActive && trialExhausted && !auth.user?.is_super_admin) {
     const handlePaywallSubscribe = async () => {
       setPaywallLoading(true);
       try {
@@ -190,13 +202,13 @@ export default function App() {
         });
         if (!res.ok) {
           const data = await res.json().catch(() => null);
-          setBillingMessage(data?.detail || 'Erro ao criar sessao de checkout');
+          setBillingMessage(data?.detail || 'Erro ao criar sessão de checkout');
           return;
         }
         const data = await res.json();
         window.location.href = data.checkout_url;
       } catch {
-        setBillingMessage('Erro de conexao');
+        setBillingMessage('Erro de conexão');
       } finally {
         setPaywallLoading(false);
       }
@@ -210,12 +222,19 @@ export default function App() {
         justifyContent: 'center',
         padding: 'var(--space-6)',
       }}>
+        <style>{`
+          .lp-logo-img { filter: none; }
+          @media (prefers-color-scheme: dark) {
+            .lp-logo-img { filter: invert(1); }
+          }
+        `}</style>
         <div className="animate-in" style={{
           width: '100%',
           maxWidth: 480,
         }}>
           {/* Header */}
           <div style={{ textAlign: 'center', marginBottom: 'var(--space-8)' }}>
+            <img src="/logo-lever.svg" alt="Copy Anúncios" className="lp-logo-img" style={{ height: 36, display: 'block', margin: '0 auto var(--space-2)' }} />
             <h1 style={{
               fontSize: 'var(--text-2xl)',
               fontWeight: 700,
@@ -223,13 +242,13 @@ export default function App() {
               color: 'var(--ink)',
               marginBottom: 'var(--space-2)',
             }}>
-              Copy Anuncios
+              Copy Anúncios
             </h1>
             <p style={{
               color: 'var(--ink-muted)',
               fontSize: 'var(--text-sm)',
             }}>
-              Copie anuncios entre contas do Mercado Livre em segundos
+              Voce usou suas {trialCopiesLimit} copias gratuitas. Assine para continuar copiando.
             </p>
           </div>
 
@@ -256,7 +275,7 @@ export default function App() {
                 <span style={{ fontSize: 'var(--text-sm)', color: 'var(--ink-muted)', fontWeight: 500 }}>R$</span>
                 <span style={{ fontSize: 40, fontWeight: 700, color: 'var(--ink)', letterSpacing: '-0.03em', lineHeight: 1 }}>349</span>
                 <span style={{ fontSize: 'var(--text-lg)', fontWeight: 600, color: 'var(--ink)' }}>,90</span>
-                <span style={{ fontSize: 'var(--text-sm)', color: 'var(--ink-muted)', marginLeft: 'var(--space-1)' }}>/mes</span>
+                <span style={{ fontSize: 'var(--text-sm)', color: 'var(--ink-muted)', marginLeft: 'var(--space-1)' }}>/mês</span>
               </div>
             </div>
 
@@ -266,11 +285,11 @@ export default function App() {
             {/* Features */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', marginBottom: 'var(--space-6)' }}>
               {[
-                'Copia ilimitada de anuncios',
-                'Copia de compatibilidades veiculares',
-                'Multiplas contas do Mercado Livre',
-                'Usuarios e permissoes por conta',
-                'Dimensoes e atributos automaticos',
+                'Cópia ilimitada de anúncios',
+                'Cópia de compatibilidades veiculares',
+                'Múltiplas contas do Mercado Livre',
+                'Usuários e permissões por conta',
+                'Dimensões e atributos automáticos',
               ].map((feature) => (
                 <div key={feature} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
                   <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
@@ -299,7 +318,7 @@ export default function App() {
               }}
             >
               {paywallLoading && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--paper)' }} />}
-              {paywallLoading ? 'Redirecionando...' : 'Comecar agora'}
+              {paywallLoading ? 'Redirecionando...' : 'Começar agora'}
             </button>
 
             {/* Trust signals */}
@@ -357,6 +376,98 @@ export default function App() {
     );
   }
 
+  // Empty state: no sellers connected yet — show connect screen
+  if (auth.sellers.length === 0 && auth.user?.role === 'admin' && !auth.user?.is_super_admin) {
+    const handleConnectMl = async () => {
+      setConnectingMl(true);
+      try {
+        const res = await fetch(`${API_BASE}/api/ml/install`, { headers: auth.headers() });
+        if (!res.ok) {
+          setConnectingMl(false);
+          return;
+        }
+        const data = await res.json();
+        if (data.redirect_url) window.location.href = data.redirect_url;
+      } catch {
+        setConnectingMl(false);
+      }
+    };
+
+    return (
+      <div style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 'var(--space-6)',
+      }}>
+        <style>{`
+          .lp-logo-img { filter: none; }
+          @media (prefers-color-scheme: dark) {
+            .lp-logo-img { filter: invert(1); }
+          }
+        `}</style>
+        <div className="animate-in" style={{ width: '100%', maxWidth: 420, textAlign: 'center' }}>
+          <img src="/logo-lever.svg" alt="Copy Anúncios" className="lp-logo-img" style={{ height: 32, display: 'block', margin: '0 auto var(--space-6)' }} />
+
+          <h1 style={{
+            fontSize: 'var(--text-2xl)',
+            fontWeight: 700,
+            letterSpacing: 'var(--tracking-tight)',
+            color: 'var(--ink)',
+            marginBottom: 'var(--space-2)',
+          }}>
+            Conecte sua conta
+          </h1>
+          <p style={{
+            color: 'var(--ink-muted)',
+            fontSize: 'var(--text-sm)',
+            lineHeight: 1.6,
+            marginBottom: 'var(--space-8)',
+          }}>
+            Para começar a copiar anúncios, conecte pelo menos uma conta do Mercado Livre.
+          </p>
+
+          <button
+            onClick={handleConnectMl}
+            disabled={connectingMl}
+            className="btn-primary"
+            style={{
+              width: '100%',
+              padding: '14px 24px',
+              fontSize: 'var(--text-base)',
+              fontWeight: 600,
+              borderRadius: 10,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 'var(--space-2)',
+            }}
+          >
+            {connectingMl && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--paper)' }} />}
+            {connectingMl ? 'Redirecionando...' : 'Conectar conta do Mercado Livre'}
+          </button>
+
+          <div style={{ marginTop: 'var(--space-6)' }}>
+            <button
+              onClick={auth.logout}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--ink-faint)',
+                fontSize: 'var(--text-xs)',
+                cursor: 'pointer',
+                textDecoration: 'underline',
+              }}
+            >
+              Sair
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{
       width: '100%',
@@ -368,6 +479,12 @@ export default function App() {
       gap: 'var(--space-8)',
       minHeight: '100vh',
     }}>
+      <style>{`
+        .lp-logo-img { filter: none; }
+        @media (prefers-color-scheme: dark) {
+          .lp-logo-img { filter: invert(1); }
+        }
+      `}</style>
       {/* Header */}
       <header style={{
         display: 'flex',
@@ -376,14 +493,17 @@ export default function App() {
         gap: 'var(--space-4)',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-4)' }}>
-          <h1 style={{
-            fontSize: 'var(--text-xl)',
-            fontWeight: 700,
-            letterSpacing: 'var(--tracking-tight)',
-            color: 'var(--ink)',
-          }}>
-            Copy Anuncios
-          </h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+            <img src="/logo-lever.svg" alt="Copy Anúncios" className="lp-logo-img" style={{ height: 28, display: 'block' }} />
+            <h1 style={{
+              fontSize: 'var(--text-lg)',
+              fontWeight: 700,
+              letterSpacing: 'var(--tracking-tight)',
+              color: 'var(--ink)',
+            }}>
+              Copy Anúncios
+            </h1>
+          </div>
           <nav style={{
             display: 'flex',
             gap: 2,
@@ -393,12 +513,12 @@ export default function App() {
           }}>
             {visibleTabs.includes('copy') && (
               <ViewTab active={activeView === 'copy'} onClick={() => setView('copy')}>
-                Copiar
+                Cópia
               </ViewTab>
             )}
             {visibleTabs.includes('compat') && (
               <ViewTab active={activeView === 'compat'} onClick={() => setView('compat')}>
-                Compat
+                Compatibilidade
               </ViewTab>
             )}
             {visibleTabs.includes('admin') && (
@@ -436,47 +556,54 @@ export default function App() {
         </div>
       </header>
 
-      {/* Onboarding Guide */}
-      {showOnboarding && !auth.user?.is_super_admin && (
+      {/* Trial Progress Banner */}
+      {trialActive && !auth.user?.is_super_admin && (
         <div style={{
           background: 'var(--surface)',
-          borderRadius: 12,
-          padding: 'var(--space-6)',
+          border: '1px solid var(--line)',
+          borderRadius: 8,
+          padding: 'var(--space-3) var(--space-4)',
+          fontSize: 'var(--text-sm)',
+          color: 'var(--ink)',
         }}>
-          <h2 style={{
-            fontSize: 'var(--text-base)',
-            fontWeight: 700,
-            color: 'var(--ink)',
-            marginBottom: 'var(--space-4)',
-          }}>
-            Bem-vindo ao Copy Anuncios!
-          </h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-            <p style={{ fontSize: 'var(--text-sm)', color: 'var(--ink-muted)' }}>
-              <strong style={{ color: 'var(--ink)' }}>1.</strong> Conecte sua conta do Mercado Livre na aba Admin &gt; Sellers
-            </p>
-            <p style={{ fontSize: 'var(--text-sm)', color: 'var(--ink-muted)' }}>
-              <strong style={{ color: 'var(--ink)' }}>2.</strong> Cole os IDs dos anuncios que deseja copiar
-            </p>
-            <p style={{ fontSize: 'var(--text-sm)', color: 'var(--ink-muted)' }}>
-              <strong style={{ color: 'var(--ink)' }}>3.</strong> Selecione origem e destino e clique Copiar
-            </p>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-2)' }}>
+            <span style={{ fontWeight: 600 }}>
+              Periodo de teste gratuito
+            </span>
+            <span style={{ color: 'var(--ink-muted)', fontSize: 'var(--text-xs)' }}>
+              {trialCopiesUsed}/{trialCopiesLimit} copias usadas
+            </span>
           </div>
-          <button
-            onClick={() => {
-              localStorage.setItem('onboarding-done', 'true');
-              setShowOnboarding(false);
-            }}
-            className="btn-primary"
-            style={{ marginTop: 'var(--space-4)', padding: '8px 20px', fontSize: 'var(--text-sm)' }}
-          >
-            Entendi
-          </button>
+          <div style={{
+            height: 6,
+            background: 'var(--line)',
+            borderRadius: 3,
+            overflow: 'hidden',
+          }}>
+            <div style={{
+              height: '100%',
+              width: `${Math.min(100, (trialCopiesUsed / trialCopiesLimit) * 100)}%`,
+              background: trialCopiesUsed >= trialCopiesLimit * 0.8 ? 'var(--warning, #f59e0b)' : 'var(--success, #22c55e)',
+              borderRadius: 3,
+              transition: 'width 0.3s ease',
+            }} />
+          </div>
+          {auth.user?.role === 'admin' && trialCopiesUsed >= trialCopiesLimit * 0.5 && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 'var(--space-2)' }}>
+              <button
+                className="btn-ghost"
+                style={{ fontSize: 'var(--text-xs)', padding: '4px 10px' }}
+                onClick={() => { setView('admin'); setAdminSubView('billing'); }}
+              >
+                Assinar plano
+              </button>
+            </div>
+          )}
         </div>
       )}
 
       {/* Payment Banner */}
-      {billingAvailable && !paymentActive && auth.user?.role === 'admin' && !auth.user?.is_super_admin && (
+      {billingAvailable && !paymentActive && !trialActive && auth.user?.role === 'admin' && !auth.user?.is_super_admin && (
         <div style={{
           background: 'rgba(245,158,11,0.1)',
           border: '1px solid rgba(245,158,11,0.3)',
