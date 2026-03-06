@@ -159,6 +159,15 @@ export default function CopyForm({
       const deniedSlugs: string[] = [];
       const promises: Promise<void>[] = [];
 
+      // Check if user pasted Shopee URLs but has no Shopee sellers connected
+      const shopeeOnlyNoSellers = ids.some(id => {
+        const info = hints[id];
+        return info?.hint === 'shopee' && !hasShopee;
+      });
+      if (shopeeOnlyNoSellers && shopeeCandidates.length === 0) {
+        setResolveError('Nenhuma loja Shopee conectada');
+      }
+
       if (mlCandidates.length > 0) {
         promises.push((async () => {
           try {
@@ -196,7 +205,11 @@ export default function CopyForm({
               body: JSON.stringify({ item_ids: shopeeCandidates.map(c => c.apiId) }),
               signal: controller.signal,
             });
-            if (!res.ok) return;
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({ detail: res.statusText }));
+              setResolveError(err.detail || `Erro ao resolver sellers Shopee (${res.status})`);
+              return;
+            }
             const data: { results: { item_id: string; shop_slug: string }[]; errors: { item_id: string }[] } = await res.json();
             for (const r of data.results) {
               const candidate = shopeeCandidates.find(c => c.apiId === r.item_id);

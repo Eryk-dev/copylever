@@ -28,6 +28,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Fixed (Frontend)
 - Botao "Informar dimensoes" para copias Shopee agora envia payload correto (`source`, `destinations`, `item_id`, `dimensions`) em vez de `log_id` — antes a requisicao sempre falhava pois o backend esperava campos diferentes
+- Erro ao resolver sellers Shopee agora exibe mensagem ao usuario em vez de falhar silenciosamente; mensagem especifica 'Nenhuma loja Shopee conectada' quando usuario cola URL Shopee sem ter loja conectada
 
 ### Added (Frontend)
 - Preview Shopee agora exibe peso do item (em g ou kg) e alerta visual quando item nao tem descricao (Shopee exige descricao para criar anuncio)
