@@ -297,7 +297,7 @@ export default function CopyPage({ sellers, headers, user }: Props) {
                 )}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <p style={{ fontWeight: 500, fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-tight)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title}</p>
-                  <p style={{ color: 'var(--positive)', fontWeight: 700, fontSize: 'var(--text-sm)', marginTop: 2 }}>
+                  <p style={{ color: 'var(--success)', fontWeight: 700, fontSize: 'var(--text-sm)', marginTop: 2 }}>
                     R$ {p.price?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                   </p>
                 </div>
