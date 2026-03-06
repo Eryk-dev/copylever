@@ -180,14 +180,23 @@ async def get_user_permissions(user_id: str, user: dict = Depends(require_admin)
     if not target.data or target.data[0]["org_id"] != user["org_id"]:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
 
-    # Fetch all connected sellers for this org
-    sellers_result = (
+    # Fetch all connected ML sellers for this org
+    ml_result = (
         db.table("copy_sellers")
         .select("slug, name")
         .eq("org_id", user["org_id"])
         .execute()
     )
-    all_sellers = sellers_result.data or []
+    ml_sellers = ml_result.data or []
+
+    # Fetch all connected Shopee shops for this org
+    shopee_result = (
+        db.table("shopee_sellers")
+        .select("slug, name")
+        .eq("org_id", user["org_id"])
+        .execute()
+    )
+    shopee_shops = shopee_result.data or []
 
     # Fetch existing permissions for this user
     perms_result = db.table("user_permissions").select(
@@ -195,13 +204,23 @@ async def get_user_permissions(user_id: str, user: dict = Depends(require_admin)
     ).eq("user_id", user_id).execute()
     perms_map = {p["seller_slug"]: p for p in (perms_result.data or [])}
 
-    # Merge: all sellers with permission defaults
+    # Merge: all sellers with permission defaults and platform tag
     result = []
-    for seller in all_sellers:
+    for seller in ml_sellers:
         perm = perms_map.get(seller["slug"], {})
         result.append({
             "seller_slug": seller["slug"],
             "seller_name": seller["name"],
+            "platform": "ml",
+            "can_copy_from": perm.get("can_copy_from", False),
+            "can_copy_to": perm.get("can_copy_to", False),
+        })
+    for shop in shopee_shops:
+        perm = perms_map.get(shop["slug"], {})
+        result.append({
+            "seller_slug": shop["slug"],
+            "seller_name": shop["name"],
+            "platform": "shopee",
             "can_copy_from": perm.get("can_copy_from", False),
             "can_copy_to": perm.get("can_copy_to", False),
         })

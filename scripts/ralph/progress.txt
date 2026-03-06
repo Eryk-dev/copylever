@@ -1,166 +1,92 @@
 # Ralph Progress Log
-Started: Thu Mar  5 15:46:25 -03 2026
+Started: Fri Mar  6 00:04:59 -03 2026
 ---
 
 ## Codebase Patterns
-- `copy_with_dimensions` in item_copier.py already accepts user_id and passes it to copy_single_item
-- copy_logs entries are managed by the router/bulk-copy layer, not by copy_single_item
-- copy_single_item writes to api_debug_logs (debug), not copy_logs
-- TypeScript typecheck: `npx tsc --noEmit` in frontend/; Python: `python3 -m py_compile <file>`
----
+- Use `python3` not `python` — only python3 is available on this machine
+- Shopee API responses wrap data in `response` key: e.g. `resp["response"]["item_list"][0]`
+- Shopee image upload returns `resp["response"]["image_info"]["image_id"]`
+- Shopee logistics channels are in `resp["response"]["logistics_channel_list"]`
+- Module imports work: `from app.services.shopee_api import ...` — project root is in Python path
+- mypy errors in shopee_api.py are pre-existing (param type mismatches) — ignore when checking new files
+- Use `--ignore-missing-imports` with mypy for this project
+- Shopee new item_id after add_item is at `resp["response"]["item_id"]`
+- `api_debug_logs` table is shared between ML and Shopee — use `action` field to differentiate
+- `shopee_copy_logs.source_item_id` is bigint — pass int, not string
+- Supabase `.single()` raises on not-found — no need for manual empty check
+- `asyncio.gather(return_exceptions=True)` returns `BaseException` — use `isinstance(r, BaseException)` for mypy
+- Shopee item IDs are pure integers (not MLB-prefixed) — normalize via `int()`
+- Trial limit (check + increment) shares the same org counter for ML and Shopee
+- `user_permissions` has no `platform` column — slug uniqueness across ML/Shopee is sufficient, `platform` is computed in GET response
 
-## 2026-03-05 - US-110
-- **Already implemented** — all acceptance criteria were met in existing code
-- copy_with_dimensions already had user_id param (line 1071) and propagated it (line 1096)
-- Both /with-dimensions (line 158) and /retry-dimensions (line 242) already pass user['id']
-- Files changed: none (only prd.json + progress.txt)
+## 2026-03-06 - US-001
+- Implemented `app/services/shopee_copier.py` with helper functions:
+  - `_fetch_source_item()` — fetches base_info + extra_info + models from Shopee API
+  - `_upload_images()` — uploads up to 9 images with 1 retry per image
+  - `_upload_single_image()` — single image upload helper
+  - `_fetch_dest_logistics()` — fetches enabled logistics channels for dest shop
+  - `_build_shopee_payload()` — builds add_item payload with all required fields
+- Files changed: `app/services/shopee_copier.py` (new)
 - **Learnings for future iterations:**
-  - Some PRD stories may already be implemented — verify before writing code
-  - copy_with_dimensions doesn't create copy_logs; it delegates to copy_single_item for api_debug_logs, and the router handles copy_logs updates
+  - Shopee base_info items are inside `response.item_list[0]`, not directly in response
+  - Weight is in kg (float), default to 0.5 if missing
+  - Description is required by Shopee — falls back to item_name if empty
+  - Stock info uses `stock_info_v2.summary_info.total_available_stock` in newer API
+  - `get_model_list` can fail for items without variations — wrap in try/except
+  - Shopee `condition` is string "NEW" not ML-style "new"
+- `_resolve_shop_id()` uses `.single()` — throws if not found, no need for manual check
+- Shopee `add_item` response: new item_id at `response.item_id`
+- Shopee copy logs table: `shopee_copy_logs` with `source_item_id` as bigint (not text)
 ---
 
-## 2026-03-05 - US-109
-- Fixed retry-dimensions to use `log["org_id"]` instead of `user["org_id"]`
-- Moved `org_id = ...` from before log fetch to after, deriving it from the fetched log row
-- Files changed: `app/routers/copy.py`
+## 2026-03-06 - US-002
+- Implemented copy orchestration functions in `app/services/shopee_copier.py`:
+  - `copy_single_item()` — orchestrates fetch→upload→logistics→build→create with 3 retry attempts
+  - `copy_items()` — copies multiple items×dests, logs to shopee_copy_logs, returns summary
+  - `copy_with_dimensions()` — copies single item with user-provided dimensions
+  - `_resolve_shop_id()` — resolves slug to shop_id via shopee_sellers table
+  - `_log_debug()` — logs failed API calls to api_debug_logs (same pattern as ML)
+  - `_is_dimension_error()` — detects dimension/weight errors for needs_dimensions status
+  - `_strip_attributes()` — retry 2 strips non-essential attributes
+  - `_minimal_payload()` — retry 3 uses bare minimum fields
+- Retry logic: attempt 1 full payload, attempt 2 strips attributes, attempt 3 minimal payload
+- 0.7s sleep between sequential copy calls for rate limiting
+- Files changed: `app/services/shopee_copier.py`
 - **Learnings for future iterations:**
-  - retry-dimensions org_id now comes from log row (line 207), not user session
-  - Super admin log queries skip org filter but still use the log's org_id for downstream operations
-  - The `.eq("org_id", org_id)` in the log update query acts as a safety check — it must match the log's own org_id
+  - Shopee new item_id is in `response.item_id` (not nested in item_list)
+  - Same `api_debug_logs` table is shared between ML and Shopee debug logs
+  - `shopee_copy_logs.source_item_id` is bigint — pass int directly, not string
+  - `_resolve_shop_id` uses Supabase `.single()` which raises on not-found — wraps naturally
+  - Shopee error format: `error_code: message` pattern, check `error_code` field
 ---
 
-## 2026-03-05 - US-106
-- Deduplicated item IDs in both frontend and backend
-- Frontend: `normalizeAndResolve` now uses `[...new Set(ids)]` to remove duplicates, shows info message `{N} duplicata(s) removida(s)`, updates textarea with unique IDs only
-- Backend copy endpoint: `clean_ids = list(dict.fromkeys(clean_ids))` after cleaning
-- Backend resolve-sellers: dedup via `list(dict.fromkeys(...))` during normalization
-- Files changed: `frontend/src/components/CopyForm.tsx`, `app/routers/copy.py`
+## 2026-03-06 - US-003
+- Implemented `app/routers/shopee_copy.py` with all 5 endpoints:
+  - `POST /api/shopee/copy` — bulk copy with permission checks, trial limits, item ID normalization
+  - `POST /api/shopee/copy/with-dimensions` — copy with dimensions (grams→kg conversion for weight)
+  - `GET /api/shopee/copy/preview/{item_id}` — auto-detect shop, return preview data
+  - `GET /api/shopee/copy/logs` — org-scoped logs (admin=all, operator=own)
+  - `POST /api/shopee/copy/resolve-sellers` — parallel resolve with asyncio.Semaphore(5)
+- Registered router in `app/main.py`
+- Files changed: `app/routers/shopee_copy.py` (new), `app/main.py`
 - **Learnings for future iterations:**
-  - `dict.fromkeys()` is the idiomatic Python way to deduplicate while preserving order
-  - `[...new Set(arr)]` is the JS equivalent for deduplication preserving order
-  - `normalizeAndResolve` in CopyForm.tsx is the central place for ID normalization before resolve
-  - The resolve-sellers endpoint normalizes IDs with `_normalize_item_id` — dedup should happen after normalization
+  - Shopee item IDs are pure integers (not MLB-prefixed like ML) — normalize with int()
+  - Shopee URLs can have format `shopee.com.br/product/X/Y` or `i.shopid.itemid`
+  - `asyncio.gather(return_exceptions=True)` returns `BaseException` not `Exception` — use `isinstance(r, BaseException)` for type narrowing
+  - Trial limit pattern (check + increment) is duplicated from copy.py — both ML and Shopee share the same org trial counter
+  - Preview endpoint iterates all org's shopee_sellers to auto-detect item owner (no resolve step needed)
+  - Logs endpoint uses `require_user` (not `require_active_org`) per AC — allows viewing logs even if org is inactive
 ---
 
-## 2026-03-05 - US-102
-- Moved `lastResolvedKey.current = key` from before fetch to after `setResolvedSources(sources)` (success path only)
-- On error (catch block or !res.ok), lastResolvedKey is NOT updated — same IDs can be retried
-- Added 'Tentar novamente' button next to resolveError message, styled as btn-ghost
-- Button clears lastResolvedKey.current and calls normalizeAndResolve
-- Files changed: `frontend/src/components/CopyForm.tsx`
-- **Learnings for future iterations:**
-  - resolveAll has 3 exit paths: early return on !res.ok (line 72), catch block (line 96-97), and success. lastResolvedKey must only be set in the success path.
-  - The retry button uses inline onClick to clear lastResolvedKey before calling normalizeAndResolve — this pattern avoids needing a separate retry function
----
-
-## 2026-03-05 - US-103
-- Added AbortController ref (`abortRef`) to cancel in-flight resolve requests when a new one starts
-- In `resolveAll`: abort previous controller, create new one, pass `signal` to fetch
-- On `AbortError` in catch: silently return (don't set resolveError)
-- In `finally`: only set `setResolving(false)` if the controller was NOT aborted (prevents stale state from cancelled request)
-- Files changed: `frontend/src/components/CopyForm.tsx`
-- **Learnings for future iterations:**
-  - When aborting fetch, the `finally` block still runs — must check `controller.signal.aborted` to avoid resetting `resolving` state for a superseded request
-  - AbortError is a DOMException with `name === 'AbortError'` — check both instanceof and name
-  - The pattern `if (abortRef.current) abortRef.current.abort()` at the start of resolveAll ensures only the latest request survives
----
-
-## 2026-03-05 - US-105
-- Disabled "Selecionar todos" button during resolve: added `disabled={resolving}` and `opacity: 0.5` when resolving
-- Disabled individual destination chip buttons during resolve: added `disabled={resolving}`, `opacity: 0.5`, and `pointerEvents: 'none'`
-- Auto-cleanup of conflicting destinations: already handled by `setDestinations([])` in resolveAll (line 65) + `validDests` filtering by sourceSlugs
-- Files changed: `frontend/src/components/CopyForm.tsx`
-- **Learnings for future iterations:**
-  - `validDests` is derived from `sourceSlugs` which comes from `resolvedSources` — conflicting destinations are automatically excluded from the list
-  - `setDestinations([])` in resolveAll already clears all destinations when a new resolve starts, so no extra cleanup needed after resolve
-  - Use `pointerEvents: 'none' as const` in inline styles to satisfy TypeScript (CSSProperties expects specific string literal)
----
-
-## 2026-03-05 - US-111
-- After password update in reset-password endpoint, now deletes ALL user_sessions for the user
-- Deletes ALL password_reset_tokens for the user (not just the used one)
-- Logs the action in auth_logs with action 'password_reset_sessions_cleared'
-- Extracted `user_id = token_row["user_id"]` to avoid repetition
-- Files changed: `app/routers/auth.py`
-- **Learnings for future iterations:**
-  - The reset-password endpoint is at line 358 in auth.py
-  - `password_reset_tokens` table has user_id column — can delete all tokens for a user
-  - auth_logs pattern: wrap insert in try/except with logger.warning fallback (consistent with login/logout handlers)
----
-
-## 2026-03-05 - US-112
-- Removed username fallback in login endpoint (was line 153 in auth.py)
-- Login now only searches by email — no username fallback
-- Updated error messages from 'Credenciais inválidas' to 'Email ou senha incorretos' (3 occurrences in backend, 1 in frontend)
-- Frontend already used email-only (type="email", placeholder="Email") — no frontend changes needed beyond error message
-- LoginRequest model already had `email: str` — no model change needed
-- Files changed: `app/routers/auth.py`, `frontend/src/pages/Login.tsx`
-- **Learnings for future iterations:**
-  - The login endpoint had 3 error paths (user not found, inactive user, wrong password) — all needed the same error message update
-  - Frontend Login.tsx is at `frontend/src/pages/Login.tsx` (not LoginPage.tsx)
-  - The useAuth hook in `frontend/src/hooks/useAuth.ts` already sends `{ email, password }` to the login endpoint
----
-
-## 2026-03-05 - US-113
-- Added `_check_last_admin` helper that queries for other active admins in the org (using `count="exact"` + `neq("id", target)`)
-- DELETE endpoint: removed blanket self-delete block, added last-admin check before deleting admins
-- PUT endpoint: added last-admin check before demoting (role change) or deactivating an admin
-- Extended target user queries to include `role, active` fields
+## 2026-03-06 - US-004
+- Modified GET `/users/{user_id}/permissions` in `app/routers/admin_users.py` to include Shopee shops
+  - Added second query to `shopee_sellers` table for the org
+  - Each entry now includes `platform` field: `"ml"` for ML sellers, `"shopee"` for Shopee shops
+  - Merged both into a single response list with permission defaults from `user_permissions`
+- PUT endpoint unchanged — `user_permissions` table upserts by `user_id + seller_slug`, works for both platforms
 - Files changed: `app/routers/admin_users.py`
 - **Learnings for future iterations:**
-  - Supabase Python client supports `select("id", count="exact")` — `result.count` gives the count without fetching all rows
-  - The blanket self-delete block was removed; last-admin protection covers the dangerous case (self-delete of last admin)
-  - `_check_last_admin` counts admins != target, so deleting one of two admins is always allowed
-  - Both demote (role change) AND deactivation (active=false) need the check — both effectively remove an admin
----
-
-## 2026-03-05 - US-107
-- Added per-seller asyncio.Lock to prevent concurrent token refreshes from invalidating each other
-- Module-level `_token_locks: dict[str, asyncio.Lock]` and `_get_seller_lock()` helper
-- `_get_token` now acquires the seller lock before refreshing, with double-check pattern (re-read from DB after acquiring lock to see if another coroutine already refreshed)
-- Uses `asyncio.wait_for(lock.acquire(), timeout=30)` to prevent deadlocks
-- Uses `try/finally` for lock release (not `async with` since we use `wait_for`)
-- Files changed: `app/services/ml_api.py`
-- **Learnings for future iterations:**
-  - `asyncio.wait_for(lock.acquire(), timeout=N)` + `try/finally lock.release()` is the pattern for timeout-safe async locking
-  - Double-check pattern: after acquiring lock, re-read DB state because another coroutine may have refreshed while we waited
-  - `_token_locks` dict is safe for single-worker uvicorn (Docker uses 1 worker) — no cross-process coordination needed
-  - The lock is keyed by `seller_slug` only (not org_id) since seller slugs are unique within the system
----
-
-## 2026-03-05 - US-108
-- Added permission filtering to resolve_sellers_endpoint for non-admin users
-- After resolving item→seller mapping, each result is checked via `_check_seller_permission(user, seller_slug, "from")`
-- Items whose seller the operator lacks `can_copy_from` for are moved to the errors list with message 'Sem permissao para este seller'
-- Admin users bypass the check (existing `_check_seller_permission` logic)
-- Files changed: `app/routers/copy.py`
-- **Learnings for future iterations:**
-  - `_check_seller_permission` already handles admin bypass — no need for separate role check
-  - The permission filter is applied in the result-building loop, not as a separate pass — simpler and avoids iterating twice
-  - Frontend already filters client-side (CopyForm.tsx:81-86) but backend is now the source of truth
----
-
-## 2026-03-05 - US-101
-- Built `sourceMap` (Record<string, string> mapping item_id→seller_slug) from copy groups in CopyPage.tsx handleCopy
-- Added `sourceMap` state in CopyPage, passed as prop to CopyProgress
-- CopyProgress now accepts optional `sourceMap` prop, uses `sourceMap[r.source_item_id]` per item in handleDimensionSubmit (with fallback to legacy `results.source`)
-- When copying from multiple sellers, dimension retry now sends the correct source seller for each item
-- Files changed: `frontend/src/pages/CopyPage.tsx`, `frontend/src/components/CopyProgress.tsx`
-- **Learnings for future iterations:**
-  - CopyProgress previously read source via `(results as any).source` — a loosely typed field set by CopyPage
-  - The sourceMap pattern (item_id→seller_slug) is more correct than a single `source` string when multiple groups exist
-  - `sourceMap` is optional in CopyProgress props for backwards compatibility (fallback to legacy source)
-  - CopyPage builds sourceMap before the loop, sets it via state so it's available for CopyProgress render
----
-
-## 2026-03-05 - US-114
-- Added `@field_validator('skus')` to `SearchSkuRequest` in compat.py — rejects >50 SKUs with "Maximo de 50 SKUs por busca"
-- Added `asyncio.Semaphore(10)` in `search_sku_all_sellers` to limit concurrent ML API requests (both search and get_item calls)
-- Frontend: added SKU counter (`{count}/50 SKUs`) below textarea, warning styling when >45, error when >50, search button disabled when >50
-- Files changed: `app/routers/compat.py`, `app/services/compat_copier.py`, `frontend/src/pages/CompatPage.tsx`
-- **Learnings for future iterations:**
-  - Pydantic `field_validator` with `@classmethod` is the pattern for validation in this codebase (not `validator`)
-  - `asyncio.Semaphore` wraps individual task coroutines — define inner `async def` helpers that acquire the semaphore, then create tasks from those helpers
-  - `parseSkus()` in CompatPage.tsx splits by comma/whitespace/newline — reuse it for counting (call outside useCallback for render-time count)
-  - The semaphore is scoped to the `search_sku_all_sellers` call — limits both search and get_item phases to 10 concurrent ML API calls
+  - `user_permissions` table has no `platform` column — slug uniqueness across platforms is sufficient
+  - PUT permissions upsert works for both ML and Shopee slugs with no changes needed
+  - The `platform` field is only in the GET response (computed, not stored)
 ---
