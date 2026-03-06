@@ -79,7 +79,7 @@ export default function SuperAdminPage({ headers }: Props) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-sm)' }}>
             <thead>
               <tr>
-                {['Empresa', 'Email', 'Status', 'Pagamento', 'Usuários', 'Sellers', 'Cópias (30d)', 'Compats (30d)', 'Criado em', ''].map(h => (
+                {['Empresa', 'Email', 'Status', 'Pagamento', 'Usuários', 'Sellers', 'Cópias (30d)', 'Compats (30d)', 'Shopee Sellers', 'Shopee Cópias (30d)', 'Criado em', ''].map(h => (
                   <th key={h} style={thStyle}>{h}</th>
                 ))}
               </tr>
@@ -95,6 +95,8 @@ export default function SuperAdminPage({ headers }: Props) {
                   <td style={{ ...tdStyle, textAlign: 'center' }}>{org.seller_count}</td>
                   <td style={{ ...tdStyle, textAlign: 'center' }}>{org.copy_count}</td>
                   <td style={{ ...tdStyle, textAlign: 'center' }}>{org.compat_count}</td>
+                  <td style={{ ...tdStyle, textAlign: 'center' }}>{org.shopee_seller_count ?? 0}</td>
+                  <td style={{ ...tdStyle, textAlign: 'center' }}>{org.shopee_copy_count ?? 0}</td>
                   <td style={{ ...tdStyle, whiteSpace: 'nowrap', fontSize: 'var(--text-xs)' }}>
                     {new Date(org.created_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
                   </td>
