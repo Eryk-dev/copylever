@@ -124,6 +124,19 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
     }
   }, [itemIdsText, normalizeAndResolve]);
 
+  // Auto-resolve on typing (debounced 800ms)
+  useEffect(() => {
+    const text = itemIdsText.trim();
+    if (!text) return;
+    // Only trigger if there's at least one valid-looking ID
+    const ids = text.split(/[\n,]+/).map(normalizeItemId).filter(Boolean);
+    if (!ids.length || !ids.some(id => /^MLB\d+$/.test(id))) return;
+    const timer = setTimeout(() => {
+      normalizeAndResolve();
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [itemIdsText]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Clear state when IDs are cleared
   useEffect(() => {
     if (!itemIdsText.trim()) {
@@ -196,7 +209,6 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
           value={itemIdsText}
           onChange={e => { setItemIdsText(e.target.value); setConfirming(false); }}
           onPaste={() => { pendingResolve.current = true; }}
-          onBlur={normalizeAndResolve}
           placeholder={"Cole os IDs dos anúncios (um por linha)\n1234567890\nMLB9876543210"}
           rows={4}
           className="input-base"

@@ -11,6 +11,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Changed
 - Preview da compatibilidade agora carrega automaticamente ao digitar o ID (debounce de 600ms), sem precisar clicar fora
+- Formulário de cópia resolve sellers automaticamente ao digitar/colar IDs (debounce de 800ms), sem precisar clicar fora ou dar Enter
 - Preview de cópia: preço exibe "R$" em vez do código "BRL", cor verde dinheiro (`--success`)
 
 ### Added
