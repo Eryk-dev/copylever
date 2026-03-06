@@ -349,7 +349,20 @@ async def copy_single_item(
         image_urls = source_data.get("base_info", {}).get("image", {}).get("image_url_list", [])
         image_ids = await _upload_images(dest_shop_id, image_urls, org_id)
         if not image_ids:
-            logger.warning("No images uploaded for item %d — proceeding without images", item_id)
+            err_msg = "Falha no upload de todas as imagens — nao e possivel criar o anuncio"
+            logger.error("No images uploaded for item %d -> shop %d — aborting", item_id, dest_shop_id)
+            _log_debug(
+                action="shopee_image_upload_failed",
+                source_item_id=str(item_id),
+                dest_seller=str(dest_shop_id),
+                error_message=err_msg,
+                request_payload={"image_urls": image_urls},
+                user_id=user_id,
+                org_id=org_id,
+            )
+            result["status"] = "error"
+            result["error"] = err_msg
+            return result
 
         # 3. Fetch dest logistics
         logistics = await _fetch_dest_logistics(dest_shop_id, org_id)
