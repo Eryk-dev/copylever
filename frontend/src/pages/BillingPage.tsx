@@ -38,7 +38,7 @@ export default function BillingPage({ headers }: Props) {
       const data: BillingStatus = await res.json();
       setStatus(data);
     } catch {
-      setError('Erro de conexao');
+      setError('Erro de conexão');
     } finally {
       setLoading(false);
     }
@@ -54,13 +54,13 @@ export default function BillingPage({ headers }: Props) {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        setError(data?.detail || 'Erro ao criar sessao de checkout');
+        setError(data?.detail || 'Erro ao criar sessão de checkout');
         return;
       }
       const data = await res.json();
       window.location.href = data.checkout_url;
     } catch {
-      setError('Erro de conexao');
+      setError('Erro de conexão');
     } finally {
       setActionLoading(false);
     }
@@ -82,7 +82,7 @@ export default function BillingPage({ headers }: Props) {
       const data = await res.json();
       window.location.href = data.portal_url;
     } catch {
-      setError('Erro de conexao');
+      setError('Erro de conexão');
     } finally {
       setActionLoading(false);
     }
@@ -126,7 +126,7 @@ export default function BillingPage({ headers }: Props) {
                 {status?.payment_active ? 'Assinatura ativa' : 'Sem assinatura'}
               </p>
               <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>
-                Plano mensal — R$ 349,90/mes
+                Plano mensal — R$ 349,90/mês
               </p>
             </div>
           </div>

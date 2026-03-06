@@ -95,18 +95,26 @@ export default function Login({ onLogin, onNavigateToSignup, onNavigateToForgotP
           padding: 'var(--space-12)',
           width: '100%',
           maxWidth: 380,
+          border: '1px solid var(--line)',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
           animation: shake ? 'shake 0.4s ease-in-out' : undefined,
         }}
       >
+        <img
+          src="/logo-lever.svg"
+          alt="Copy Anúncios"
+          className="lp-logo-img"
+          style={{ height: 36, display: 'block', margin: '0 auto var(--space-2)' }}
+        />
         <h1 style={{
-          fontSize: 'var(--text-xl)',
+          fontSize: 'var(--text-lg)',
           fontWeight: 700,
           letterSpacing: 'var(--tracking-tight)',
           color: 'var(--ink)',
           textAlign: 'center',
           marginBottom: 'var(--space-1)',
         }}>
-          Copy Anuncios
+          Copy Anúncios
         </h1>
         <p style={{
           color: 'var(--ink-faint)',
@@ -188,7 +196,7 @@ export default function Login({ onLogin, onNavigateToSignup, onNavigateToForgotP
               style={{
                 background: 'none',
                 border: 'none',
-                color: 'var(--accent)',
+                color: 'var(--positive)',
                 fontSize: 'var(--text-sm)',
                 cursor: 'pointer',
                 textDecoration: 'underline',
@@ -225,14 +233,14 @@ export default function Login({ onLogin, onNavigateToSignup, onNavigateToForgotP
             fontSize: 'var(--text-sm)',
             color: 'var(--ink-muted)',
           }}>
-            Ainda nao tem conta?{' '}
+            Ainda não tem conta?{' '}
             <button
               type="button"
               onClick={onNavigateToSignup}
               style={{
                 background: 'none',
                 border: 'none',
-                color: 'var(--accent)',
+                color: 'var(--positive)',
                 fontSize: 'var(--text-sm)',
                 cursor: 'pointer',
                 textDecoration: 'underline',
@@ -252,6 +260,10 @@ export default function Login({ onLogin, onNavigateToSignup, onNavigateToForgotP
           40% { transform: translateX(8px); }
           60% { transform: translateX(-4px); }
           80% { transform: translateX(4px); }
+        }
+        .lp-logo-img { filter: none; }
+        @media (prefers-color-scheme: dark) {
+          .lp-logo-img { filter: invert(1); }
         }
       `}</style>
     </div>

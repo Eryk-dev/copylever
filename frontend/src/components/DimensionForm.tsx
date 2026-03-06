@@ -83,7 +83,7 @@ export default function DimensionForm({ sku, itemIds, destinations, onSubmit }: 
           width: 8, height: 8, borderRadius: '50%',
           background: 'var(--warning)', flexShrink: 0,
         }} />
-        Dimensoes necessarias
+        Dimensões necessárias
       </div>
       <p style={{
         fontSize: 'var(--text-xs)',
@@ -100,11 +100,11 @@ export default function DimensionForm({ sku, itemIds, destinations, onSubmit }: 
         {ids.length === 1 ? (
           <span style={{ fontFamily: 'var(--font-mono)' }}>{ids[0]}</span>
         ) : (
-          <span>{ids.length} anuncio(s): <span style={{ fontFamily: 'var(--font-mono)' }}>{ids.join(', ')}</span></span>
+          <span>{ids.length} anúncio(s): <span style={{ fontFamily: 'var(--font-mono)' }}>{ids.join(', ')}</span></span>
         )}
         {' '}&rarr; {destinations.join(', ')}
         <br />
-        Informe as dimensoes da embalagem para atualizar {ids.length > 1 ? 'os itens de origem' : 'o item origem'} e copiar.
+        Informe as dimensões da embalagem para atualizar {ids.length > 1 ? 'os itens de origem' : 'o item origem'} e copiar.
       </p>
       <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
         <label style={labelStyle}>
@@ -139,7 +139,7 @@ export default function DimensionForm({ sku, itemIds, destinations, onSubmit }: 
           opacity: submitting || (!height && !width && !length && !weight) ? 0.5 : 1,
         }}
       >
-        {submitting ? 'Aplicando...' : 'Aplicar dimensoes e copiar'}
+        {submitting ? 'Aplicando...' : 'Aplicar dimensões e copiar'}
       </button>
     </div>
   );

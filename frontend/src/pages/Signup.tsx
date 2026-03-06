@@ -63,18 +63,26 @@ export default function Signup({ onSignup, onNavigateToLogin }: Props) {
           padding: 'var(--space-12)',
           width: '100%',
           maxWidth: 380,
+          border: '1px solid var(--line)',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
           animation: shake ? 'shake 0.4s ease-in-out' : undefined,
         }}
       >
+        <img
+          src="/logo-lever.svg"
+          alt="Copy Anúncios"
+          className="lp-logo-img"
+          style={{ height: 36, display: 'block', margin: '0 auto var(--space-2)' }}
+        />
         <h1 style={{
-          fontSize: 'var(--text-xl)',
+          fontSize: 'var(--text-lg)',
           fontWeight: 700,
           letterSpacing: 'var(--tracking-tight)',
           color: 'var(--ink)',
           textAlign: 'center',
           marginBottom: 'var(--space-1)',
         }}>
-          Copy Anuncios
+          Copy Anúncios
         </h1>
         <p style={{
           color: 'var(--ink-faint)',
@@ -82,7 +90,7 @@ export default function Signup({ onSignup, onNavigateToLogin }: Props) {
           marginBottom: 'var(--space-2)',
           fontSize: 'var(--text-sm)',
         }}>
-          Crie sua conta para comecar
+          Crie sua conta para começar
         </p>
         <p style={{
           color: 'var(--ink-muted)',
@@ -90,7 +98,7 @@ export default function Signup({ onSignup, onNavigateToLogin }: Props) {
           marginBottom: 'var(--space-4)',
           fontSize: 'var(--text-xs)',
         }}>
-          Copie anuncios e compatibilidades entre contas do Mercado Livre
+          Copie anúncios e compatibilidades entre contas do Mercado Livre
         </p>
         <div style={{
           marginBottom: 'var(--space-8)',
@@ -99,7 +107,7 @@ export default function Signup({ onSignup, onNavigateToLogin }: Props) {
           gap: 'var(--space-1)',
         }}>
           <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>&#10003; Copia em massa entre contas</p>
-          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>&#10003; Compatibilidades veiculares automaticas</p>
+          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>&#10003; Compatibilidades veiculares automáticas</p>
           <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>&#10003; Gerenciamento multi-conta</p>
         </div>
 
@@ -166,7 +174,7 @@ export default function Signup({ onSignup, onNavigateToLogin }: Props) {
           textAlign: 'center',
           marginTop: 'var(--space-4)',
         }}>
-          Plano mensal: R$ 349,90/mes
+          Plano mensal: R$ 349,90/mês
         </p>
 
         <button
@@ -184,7 +192,7 @@ export default function Signup({ onSignup, onNavigateToLogin }: Props) {
             opacity: 0.7,
           }}
         >
-          Ja tem conta? Entrar
+          Já tem conta? Entrar
         </button>
       </div>
 
@@ -195,6 +203,10 @@ export default function Signup({ onSignup, onNavigateToLogin }: Props) {
           40% { transform: translateX(8px); }
           60% { transform: translateX(-4px); }
           80% { transform: translateX(4px); }
+        }
+        .lp-logo-img { filter: none; }
+        @media (prefers-color-scheme: dark) {
+          .lp-logo-img { filter: invert(1); }
         }
       `}</style>
     </div>

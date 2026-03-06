@@ -121,7 +121,7 @@ export default function CompatPage({ sellers, headers }: Props) {
         { headers: headers(), cache: 'no-store' },
       );
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: 'Item nao encontrado' }));
+        const err = await res.json().catch(() => ({ detail: 'Item não encontrado' }));
         setPreviewError(err.detail);
         return;
       }
@@ -329,7 +329,7 @@ export default function CompatPage({ sellers, headers }: Props) {
               color: 'var(--danger)',
               fontWeight: 500,
             }}>
-              Este item nao possui compatibilidades para copiar.
+              Este item não possui compatibilidades para copiar.
             </div>
           )}
         </Card>
@@ -339,11 +339,11 @@ export default function CompatPage({ sellers, headers }: Props) {
       <Card title="Buscar por SKU">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
           <label style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', fontWeight: 500 }}>
-            SKUs dos anuncios de destino
+            SKUs dos anúncios de destino
           </label>
           <textarea
             className="input-base"
-            placeholder="Digite os SKUs separados por virgula, espaco ou quebra de linha"
+            placeholder="Digite os SKUs separados por vírgula, espaço ou quebra de linha"
             value={skuInput}
             onChange={e => setSkuInput(e.target.value)}
             rows={3}
@@ -369,7 +369,7 @@ export default function CompatPage({ sellers, headers }: Props) {
             </span>
             {parsedSkuCount > 50 && (
               <span style={{ fontSize: 'var(--text-xs)', color: 'var(--danger)', fontWeight: 500 }}>
-                Maximo de 50 SKUs por busca
+                Máximo de 50 SKUs por busca
               </span>
             )}
           </div>
@@ -383,7 +383,7 @@ export default function CompatPage({ sellers, headers }: Props) {
               <span style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
                 <span className="spinner spinner-sm" /> Buscando...
               </span>
-            ) : 'Buscar Anuncios'}
+            ) : 'Buscar Anúncios'}
           </button>
         </div>
       </Card>
@@ -507,7 +507,7 @@ export default function CompatPage({ sellers, headers }: Props) {
           }}>
             {copyResult.results.length > 0
               ? <>Total: <b>{copyResult.total}</b> &nbsp; Sucesso: <b>{copyResult.success}</b>{copyResult.errors > 0 && <> &nbsp; <span style={{ color: 'var(--danger)' }}>Erros: <b>{copyResult.errors}</b></span></>}</>
-              : <>Copiando {copyResult.total} destino{copyResult.total !== 1 ? 's' : ''} em segundo plano. Acompanhe no historico abaixo.</>
+              : <>Copiando {copyResult.total} destino{copyResult.total !== 1 ? 's' : ''} em segundo plano. Acompanhe no histórico abaixo.</>
             }
           </div>
           {copyResult.results.length > 0 && (
@@ -539,7 +539,7 @@ export default function CompatPage({ sellers, headers }: Props) {
 
       {/* History */}
       <Card
-        title={`Historico (${logs.length}${hasMoreLogs ? '+' : ''})`}
+        title={`Histórico (${logs.length}${hasMoreLogs ? '+' : ''})`}
         collapsible
         open={logsOpen}
         onToggle={() => setLogsOpen(!logsOpen)}

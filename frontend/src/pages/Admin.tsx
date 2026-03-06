@@ -16,6 +16,34 @@ export default function Admin({ sellers, loadSellers, disconnectSeller, headers 
   const [refreshing, setRefreshing] = useState(false);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
+  const [editingSlug, setEditingSlug] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const handleRename = async (slug: string) => {
+    const trimmed = editName.trim();
+    if (!trimmed) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/sellers/${slug}/name`, {
+        method: 'PUT',
+        headers: { ...headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: trimmed }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        toast(err?.detail || 'Erro ao renomear seller');
+        return;
+      }
+      await loadSellers();
+      setEditingSlug(null);
+      toast('Nome atualizado');
+    } catch {
+      toast('Erro de conexão');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const handleInstall = async () => {
     setInstalling(true);
@@ -23,9 +51,9 @@ export default function Admin({ sellers, loadSellers, disconnectSeller, headers 
       const res = await fetch(`${API_BASE}/api/ml/install`, { headers: headers() });
       if (!res.ok) {
         if (res.status === 401) {
-          toast('Erro: sessao expirada. Faca login novamente.');
+          toast('Erro: sessão expirada. Faça login novamente.');
         } else {
-          toast('Erro ao iniciar autorizacao ML.');
+          toast('Erro ao iniciar autorização ML.');
         }
         return;
       }
@@ -34,7 +62,7 @@ export default function Admin({ sellers, loadSellers, disconnectSeller, headers 
         window.location.href = data.redirect_url;
       }
     } catch {
-      toast('Erro de conexao ao iniciar autorizacao.');
+      toast('Erro de conexão ao iniciar autorização.');
     } finally {
       setInstalling(false);
     }
@@ -48,7 +76,7 @@ export default function Admin({ sellers, loadSellers, disconnectSeller, headers 
   };
 
   const handleDisconnect = async (slug: string) => {
-    if (!confirm(`Desconectar seller "${slug}"? Os tokens serao removidos.`)) return;
+    if (!confirm(`Desconectar seller "${slug}"? Os tokens serão removidos.`)) return;
     setDisconnecting(slug);
     await disconnectSeller(slug);
     setDisconnecting(null);
@@ -60,7 +88,7 @@ export default function Admin({ sellers, loadSellers, disconnectSeller, headers 
       {/* Install Link */}
       <Card title="Conectar nova conta ML">
         <p style={{ color: 'var(--ink-muted)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-3)' }}>
-          Clique no botao abaixo para autorizar uma conta do Mercado Livre:
+          Clique no botão abaixo para autorizar uma conta do Mercado Livre:
         </p>
         <button
           onClick={handleInstall}
@@ -110,7 +138,7 @@ export default function Admin({ sellers, loadSellers, disconnectSeller, headers 
               {'\u2194'}
             </div>
             Nenhum seller conectado.<br />
-            Use o botao acima para autorizar uma conta ML.
+            Use o botão acima para autorizar uma conta ML.
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
@@ -130,7 +158,7 @@ export default function Admin({ sellers, loadSellers, disconnectSeller, headers 
                   transition: 'border-color 0.15s',
                 }}
               >
-                <div style={{ minWidth: 0 }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
                     <span style={{
                       width: 8, height: 8,
@@ -139,17 +167,69 @@ export default function Admin({ sellers, loadSellers, disconnectSeller, headers 
                       display: 'inline-block',
                       flexShrink: 0,
                     }} />
-                    <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 'var(--text-sm)' }}>
-                      {seller.name || seller.slug}
-                    </span>
-                    <span style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)' }}>
-                      ({seller.slug})
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', marginTop: 'var(--space-1)' }}>
-                    ML User ID: {seller.ml_user_id}
-                    {seller.token_expires_at && (
-                      <> | Token expira: {new Date(seller.token_expires_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</>
+                    {editingSlug === seller.slug ? (
+                      <form
+                        onSubmit={e => { e.preventDefault(); handleRename(seller.slug); }}
+                        style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flex: 1 }}
+                      >
+                        <input
+                          type="text"
+                          value={editName}
+                          onChange={e => setEditName(e.target.value)}
+                          autoFocus
+                          maxLength={100}
+                          style={{
+                            background: 'var(--surface)',
+                            border: '1px solid var(--line-hover)',
+                            borderRadius: 4,
+                            padding: '4px 8px',
+                            color: 'var(--ink)',
+                            fontSize: 'var(--text-sm)',
+                            fontWeight: 600,
+                            flex: 1,
+                            minWidth: 0,
+                          }}
+                          onKeyDown={e => { if (e.key === 'Escape') setEditingSlug(null); }}
+                        />
+                        <button
+                          type="submit"
+                          disabled={saving || !editName.trim()}
+                          className="btn-primary"
+                          style={{ padding: '4px 10px', fontSize: 'var(--text-xs)' }}
+                        >
+                          {saving ? 'Salvando...' : 'Salvar'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingSlug(null)}
+                          className="btn-ghost"
+                          style={{ padding: '4px 10px', fontSize: 'var(--text-xs)' }}
+                        >
+                          Cancelar
+                        </button>
+                      </form>
+                    ) : (
+                      <>
+                        <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 'var(--text-sm)' }}>
+                          {seller.name || seller.slug}
+                        </span>
+                        <span style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)' }}>
+                          ({seller.slug})
+                        </span>
+                        <button
+                          onClick={() => { setEditingSlug(seller.slug); setEditName(seller.name || seller.slug); }}
+                          className="btn-ghost"
+                          title="Renomear"
+                          style={{
+                            padding: '2px 6px',
+                            fontSize: 'var(--text-xs)',
+                            color: 'var(--ink-faint)',
+                            lineHeight: 1,
+                          }}
+                        >
+                          &#9998;
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>

@@ -16,7 +16,7 @@ export default function SuperAdminPage({ headers }: Props) {
     try {
       const res = await fetch(`${API_BASE}/api/super/orgs`, { headers: headers(), cache: 'no-store' });
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: 'Erro ao carregar organizacoes' }));
+        const err = await res.json().catch(() => ({ detail: 'Erro ao carregar organizações' }));
         setError(err.detail);
         return;
       }
@@ -51,7 +51,7 @@ export default function SuperAdminPage({ headers }: Props) {
 
   if (loading) {
     return (
-      <Card title="Organizacoes">
+      <Card title="Organizações">
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', color: 'var(--ink-faint)', fontSize: 'var(--text-sm)' }}>
           <span className="spinner spinner-sm" />
           Carregando...
@@ -62,24 +62,24 @@ export default function SuperAdminPage({ headers }: Props) {
 
   if (error) {
     return (
-      <Card title="Organizacoes">
+      <Card title="Organizações">
         <p style={{ color: 'var(--danger)', fontSize: 'var(--text-sm)' }}>{error}</p>
       </Card>
     );
   }
 
   return (
-    <Card title={`Organizacoes (${orgs.length})`}>
+    <Card title={`Organizações (${orgs.length})`}>
       {orgs.length === 0 ? (
         <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-sm)', textAlign: 'center', padding: 'var(--space-4)' }}>
-          Nenhuma organizacao cadastrada.
+          Nenhuma organização cadastrada.
         </p>
       ) : (
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-sm)' }}>
             <thead>
               <tr>
-                {['Empresa', 'Email', 'Status', 'Pagamento', 'Usuarios', 'Sellers', 'Copias (30d)', 'Compats (30d)', 'Criado em', ''].map(h => (
+                {['Empresa', 'Email', 'Status', 'Pagamento', 'Usuários', 'Sellers', 'Cópias (30d)', 'Compats (30d)', 'Criado em', ''].map(h => (
                   <th key={h} style={thStyle}>{h}</th>
                 ))}
               </tr>

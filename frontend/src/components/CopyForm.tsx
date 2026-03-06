@@ -96,7 +96,7 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
       setUnresolvedIds(data.errors.map(e => e.item_id));
 
       if (deniedSlugs.length > 0) {
-        setResolveError(`Sem permissao de copia a partir do(s) seller(s): ${deniedSlugs.join(', ')}`);
+        setResolveError(`Sem permissão de cópia a partir do(s) seller(s): ${deniedSlugs.join(', ')}`);
       }
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') return;
@@ -187,17 +187,17 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
       gap: 'var(--space-5)',
     }}>
       <h3 style={{ fontSize: 'var(--text-sm)', fontWeight: 600, letterSpacing: 'var(--tracking-tight)' }}>
-        Copiar Anuncios
+        Copiar Anúncios
       </h3>
 
       {/* Step 1: Item IDs + auto-detect sources */}
-      <Field label="IDs dos Anuncios" step={1} done={step1Done}>
+      <Field label="IDs dos Anúncios" step={1} done={step1Done}>
         <textarea
           value={itemIdsText}
           onChange={e => { setItemIdsText(e.target.value); setConfirming(false); }}
           onPaste={() => { pendingResolve.current = true; }}
           onBlur={normalizeAndResolve}
-          placeholder={"Cole os IDs dos anuncios (um por linha)\n1234567890\nMLB9876543210"}
+          placeholder={"Cole os IDs dos anúncios (um por linha)\n1234567890\nMLB9876543210"}
           rows={4}
           className="input-base"
           style={{
@@ -261,12 +261,12 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
                 {sellerName(slug)} ({sourceGroups[slug].length})
               </span>
             ))}
-            <span>{resolvedCount} anuncio(s)</span>
+            <span>{resolvedCount} anúncio(s)</span>
           </div>
         )}
         {unresolvedIds.length > 0 && (
           <p style={{ color: 'var(--warning)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-1)', fontWeight: 500 }}>
-            {unresolvedIds.length} ID(s) nao encontrado(s): {unresolvedIds.join(', ')}
+            {unresolvedIds.length} ID(s) não encontrado(s): {unresolvedIds.join(', ')}
           </p>
         )}
       </Field>
@@ -311,17 +311,17 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
                 );
               })
             ) : (
-              <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)' }}>Nenhum outro seller disponivel</p>
+              <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)' }}>Nenhum outro seller disponível</p>
             )
           ) : (
             <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)' }}>
-              {itemIds.length > 0 ? 'Aguardando deteccao dos sellers de origem...' : 'Cole os IDs acima para detectar os sellers de origem'}
+              {itemIds.length > 0 ? 'Aguardando detecção dos sellers de origem...' : 'Cole os IDs acima para detectar os sellers de origem'}
             </p>
           )}
         </div>
         {destinations.length > 0 && resolvedCount > 0 && (
           <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-2)' }}>
-            {resolvedCount} anuncio(s) x {destinations.length} destino(s) = <b style={{ color: 'var(--ink)' }}>{totalOps} copia(s)</b>
+            {resolvedCount} anúncio(s) x {destinations.length} destino(s) = <b style={{ color: 'var(--ink)' }}>{totalOps} cópia(s)</b>
           </p>
         )}
       </Field>
@@ -330,7 +330,7 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
       {confirming && (
         <div className="confirm-bar">
           <span style={{ fontSize: 'var(--text-sm)', color: 'var(--ink)', flex: 1 }}>
-            Confirma copiar <b>{totalOps}</b> anuncio(s)?
+            Confirma copiar <b>{totalOps}</b> anúncio(s)?
           </span>
           <button
             type="button"

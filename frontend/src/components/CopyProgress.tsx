@@ -82,7 +82,7 @@ export default function CopyProgress({ results, sourceMap, headers, onDimensionR
         marginBottom: 'var(--space-3)',
         letterSpacing: 'var(--tracking-tight)',
       }}>
-        Resultado da Copia
+        Resultado da Cópia
       </h3>
 
       {/* Summary */}
@@ -167,7 +167,7 @@ function ResultRow({ result: r }: { result: CopyResult }) {
 
         {isDim && (
           <span style={{ marginLeft: 'auto', fontSize: 'var(--text-xs)', color: 'var(--warning)', fontWeight: 500 }}>
-            sem dimensoes
+            sem dimensões
           </span>
         )}
 

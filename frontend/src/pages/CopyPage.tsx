@@ -229,7 +229,7 @@ export default function CopyPage({ sellers, headers, user }: Props) {
         textAlign: 'center',
       }}>
         <p style={{ fontSize: 'var(--text-sm)', fontWeight: 500 }}>
-          Nenhum seller disponivel. Peca ao admin para liberar acesso.
+          Nenhum seller disponível. Peça ao admin para liberar acesso.
         </p>
       </div>
     );
@@ -239,7 +239,7 @@ export default function CopyPage({ sellers, headers, user }: Props) {
     { key: '', label: 'Todos' },
     { key: 'success', label: 'Sucesso' },
     { key: 'error', label: 'Erros' },
-    { key: 'needs_dimensions', label: 'Sem Dimensoes' },
+    { key: 'needs_dimensions', label: 'Sem Dimensões' },
   ];
 
   return (
@@ -312,7 +312,7 @@ export default function CopyPage({ sellers, headers, user }: Props) {
 
       {/* Logs */}
       <Card
-        title={`Historico (${logs.length}${hasMoreLogs ? '+' : ''})`}
+        title={`Histórico (${logs.length}${hasMoreLogs ? '+' : ''})`}
         collapsible
         open={logsOpen}
         onToggle={() => setLogsOpen(!logsOpen)}
@@ -518,7 +518,7 @@ export function Card({ title, action, collapsible, open, onToggle, children }: {
 }
 
 const statusLabels: Record<string, string> = {
-  needs_dimensions: 'Sem Dimensoes',
+  needs_dimensions: 'Sem Dimensões',
   in_progress: 'Copiando...',
   success: 'success',
   error: 'error',

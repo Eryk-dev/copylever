@@ -24,13 +24,13 @@ export default function ForgotPassword({ onNavigateToLogin }: Props) {
         body: JSON.stringify({ email: email.trim() }),
       });
       if (!res.ok) {
-        setError('Erro ao processar solicitacao. Tente novamente.');
+        setError('Erro ao processar solicitação. Tente novamente.');
         setLoading(false);
         return;
       }
       setSent(true);
     } catch {
-      setError('Erro de conexao');
+      setError('Erro de conexão');
     }
     setLoading(false);
   };
@@ -61,17 +61,25 @@ export default function ForgotPassword({ onNavigateToLogin }: Props) {
           padding: 'var(--space-12)',
           width: '100%',
           maxWidth: 380,
+          border: '1px solid var(--line)',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
         }}
       >
+        <img
+          src="/logo-lever.svg"
+          alt="Copy Anúncios"
+          className="lp-logo-img"
+          style={{ height: 36, display: 'block', margin: '0 auto var(--space-2)' }}
+        />
         <h1 style={{
-          fontSize: 'var(--text-xl)',
+          fontSize: 'var(--text-lg)',
           fontWeight: 700,
           letterSpacing: 'var(--tracking-tight)',
           color: 'var(--ink)',
           textAlign: 'center',
           marginBottom: 'var(--space-1)',
         }}>
-          Copy Anuncios
+          Copy Anúncios
         </h1>
         <p style={{
           color: 'var(--ink-faint)',
@@ -89,7 +97,7 @@ export default function ForgotPassword({ onNavigateToLogin }: Props) {
               fontSize: 'var(--text-sm)',
               marginBottom: 'var(--space-6)',
             }}>
-              Se o email existir, enviaremos instrucoes de redefinicao.
+              Se o email existir, enviaremos instruções de redefinição.
             </p>
             <button
               type="button"
@@ -97,7 +105,7 @@ export default function ForgotPassword({ onNavigateToLogin }: Props) {
               style={{
                 background: 'none',
                 border: 'none',
-                color: 'var(--accent)',
+                color: 'var(--positive)',
                 fontSize: 'var(--text-sm)',
                 cursor: 'pointer',
                 textDecoration: 'underline',
@@ -166,6 +174,13 @@ export default function ForgotPassword({ onNavigateToLogin }: Props) {
           </>
         )}
       </div>
+
+      <style>{`
+        .lp-logo-img { filter: none; }
+        @media (prefers-color-scheme: dark) {
+          .lp-logo-img { filter: invert(1); }
+        }
+      `}</style>
     </div>
   );
 }
