@@ -220,29 +220,6 @@ export default function CopyPage({ sellers, headers, user }: Props) {
     return sellers.filter(s => allowed.has(s.slug));
   }, [sellers, user, isAdmin]);
 
-  const hasAnySellers = sourceSellers.length > 0 && destSellers.length > 0;
-
-  if (!hasAnySellers) {
-    return (
-      <div style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 'var(--space-3)',
-        padding: 'var(--space-8) var(--space-4)',
-        background: 'var(--surface)',
-        borderRadius: 8,
-        color: 'var(--ink-faint)',
-        textAlign: 'center',
-      }}>
-        <p style={{ fontSize: 'var(--text-sm)', fontWeight: 500 }}>
-          Nenhum seller disponível. Peça ao admin para liberar acesso.
-        </p>
-      </div>
-    );
-  }
-
   const filterTabs = [
     { key: '', label: 'Todos' },
     { key: 'in_progress', label: 'Em andamento' },
@@ -266,6 +243,29 @@ export default function CopyPage({ sellers, headers, user }: Props) {
       { label: 'Dimensões', value: counts.needs_dimensions || 0, tone: 'warning' as const },
     ];
   }, [logs]);
+
+  const hasAnySellers = sourceSellers.length > 0 && destSellers.length > 0;
+
+  if (!hasAnySellers) {
+    return (
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 'var(--space-3)',
+        padding: 'var(--space-8) var(--space-4)',
+        background: 'var(--surface)',
+        borderRadius: 8,
+        color: 'var(--ink-faint)',
+        textAlign: 'center',
+      }}>
+        <p style={{ fontSize: 'var(--text-sm)', fontWeight: 500 }}>
+          Nenhum seller disponível. Peça ao admin para liberar acesso.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
