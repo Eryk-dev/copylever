@@ -67,8 +67,13 @@ async def callback(code: str, shop_id: int, state: str = ""):
         )
 
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=expire_in)
-    # Shopee refresh tokens expire in ~30 days
-    refresh_expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+    # Use refresh_token_expire_in from Shopee response if available, fallback to 30 days
+    refresh_expire_in = token_data.get("refresh_token_expire_in")
+    if refresh_expire_in:
+        refresh_expires_at = datetime.now(timezone.utc) + timedelta(seconds=refresh_expire_in)
+    else:
+        logger.warning("Shopee token response missing refresh_token_expire_in — using 30-day default")
+        refresh_expires_at = datetime.now(timezone.utc) + timedelta(days=30)
 
     # Fetch shop info
     try:

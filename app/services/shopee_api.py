@@ -281,7 +281,6 @@ async def _get_token(shop_id: int, org_id: str) -> str:
         expire_in = data.get("expire_in", 14400)  # 4 hours default
         new_expires = datetime.now(timezone.utc) + timedelta(seconds=expire_in)
 
-        # Shopee refresh tokens last ~30 days from original grant
         update_data: dict[str, Any] = {
             "access_token": new_access,
             "token_expires_at": new_expires.isoformat(),
@@ -289,6 +288,17 @@ async def _get_token(shop_id: int, org_id: str) -> str:
         }
         if new_refresh:
             update_data["refresh_token"] = new_refresh
+            # Compute refresh_token_expires_at from API response or fallback to 30 days
+            refresh_expire_in = data.get("refresh_token_expire_in")
+            if refresh_expire_in:
+                update_data["refresh_token_expires_at"] = (
+                    datetime.now(timezone.utc) + timedelta(seconds=refresh_expire_in)
+                ).isoformat()
+            else:
+                logger.warning("Shopee refresh response missing refresh_token_expire_in for shop %d — using 30-day default", shop_id)
+                update_data["refresh_token_expires_at"] = (
+                    datetime.now(timezone.utc) + timedelta(days=30)
+                ).isoformat()
 
         db.table("shopee_sellers").update(update_data).eq(
             "shop_id", shop_id
