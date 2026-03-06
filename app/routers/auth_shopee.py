@@ -2,8 +2,10 @@
 OAuth2 flow for Shopee Open Platform + shop management.
 Uses shopee_sellers table (separate from ML copy_sellers).
 """
+import hmac as _hmac
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -28,12 +30,20 @@ async def install(user: dict = Depends(require_active_org)):
     from app.config import settings
 
     org_id = user["org_id"]
-    # Shopee passes state back as query param on redirect
+    # CSRF protection: HMAC-sign the state with partner_key + timestamp
+    ts = str(int(time.time()))
+    token = _hmac.new(
+        settings.shopee_partner_key.encode(),
+        f"{org_id}:{ts}".encode(),
+        "sha256",
+    ).hexdigest()[:16]
+    state_value = f"org_{org_id}_{token}_{ts}"
+
     redirect = settings.shopee_redirect_uri
     if "?" in redirect:
-        redirect += f"&state=org_{org_id}"
+        redirect += f"&state={state_value}"
     else:
-        redirect += f"?state=org_{org_id}"
+        redirect += f"?state={state_value}"
 
     auth_url = generate_auth_url(redirect_url=redirect)
     return {"redirect_url": auth_url}
@@ -42,14 +52,42 @@ async def install(user: dict = Depends(require_active_org)):
 @router.get("/api/shopee/callback")
 async def callback(code: str, shop_id: int, state: str = ""):
     """Callback from Shopee OAuth. Exchange code for tokens, save to shopee_sellers."""
+    from app.config import settings
+
     if not state:
         raise HTTPException(status_code=400, detail="Missing state")
 
-    org_id = None
-    if state.startswith("org_"):
-        org_id = state[4:]
-    if not org_id:
-        raise HTTPException(status_code=400, detail="Missing org_id in state")
+    # Parse state: org_{org_id}_{token}_{ts}
+    # rsplit from end: ts (digits), token (16 hex), then org_{org_id} as prefix
+    if not state.startswith("org_"):
+        raise HTTPException(status_code=400, detail="Estado OAuth invalido")
+
+    # Strip "org_" prefix, then rsplit to extract ts and token from the end
+    after_prefix = state[4:]  # '{org_id}_{token}_{ts}'
+    r_parts = after_prefix.rsplit("_", 2)
+    if len(r_parts) != 3:
+        raise HTTPException(status_code=400, detail="Estado OAuth invalido")
+
+    org_id, token, ts_str = r_parts[0], r_parts[1], r_parts[2]
+    if not org_id or not token or not ts_str:
+        raise HTTPException(status_code=400, detail="Estado OAuth invalido")
+
+    # Validate HMAC token
+    expected = _hmac.new(
+        settings.shopee_partner_key.encode(),
+        f"{org_id}:{ts_str}".encode(),
+        "sha256",
+    ).hexdigest()[:16]
+    if not _hmac.compare_digest(token, expected):
+        raise HTTPException(status_code=400, detail="Token CSRF invalido")
+
+    # Validate timestamp (max 10 minutes)
+    try:
+        ts_val = int(ts_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Timestamp invalido no estado OAuth")
+    if abs(int(time.time()) - ts_val) > 600:
+        raise HTTPException(status_code=400, detail="Estado OAuth expirado (max 10 minutos)")
 
     try:
         token_data = await exchange_code(code, shop_id)

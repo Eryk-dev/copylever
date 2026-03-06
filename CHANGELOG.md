@@ -23,6 +23,9 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Slug de lojas Shopee agora sanitizado para conter apenas `[a-z0-9-]`, com fallback para `shop-{shop_id}` e sufixo numerico (`-2`, `-3`, ...) em caso de duplicata na mesma org
 - Schema Shopee corrigido: FK `shopee_sellers.org_id` agora ON DELETE CASCADE, FKs `shopee_copy_logs.org_id` e `user_id` agora ON DELETE SET NULL, `org_id` nullable em `shopee_copy_logs`, indice `slug+org_id` agora UNIQUE, adicionados indices em `created_at` e `source_seller`
 
+### Security
+- Protecao CSRF no fluxo OAuth Shopee — parametro `state` agora assinado com HMAC-SHA256 (usando `partner_key`) e inclui timestamp; callback valida assinatura e rejeita estados expirados (>10 minutos)
+
 ### Added
 - Rate limiting com backoff exponencial no cliente Shopee API — `_shop_get`, `_shop_post` e `upload_image` agora detectam erro `too_fast` e fazem retry automatico (ate 5 tentativas: 2s, 4s, 8s, 16s, 32s)
 - Cliente HTTP reutilizavel (singleton `httpx.AsyncClient`) para APIs Shopee — conexoes TCP reutilizadas via connection pooling (max 20 conexoes, 10 keep-alive), com shutdown graceful registrado no FastAPI
