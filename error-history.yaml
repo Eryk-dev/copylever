@@ -90,12 +90,25 @@ ml_error_codes:
       fix_applied: No auto-fix — source data issue. Clear error message returned.
       severity: blocking
 
+    item.attribute.missing_conditional_required:
+      message: "The attribute [X] is conditionally required for category Y"
+      cause: Conditional attribute exists in source data but may be hidden in variation attributes or stripped from payload
+      fix_applied: "Fetch source with include_attributes=all and preserve/reinject the required attribute (ex: GTIN) before asking for manual correction"
+      severity: blocking
+
+    field.constraint.violated_required_attribute:
+      ml_code: "field.constraint.violated"
+      message: "WITH_USB is a required attribute for channel marketplace and cannot be not applicable"
+      cause: ML sometimes returns the required attribute id inline in the sentence instead of using bracket lists
+      fix_applied: Parse the attribute id directly from the message and surface a manual correction form
+      severity: blocking
+
     item.attribute.missing.seller.package.dimensions:
       message: "The attributes [seller_package_height, width, length, weight] are all required"
       cause: Item has no shipping dimensions — ML requires them for certain categories
-      fix_applied: Detect error → return needs_dimensions status → prompt user for dimensions
+      fix_applied: Detect error → return needs_correction status + correction_details → prompt user for dimensions
       severity: blocking
-      notes: User must provide dimensions manually via /api/copy/with-dimensions
+      notes: User must provide dimensions manually via /api/copy/with-dimensions or retry-corrections
 
   # WARNINGS (type: "warning") — ML returns HTTP 400 but these are NOT blocking
   # They appear alongside real errors but do NOT cause the failure
@@ -720,6 +733,150 @@ error_history:
       Some categories require specific attributes (MODEL, etc.) that may not exist in the source.
       These are data issues, not code bugs. The error message is already descriptive.
 
+  - id: ERR-035
+    date: "2026-03-06"
+    category: item_copy
+    title: "Dimension errors waste 2 retry attempts before detection"
+    symptom: |
+      When item has no shipping dimensions, the retry loop tries normal + safe_mode
+      before re-raising. The outer handler catches _is_dimension_error but debug logs
+      are never marked resolved, polluting the unresolved logs.
+    ml_error_code: item.attribute.missing.seller.package.dimensions
+    root_cause: |
+      _is_dimension_error detection only existed in the outer except block (after retry loop).
+      The retry loop had no early exit for dimension errors, so it wasted 2 attempts
+      (normal + safe_mode) on an unfixable error. Debug logs were never marked resolved.
+    fix: |
+      - Added early _is_dimension_error check inside the retry loop (before adjustments)
+      - On detection: log to api_debug_logs with resolved=True and raise immediately
+      - Skips useless safe_mode retry for dimension errors
+    file: app/services/item_copier.py
+    lesson: |
+      Errors that are fundamentally unfixable by payload changes (missing dimensions,
+      missing required source attributes) should bail out of the retry loop immediately.
+      Don't waste retry attempts on errors that need user intervention.
+
+  - id: ERR-036
+    date: "2026-03-06"
+    category: attributes
+    title: "Missing MODEL attribute auto-fill from title"
+    symptom: |
+      Copy to presentes-criativos-uniquebox fails for multiple categories:
+      "The attributes [MODEL] are required for category MLBxxxxxx".
+      Source items genuinely lack MODEL attribute.
+    ml_error_code: item.attributes.missing_required
+    root_cause: |
+      Source items don't have MODEL attribute. Destination categories require it.
+      The _extract_ml_error_fields function didn't detect this error type because
+      the ML code is "missing_required" not "required_fields", so the marker-based
+      detection failed. No auto-fix was attempted.
+    fix: |
+      - Added _extract_missing_required_attributes() to detect "missing_required"
+        and "missing_catalog_required" error codes and extract attribute IDs
+      - In _adjust_payload_for_ml_error: auto-fill missing attributes from source
+        item data, with MODEL fallback to title/family_name (truncated to 60 chars)
+    file: app/services/item_copier.py
+    lesson: |
+      Required attributes that are missing from source can often be derived from
+      other item fields. MODEL = title/family_name is a safe default for most
+      categories. The _extract_ml_error_fields marker system doesn't cover all
+      ML error codes — dedicated handlers are needed for specific patterns.
+
+  - id: ERR-037
+    date: "2026-03-06"
+    category: item_copy
+    title: "Field parser mixes required_fields with invalid_fields"
+    symptom: |
+      Copy retries for the same ML response alternate between contradictory fixes:
+      family_name is treated as both required and invalid, so the next payload can
+      remove or skip fields that should have been added.
+    ml_error_code: body.required_fields
+    root_cause: |
+      _extract_ml_error_fields() collected every bracketed field from the exception
+      payload once any marker matched somewhere in the response. A mixed cause array
+      (for example required_fields + invalid_fields in the same error) contaminated
+      the retry decisions with unrelated field names.
+    fix: |
+      - Added _text_matches_error_marker() to validate each text against the requested marker
+      - _extract_ml_error_fields() now extracts bracketed fields only from texts that
+        actually match the current marker
+    file: app/services/item_copier.py
+    lesson: |
+      ML often returns multiple validation causes in a single 400 response. Field
+      extraction must stay scoped to the specific error family being handled, or the
+      retry system will make mutually exclusive adjustments.
+
+  - id: ERR-038
+    date: "2026-03-06"
+    category: attributes
+    title: "Conditional GTIN requirement hidden in variation attributes"
+    symptom: |
+      Copy of items like MLB3334511543 fails with:
+      "item.attribute.missing_conditional_required [GTIN]".
+      The source listing already has GTIN, but only at variation level.
+    ml_error_code: item.attribute.missing_conditional_required
+    root_cause: |
+      get_item() fetched the source item without include_attributes=all, so some
+      variation-level attributes (including GTIN) were omitted from the response.
+      The payload builder also excluded GTIN, preventing retries from recovering it.
+    fix: |
+      - get_item() now requests include_attributes=all
+      - GTIN was removed from EXCLUDED_ATTRIBUTES
+      - Retry logic now looks for the missing attribute in both top-level and variation
+        attributes before escalating to manual correction
+    file: app/services/ml_api.py, app/services/item_copier.py
+    lesson: |
+      Conditional required attributes can live only in variations. When ML demands
+      GTIN, inspect both top-level and variation attributes from the full source item
+      before assuming the seller must fill it manually.
+
+  - id: ERR-039
+    date: "2026-03-06"
+    category: item_copy
+    title: "family_name invalid detector matches variations errors by mistake"
+    symptom: |
+      Logs show "added required family_name" in the retry actions, but the next
+      request payload is sent without family_name and ML keeps returning
+      body.required_fields [family_name].
+    ml_error_code: body.invalid_fields
+    root_cause: |
+      _is_family_name_invalid_error() only checked whether the text contained both
+      "family name" and "invalid". That also matched the message
+      "The field variations is invalid with family name", which incorrectly enabled
+      force_no_family_name and removed family_name again at the start of the next retry.
+    fix: |
+      - Narrowed _is_family_name_invalid_error() to actual family_name-invalid messages/codes
+      - Kept "variations is invalid with family name" handled only by the dedicated
+        _is_variations_invalid_with_family_name_error() detector
+    file: app/services/item_copier.py
+    lesson: |
+      Error detectors must identify the invalid field itself, not any contextual
+      mention that happens to contain the same words.
+
+  - id: ERR-040
+    date: "2026-03-06"
+    category: attributes
+    title: "Required-attribute parser captures category ids and misses direct constraints"
+    symptom: |
+      Manual correction metadata for GTIN could become "GTIN, MLB1586", and
+      blocking messages like "WITH_USB is a required attribute" stayed as raw errors
+      instead of opening a correction form.
+    ml_error_code: field.constraint.violated
+    root_cause: |
+      The parser extracted every bracketed token from the message, so category ids
+      like [MLB1586] were treated as attributes. It also had no path for ML errors
+      that declare the required attribute directly in plain text.
+    fix: |
+      - Added dedicated regex extraction for "attributes [X] are required"
+      - Ignore category tokens like MLB1586 when normalizing attribute ids
+      - Parse direct messages such as "WITH_USB is a required attribute"
+      - Manual-correction final logs now mark their debug attempts as resolved
+    file: app/services/item_copier.py
+    lesson: |
+      Required-attribute parsing must be semantic, not just "anything inside []".
+      ML mixes category ids, attribute ids, warnings and plain-text constraints in the
+      same response family.
+
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.
 patterns:
@@ -755,7 +912,6 @@ patterns:
     must_exclude:
       - "Attributes with null/empty id (source data quality issue)"
       - "ITEM_CONDITION — set via condition field"
-      - "GTIN — catalog/barcode, not modifiable"
       - "PACKAGE_* — auto-calculated by ML"
       - "SHIPMENT_PACKING — auto-calculated"
       - "CATALOG_TITLE, PRODUCT_FEATURES — catalog-managed"
@@ -777,6 +933,10 @@ patterns:
       - "For User Products: ALSO add SELLER_SKU attribute — ML interface reads from attribute, not field"
       - "For variations: set seller_custom_field per variation"
       - "ML interface displays SELLER_SKU attribute for User Products, seller_custom_field for regular items"
+    conditional_required_rules:
+      - "GTIN may be required even when it exists only in variation attributes"
+      - "Fetch source items with include_attributes=all before concluding the attribute is missing"
+      - "When ML asks for a required attribute, inspect both top-level and variation attributes before asking the seller to fill it manually"
 
   ml_api_shipping:
     description: "Shipping configuration rules"
@@ -799,6 +959,8 @@ patterns:
     description: "Rules for the auto-retry system"
     rules:
       - "Track what was tried (force_no_title, force_no_family_name, safe_mode_retry_used)"
+      - "Extract bracketed fields only from texts that match the current marker (required_fields vs invalid_fields)"
+      - "Never infer family_name invalid just because another field error mentions 'family name' in context"
       - "Never re-add a field that was explicitly removed due to error"
       - "When rebuilding payload (safe_mode), preserve dynamically discovered fields (official_store_id)"
       - "Log every attempt to api_debug_logs with full request/response"
@@ -828,55 +990,6 @@ patterns:
       - "refresh_token may be absent — use .get() and preserve existing on refresh"
       - "Reject auth if initial exchange has no refresh_token (fail fast)"
       - "Token auto-refresh on expiry via _get_token() in ml_api.py"
-
-  - id: ERR-036
-    date: "2026-03-06"
-    category: attributes
-    title: "Missing MODEL attribute auto-fill from title"
-    symptom: |
-      Copy to presentes-criativos-uniquebox fails for multiple categories:
-      "The attributes [MODEL] are required for category MLBxxxxxx".
-      Source items genuinely lack MODEL attribute.
-    ml_error_code: item.attributes.missing_required
-    root_cause: |
-      Source items don't have MODEL attribute. Destination categories require it.
-      The _extract_ml_error_fields function didn't detect this error type because
-      the ML code is "missing_required" not "required_fields", so the marker-based
-      detection failed. No auto-fix was attempted.
-    fix: |
-      - Added _extract_missing_required_attributes() to detect "missing_required"
-        and "missing_catalog_required" error codes and extract attribute IDs
-      - In _adjust_payload_for_ml_error: auto-fill missing attributes from source
-        item data, with MODEL fallback to title/family_name (truncated to 60 chars)
-    file: app/services/item_copier.py
-    lesson: |
-      Required attributes that are missing from source can often be derived from
-      other item fields. MODEL = title/family_name is a safe default for most
-      categories. The _extract_ml_error_fields marker system doesn't cover all
-      ML error codes — dedicated handlers are needed for specific patterns.
-
-  - id: ERR-035
-    date: "2026-03-06"
-    category: item_copy
-    title: "Dimension errors waste 2 retry attempts before detection"
-    symptom: |
-      When item has no shipping dimensions, the retry loop tries normal + safe_mode
-      before re-raising. The outer handler catches _is_dimension_error but debug logs
-      are never marked resolved, polluting the unresolved logs.
-    ml_error_code: item.attribute.missing.seller.package.dimensions
-    root_cause: |
-      _is_dimension_error detection only existed in the outer except block (after retry loop).
-      The retry loop had no early exit for dimension errors, so it wasted 2 attempts
-      (normal + safe_mode) on an unfixable error. Debug logs were never marked resolved.
-    fix: |
-      - Added early _is_dimension_error check inside the retry loop (before adjustments)
-      - On detection: log to api_debug_logs with resolved=True and raise immediately
-      - Skips useless safe_mode retry for dimension errors
-    file: app/services/item_copier.py
-    lesson: |
-      Errors that are fundamentally unfixable by payload changes (missing dimensions,
-      missing required source attributes) should bail out of the retry loop immediately.
-      Don't waste retry attempts on errors that need user intervention.
 
 # ── Currently unresolved errors ────────────────────────────────────────────
 unresolved:

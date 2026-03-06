@@ -317,7 +317,12 @@ async def get_seller_official_store_id(seller_slug: str, org_id: str) -> int | N
 async def get_item(seller_slug: str, item_id: str, org_id: str = "") -> dict:
     """GET /items/{item_id} — full item data (with 429 retry)."""
     token = await _get_token(seller_slug, org_id)
-    resp = await _ml_request("GET", f"{ML_API}/items/{item_id}", token)
+    resp = await _ml_request(
+        "GET",
+        f"{ML_API}/items/{item_id}",
+        token,
+        params={"include_attributes": "all"},
+    )
     _raise_for_status(resp, "Mercado Livre API")
     return resp.json()
 

@@ -95,7 +95,6 @@ def _log_api_debug(
 EXCLUDED_ATTRIBUTES = {
     "ITEM_CONDITION",       # set via `condition` field
     "SELLER_SKU",           # keep if present in variations
-    "GTIN",                 # catalog / barcode — not modifiable
     "PACKAGE_WEIGHT",       # auto-calculated by ML
     "PACKAGE_HEIGHT",
     "PACKAGE_WIDTH",
@@ -128,7 +127,67 @@ DIMENSION_ERROR_KEYWORDS = {
 
 USER_PRODUCT_LISTING_TAG = "user_product_listing"
 BRACKET_FIELDS_RE = re.compile(r"\[([^\]]+)\]")
+REQUIRED_ATTR_BRACKET_RE = re.compile(r"(?:attributes?|fields?)\s*\[([^\]]+)\]\s+(?:are|is)\s+required", re.IGNORECASE)
+REQUIRED_ATTR_DIRECT_RE = re.compile(r"\b([A-Z][A-Z0-9_]+)\b\s+is a required attribute\b", re.IGNORECASE)
 MAX_FAMILY_NAME_LEN = 120
+CORRECTION_STATUS = "needs_correction"
+LEGACY_DIMENSION_STATUS = "needs_dimensions"
+
+ATTRIBUTE_LABELS = {
+    "GTIN": "GTIN",
+    "MODEL": "Modelo",
+    "WITH_USB": "Com USB",
+}
+
+ATTRIBUTE_PLACEHOLDERS = {
+    "GTIN": "ex: 7891234567890",
+    "MODEL": "ex: Amor Infinito",
+    "WITH_USB": "ex: Sim ou Não",
+}
+
+DIMENSION_CORRECTION_DETAILS = {
+    "kind": "dimensions",
+    "group_key": "dimensions",
+    "summary": "Item sem dimensoes de envio. Informe as dimensoes para continuar.",
+    "fields": [
+        {
+            "id": "height",
+            "label": "Altura",
+            "input": "number",
+            "unit": "cm",
+            "step": "0.1",
+            "min": 0,
+            "placeholder": "ex: 34",
+        },
+        {
+            "id": "width",
+            "label": "Largura",
+            "input": "number",
+            "unit": "cm",
+            "step": "0.1",
+            "min": 0,
+            "placeholder": "ex: 22",
+        },
+        {
+            "id": "length",
+            "label": "Comprimento",
+            "input": "number",
+            "unit": "cm",
+            "step": "0.1",
+            "min": 0,
+            "placeholder": "ex: 30",
+        },
+        {
+            "id": "weight",
+            "label": "Peso",
+            "input": "number",
+            "unit": "g",
+            "step": "1",
+            "min": 0,
+            "placeholder": "ex: 2360",
+        },
+    ],
+}
 
 
 def _extract_missing_required_attributes(exc: MlApiError) -> set[str]:
@@ -141,15 +200,55 @@ def _extract_missing_required_attributes(exc: MlApiError) -> set[str]:
             if not isinstance(cause, dict) or cause.get("type") != "error":
                 continue
             code = str(cause.get("code", "")).lower()
-            if "missing_required" not in code and "missing_catalog_required" not in code:
+            if not any(
+                marker in code
+                for marker in (
+                    "missing_required",
+                    "missing_catalog_required",
+                    "missing_conditional_required",
+                )
+            ) and not (
+                "field.constraint.violated" in code
+                and "required attribute" in str(cause.get("message", "")).lower()
+            ):
                 continue
             msg = cause.get("message", "")
-            for group in BRACKET_FIELDS_RE.findall(msg):
-                for raw in group.split(","):
-                    field = raw.strip()
-                    if field:
-                        attrs.add(field)
+            attrs.update(_extract_required_attribute_ids(msg))
     return attrs
+
+
+def _format_attribute_label(attr_id: str) -> str:
+    return ATTRIBUTE_LABELS.get(attr_id, attr_id.replace("_", " ").title())
+
+
+def _build_dimension_correction_details() -> dict[str, Any]:
+    return dict(DIMENSION_CORRECTION_DETAILS)
+
+
+def _build_attribute_correction_details(attr_ids: set[str]) -> dict[str, Any] | None:
+    normalized = sorted({attr_id.strip().upper() for attr_id in attr_ids if attr_id.strip()})
+    if not normalized:
+        return None
+    labels = [_format_attribute_label(attr_id) for attr_id in normalized]
+    return {
+        "kind": "attributes",
+        "group_key": f"attributes:{','.join(normalized)}",
+        "summary": (
+            f"Atributo obrigatorio faltando: {labels[0]}"
+            if len(labels) == 1
+            else f"Atributos obrigatorios faltando: {', '.join(labels)}"
+        ),
+        "attribute_ids": normalized,
+        "fields": [
+            {
+                "id": attr_id,
+                "label": _format_attribute_label(attr_id),
+                "input": "text",
+                "placeholder": ATTRIBUTE_PLACEHOLDERS.get(attr_id, ""),
+            }
+            for attr_id in normalized
+        ],
+    }
 
 
 def _is_dimension_error(exc: MlApiError) -> bool:
@@ -299,42 +398,145 @@ def _extract_fields_from_text(text: str) -> set[str]:
     return fields
 
 
+def _normalize_attribute_id(raw: str) -> str:
+    value = _clean_text(raw).strip("'\"").upper()
+    if not value or re.fullmatch(r"MLB\d+", value):
+        return ""
+    return value
+
+
+def _extract_required_attribute_ids(text: str) -> set[str]:
+    attrs: set[str] = set()
+    for match in REQUIRED_ATTR_BRACKET_RE.finditer(text or ""):
+        for raw in match.group(1).split(","):
+            attr_id = _normalize_attribute_id(raw)
+            if attr_id:
+                attrs.add(attr_id)
+    for match in REQUIRED_ATTR_DIRECT_RE.finditer(text or ""):
+        attr_id = _normalize_attribute_id(match.group(1))
+        if attr_id:
+            attrs.add(attr_id)
+    return attrs
+
+
+def _iter_error_text_segments(text: str) -> list[str]:
+    segments: list[str] = []
+    for chunk in str(text or "").split("|"):
+        piece = chunk.strip()
+        if not piece:
+            continue
+        segments.append(piece)
+        for subpart in piece.split(";"):
+            cleaned = subpart.strip()
+            if cleaned and cleaned != piece:
+                segments.append(cleaned)
+    return segments
+
+
+def _text_matches_error_marker(text: str, marker: str) -> bool:
+    marker_lc = marker.lower().strip()
+    if not marker_lc:
+        return True
+    text_lc = text.lower()
+    if marker_lc in text_lc:
+        return True
+    if marker_lc == "required_fields":
+        return "following properties" in text_lc or "required field" in text_lc
+    if marker_lc == "invalid_fields":
+        return "invalid field" in text_lc or (" field " in f" {text_lc} " and " invalid" in text_lc)
+    return False
+
+
 def _extract_ml_error_fields(exc: MlApiError, marker: str) -> set[str]:
     payload = exc.payload if isinstance(exc.payload, dict) else {}
-    texts: list[str] = [str(exc)]
+    relevant_texts: list[str] = []
+
+    exc_text = str(exc)
+    for segment in _iter_error_text_segments(exc_text):
+        if _text_matches_error_marker(segment, marker):
+            relevant_texts.append(segment)
 
     for key in ("message", "error", "detail"):
         value = payload.get(key)
         if isinstance(value, str):
-            texts.append(value)
+            for segment in _iter_error_text_segments(value):
+                if _text_matches_error_marker(segment, marker):
+                    relevant_texts.append(segment)
 
     causes = payload.get("cause")
     if isinstance(causes, list):
         for cause in causes:
             if not isinstance(cause, dict):
                 continue
-            for key in ("code", "message", "description"):
-                value = cause.get(key)
-                if isinstance(value, str):
-                    texts.append(value)
+            cause_texts = [
+                value
+                for key in ("code", "message", "description")
+                if isinstance((value := cause.get(key)), str)
+            ]
+            for text in cause_texts:
+                for segment in _iter_error_text_segments(text):
+                    if _text_matches_error_marker(segment, marker):
+                        relevant_texts.append(segment)
 
-    marker_lc = marker.lower().strip()
-    lowered = [text.lower() for text in texts if isinstance(text, str)]
-    marker_found = not marker_lc or any(marker_lc in text for text in lowered)
-    if not marker_found and marker_lc == "required_fields":
-        marker_found = any(
-            "following properties" in text or "required field" in text
-            for text in lowered
-        )
-    if not marker_found and marker_lc == "invalid_fields":
-        marker_found = any("invalid field" in text for text in lowered)
-    if not marker_found:
+    if not relevant_texts:
         return set()
 
     fields: set[str] = set()
-    for text in texts:
+    for text in relevant_texts:
         fields.update(_extract_fields_from_text(text))
     return fields
+
+
+def _extract_attribute_value_from_list(attributes: Any, attr_id: str) -> str:
+    if not isinstance(attributes, list):
+        return ""
+    for attr in attributes:
+        if not isinstance(attr, dict) or attr.get("id") != attr_id:
+            continue
+        value_id, value_name = _extract_value_pair(attr)
+        value = value_name or value_id
+        if value:
+            return value
+    return ""
+
+
+def _extract_source_attribute_value(item: dict, attr_id: str) -> str:
+    value = _extract_attribute_value_from_list(item.get("attributes"), attr_id)
+    if value:
+        return value
+
+    variations = item.get("variations")
+    if not isinstance(variations, list):
+        return ""
+
+    for variation in variations:
+        if not isinstance(variation, dict):
+            continue
+        value = _extract_attribute_value_from_list(variation.get("attributes"), attr_id)
+        if value:
+            return value
+    return ""
+
+
+def _ensure_attribute_in_payload(payload: dict[str, Any], attr_id: str, value: str) -> bool:
+    clean_value = _clean_text(value)
+    if not clean_value:
+        return False
+
+    attrs = payload.setdefault("attributes", [])
+    if not isinstance(attrs, list):
+        payload["attributes"] = []
+        attrs = payload["attributes"]
+
+    for attr in attrs:
+        if not isinstance(attr, dict) or attr.get("id") != attr_id:
+            continue
+        attr["value_name"] = clean_value
+        attr.pop("value_id", None)
+        return True
+
+    attrs.append({"id": attr_id, "value_name": clean_value})
+    return True
 
 
 def _is_title_invalid_error(exc: MlApiError) -> bool:
@@ -348,7 +550,7 @@ def _is_title_invalid_error(exc: MlApiError) -> bool:
 def _is_family_name_invalid_error(exc: MlApiError) -> bool:
     """Detect 'family name is invalid' even without bracket-enclosed field name."""
     text = str(exc).lower()
-    if "family name" in text and "invalid" in text:
+    if re.search(r"\bfield\s+family name\s+is invalid\b", text):
         return True
     payload = exc.payload if isinstance(exc.payload, dict) else {}
     causes = payload.get("cause", [])
@@ -356,8 +558,11 @@ def _is_family_name_invalid_error(exc: MlApiError) -> bool:
         for cause in causes:
             if not isinstance(cause, dict):
                 continue
+            code = str(cause.get("code", "")).lower()
             msg = str(cause.get("message", "")).lower()
-            if "family name" in msg and "invalid" in msg:
+            if "family_name" in code and "invalid" in code and "length" not in code:
+                return True
+            if re.search(r"\bfield\s+family name\s+is invalid\b", msg):
                 return True
     return False
 
@@ -513,6 +718,9 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
         adjusted.pop("variations")
         actions.append("removed variations (incompatible with family_name)")
         _ensure_top_level_stock(adjusted, item)
+        gtin = _extract_source_attribute_value(item, "GTIN")
+        if gtin and _ensure_attribute_in_payload(adjusted, "GTIN", gtin):
+            actions.append("added GTIN from source after removing variations")
 
     # Handle family_name length error: truncate to 60 chars instead of removing
     if _is_family_name_length_error(exc) and adjusted.get("family_name"):
@@ -522,35 +730,31 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
     # Auto-fill missing required attributes (e.g. MODEL) from item data
     missing_attrs = _extract_missing_required_attributes(exc)
     if missing_attrs:
-        if "attributes" not in adjusted:
-            adjusted["attributes"] = []
-        existing_ids = {a.get("id") for a in adjusted["attributes"] if isinstance(a, dict)}
         for attr_id in missing_attrs:
-            if attr_id in existing_ids:
-                continue
-            # Try to find value from source item attributes
-            value = None
-            for src_attr in (item.get("attributes") or []):
-                if not isinstance(src_attr, dict):
-                    continue
-                if src_attr.get("id") == attr_id:
-                    _, value = _extract_value_pair(src_attr)
-                    if not value:
-                        value = src_attr.get("value_name")
-                    break
+            value = _extract_source_attribute_value(item, attr_id)
             # For MODEL: derive from title/family_name if not in source
             if not value and attr_id == "MODEL":
                 value = _clean_text(item.get("family_name")) or _clean_text(item.get("title"))
                 if value and len(value) > 60:
                     value = value[:60]
-            if value:
-                adjusted["attributes"].append({"id": attr_id, "value_name": value})
+            if value and _ensure_attribute_in_payload(adjusted, attr_id, value):
                 actions.append(f"added missing required attribute {attr_id}={value[:30]}")
 
     if "variations" not in adjusted:
         _ensure_top_level_stock(adjusted, item)
 
     return adjusted, actions
+
+
+def _extract_correction_details(exc: MlApiError) -> dict[str, Any] | None:
+    if _is_dimension_error(exc):
+        return _build_dimension_correction_details()
+
+    missing_attrs = _extract_missing_required_attributes(exc)
+    if missing_attrs:
+        return _build_attribute_correction_details(missing_attrs)
+
+    return None
 
 
 def _build_item_payload(item: dict, safe_mode: bool = False) -> dict:
@@ -750,7 +954,9 @@ async def copy_single_item(
         "dest_item_id": None,
         "error": None,
         "sku": None,
+        "correction_details": None,
     }
+    item: dict[str, Any] | None = None
 
     try:
         # 1. GET full item data from source
@@ -1002,10 +1208,19 @@ async def copy_single_item(
         result["status"] = "success"
 
     except MlApiError as e:
-        if _is_dimension_error(e):
-            logger.warning(f"Copy {item_id} -> {dest_seller} blocked by missing dimensions")
-            result["status"] = "needs_dimensions"
-            result["error"] = "Item sem dimensoes de envio. Informe as dimensoes para continuar."
+        correction_details = _extract_correction_details(e)
+        if correction_details:
+            logger.warning("Copy %s -> %s requires manual correction", item_id, dest_seller)
+            result["status"] = CORRECTION_STATUS
+            result["error"] = correction_details["summary"]
+            result["correction_details"] = correction_details
+            try:
+                db = get_db()
+                db.table("api_debug_logs").update({"resolved": True}).eq(
+                    "source_item_id", item_id
+                ).eq("dest_seller", dest_seller).eq("action", "create_item").execute()
+            except Exception:
+                pass
         else:
             logger.error(f"Failed to copy {item_id} to {dest_seller}: {e}")
             result["status"] = "error"
@@ -1023,6 +1238,7 @@ async def copy_single_item(
             response_status=e.status_code,
             response_body=e.payload if isinstance(e.payload, dict) else {"raw": str(e.payload)},
             error_message=e.detail,
+            resolved=bool(correction_details),
             org_id=org_id,
         )
     except Exception as e:
@@ -1114,9 +1330,11 @@ async def _copy_item_to_all_dests(
     results: list[dict] = []
     dest_item_ids: dict[str, str] = {}
     item_errors: dict[str, str] = {}
-    has_needs_dimensions = False
+    has_needs_correction = False
+    correction_details: dict[str, Any] | None = None
     item_title = ""
     item_thumbnail = ""
+    item_sku: str | None = None
 
     for dest_seller in dest_sellers:
         result = await copy_single_item(
@@ -1129,20 +1347,24 @@ async def _copy_item_to_all_dests(
         if not item_title and result.get("_title"):
             item_title = result["_title"]
             item_thumbnail = result.get("_thumbnail", "")
+        if not item_sku and result.get("sku"):
+            item_sku = result["sku"]
 
         if result["status"] == "success":
             dest_item_ids[dest_seller] = result["dest_item_id"]
-        elif result["status"] == "needs_dimensions":
-            has_needs_dimensions = True
+        elif result["status"] == CORRECTION_STATUS:
+            has_needs_correction = True
             item_errors[dest_seller] = result["error"]
+            if not correction_details and isinstance(result.get("correction_details"), dict):
+                correction_details = result["correction_details"]
         else:
             item_errors[dest_seller] = result["error"]
 
     # Determine final status
     if dest_item_ids and not item_errors:
         item_status = "success"
-    elif has_needs_dimensions and not dest_item_ids:
-        item_status = "needs_dimensions"
+    elif has_needs_correction:
+        item_status = CORRECTION_STATUS
     elif dest_item_ids and item_errors:
         item_status = "partial"
     else:
@@ -1154,8 +1376,10 @@ async def _copy_item_to_all_dests(
             "status": item_status,
             "dest_item_ids": dest_item_ids,
             "error_details": item_errors if item_errors else None,
+            "correction_details": correction_details if item_status == CORRECTION_STATUS else None,
             "source_item_title": item_title or None,
             "source_item_thumbnail": item_thumbnail or None,
+            "source_item_sku": item_sku,
         }
         if log_id is not None:
             db.table("copy_logs").update(update_data).eq("id", log_id).execute()
@@ -1168,6 +1392,8 @@ async def _copy_item_to_all_dests(
                 "dest_item_ids": dest_item_ids,
                 "status": item_status,
                 "error_details": item_errors if item_errors else None,
+                "correction_details": correction_details if item_status == CORRECTION_STATUS else None,
+                "source_item_sku": item_sku,
             }
             if user_id:
                 fallback["user_id"] = user_id
@@ -1194,24 +1420,87 @@ async def copy_with_dimensions(
     """
     dim_attrs = _build_dimension_attributes(dimensions)
 
-    # 1. Update source item with dimensions
-    try:
-        await update_item(source_seller, item_id, {"attributes": dim_attrs}, org_id=org_id)
-        logger.info(f"Dimensions applied to source item {item_id} on {source_seller}")
-    except Exception as e:
-        logger.error(f"Failed to apply dimensions to {item_id}: {e}")
+    return await _copy_with_source_attribute_updates(
+        source_seller=source_seller,
+        dest_sellers=dest_sellers,
+        item_id=item_id,
+        attrs=dim_attrs,
+        failure_message_prefix="Falha ao atualizar dimensoes no item origem",
+        org_id=org_id,
+        user_id=user_id,
+    )
+
+
+def _build_manual_attribute_corrections(values: dict[str, Any]) -> list[dict]:
+    attrs: list[dict] = []
+    for raw_attr_id, raw_value in values.items():
+        attr_id = _clean_text(raw_attr_id).upper()
+        value = _clean_text(raw_value)
+        if not attr_id or not value:
+            continue
+        attrs.append({"id": attr_id, "value_name": value})
+    return attrs
+
+
+async def _copy_with_source_attribute_updates(
+    source_seller: str,
+    dest_sellers: list[str],
+    item_id: str,
+    attrs: list[dict],
+    failure_message_prefix: str,
+    org_id: str = "",
+    user_id: str | None = None,
+) -> list[dict]:
+    """Apply attribute updates to the source item, then re-run the copy flow."""
+    if not attrs:
         return [{
             "source_item_id": item_id,
             "dest_seller": ds,
             "status": "error",
             "dest_item_id": None,
-            "error": f"Falha ao atualizar dimensoes no item origem: {e}",
+            "error": "Nenhuma correcao valida foi informada.",
+            "correction_details": None,
         } for ds in dest_sellers]
 
-    # 2. Re-copy to all destinations (normal copy flow, item now has dimensions)
+    # 1. Update source item with the supplied attributes/corrections
+    try:
+        await update_item(source_seller, item_id, {"attributes": attrs}, org_id=org_id)
+        logger.info("Source item %s updated on %s with %d correction attribute(s)", item_id, source_seller, len(attrs))
+    except Exception as e:
+        logger.error("Failed to apply source corrections to %s: %s", item_id, e)
+        return [{
+            "source_item_id": item_id,
+            "dest_seller": ds,
+            "status": "error",
+            "dest_item_id": None,
+            "error": f"{failure_message_prefix}: {e}",
+            "correction_details": None,
+        } for ds in dest_sellers]
+
+    # 2. Re-copy to all destinations (normal copy flow, item now has the correction)
     results = []
     for dest_seller in dest_sellers:
         result = await copy_single_item(source_seller, dest_seller, item_id, org_id=org_id, user_id=user_id)
         results.append(result)
 
     return results
+
+
+async def copy_with_attribute_corrections(
+    source_seller: str,
+    dest_sellers: list[str],
+    item_id: str,
+    values: dict[str, Any],
+    org_id: str = "",
+    user_id: str | None = None,
+) -> list[dict]:
+    """Apply manual attribute corrections to the source item, then copy again."""
+    return await _copy_with_source_attribute_updates(
+        source_seller=source_seller,
+        dest_sellers=dest_sellers,
+        item_id=item_id,
+        attrs=_build_manual_attribute_corrections(values),
+        failure_message_prefix="Falha ao atualizar atributos no item origem",
+        org_id=org_id,
+        user_id=user_id,
+    )

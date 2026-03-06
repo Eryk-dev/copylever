@@ -1,5 +1,6 @@
 const statusLabels: Record<string, string> = {
-  needs_dimensions: 'Aguardando dimensões',
+  needs_dimensions: 'Aguardando correções',
+  needs_correction: 'Aguardando correções',
   in_progress: 'Copiando...',
   pending: 'Pendente',
   success: 'Sucesso',
@@ -8,8 +9,23 @@ const statusLabels: Record<string, string> = {
 };
 
 export default function StatusBadge({ status }: { status: string }) {
-  const c: Record<string, string> = { success: 'var(--success)', error: 'var(--danger)', partial: 'var(--warning)', pending: 'var(--ink-faint)', in_progress: 'var(--info)', needs_dimensions: 'var(--warning)' };
-  const bg: Record<string, string> = { success: 'rgba(16, 185, 129, 0.08)', error: 'rgba(239, 68, 68, 0.08)', partial: 'rgba(245, 158, 11, 0.08)', in_progress: 'rgba(59, 130, 246, 0.08)', needs_dimensions: 'rgba(245, 158, 11, 0.08)' };
+  const c: Record<string, string> = {
+    success: 'var(--success)',
+    error: 'var(--danger)',
+    partial: 'var(--warning)',
+    pending: 'var(--ink-faint)',
+    in_progress: 'var(--info)',
+    needs_dimensions: 'var(--warning)',
+    needs_correction: 'var(--warning)',
+  };
+  const bg: Record<string, string> = {
+    success: 'rgba(16, 185, 129, 0.08)',
+    error: 'rgba(239, 68, 68, 0.08)',
+    partial: 'rgba(245, 158, 11, 0.08)',
+    in_progress: 'rgba(59, 130, 246, 0.08)',
+    needs_dimensions: 'rgba(245, 158, 11, 0.08)',
+    needs_correction: 'rgba(245, 158, 11, 0.08)',
+  };
   const isInProgress = status === 'in_progress';
   return (
     <span style={{

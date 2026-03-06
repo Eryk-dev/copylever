@@ -10,11 +10,19 @@ from pydantic import BaseModel
 
 from app.db.supabase import get_db
 from app.routers.auth import require_active_org, require_user
-from app.services.item_copier import copy_items, copy_with_dimensions
+from app.services.item_copier import (
+    CORRECTION_STATUS,
+    LEGACY_DIMENSION_STATUS,
+    _build_dimension_correction_details,
+    copy_items,
+    copy_with_attribute_corrections,
+    copy_with_dimensions,
+)
 from app.services.ml_api import get_item, get_item_description, get_item_compatibilities
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/copy", tags=["copy"])
+CORRECTION_PENDING_STATUSES = {CORRECTION_STATUS, LEGACY_DIMENSION_STATUS}
 
 
 def _check_trial_limit(org_id: str, requested_copies: int) -> dict | None:
@@ -142,6 +150,62 @@ def _check_seller_permission(user: dict, seller_slug: str, direction: str) -> bo
     )
 
 
+def _get_correction_details_for_log(log: dict) -> dict | None:
+    details = log.get("correction_details")
+    if isinstance(details, dict) and details:
+        return details
+
+    if log.get("status") in CORRECTION_PENDING_STATUSES and log.get("error_details"):
+        values = log["error_details"].values() if isinstance(log["error_details"], dict) else []
+        if any(
+            isinstance(v, str) and ("dimenso" in v.lower() or "dimension" in v.lower() or "weight" in v.lower())
+            for v in values
+        ):
+            return _build_dimension_correction_details()
+    return None
+
+
+def _count_result_statuses(results: list[dict]) -> tuple[int, int, int]:
+    success_count = sum(1 for r in results if r["status"] == "success")
+    error_count = sum(1 for r in results if r["status"] == "error")
+    correction_count = sum(1 for r in results if r["status"] in CORRECTION_PENDING_STATUSES)
+    return success_count, error_count, correction_count
+
+
+def _derive_log_status(results: list[dict]) -> str:
+    success_count, error_count, correction_count = _count_result_statuses(results)
+    if correction_count > 0:
+        return CORRECTION_STATUS
+    if error_count == 0:
+        return "success"
+    if success_count > 0:
+        return "partial"
+    return "error"
+
+
+def _extract_retry_dimensions(values: dict[str, str | float | int | bool | None]) -> dict[str, float]:
+    dims: dict[str, float] = {}
+    for key in ("height", "width", "length", "weight"):
+        raw = values.get(key)
+        if raw in (None, ""):
+            continue
+        dims[key] = float(raw)
+    return dims
+
+
+def _extract_retry_attribute_values(
+    values: dict[str, str | float | int | bool | None],
+    allowed_fields: list[dict],
+) -> dict[str, str | float | int | bool]:
+    allowed_ids = {str(field.get("id")) for field in allowed_fields if isinstance(field, dict) and field.get("id")}
+    cleaned: dict[str, str | float | int | bool] = {}
+    for key, raw in values.items():
+        if key not in allowed_ids or raw in (None, ""):
+            continue
+        cleaned[key] = raw
+    return cleaned
+
+
 class CopyRequest(BaseModel):
     source: str
     destinations: list[str]
@@ -160,6 +224,11 @@ class CopyWithDimensionsRequest(BaseModel):
     destinations: list[str]
     item_id: str
     dimensions: Dimensions
+
+
+class RetryCorrectionsRequest(BaseModel):
+    log_ids: list[int]
+    values: dict[str, str | float | int | bool | None]
 
 
 @router.post("")
@@ -254,34 +323,42 @@ async def copy_with_dims(req: CopyWithDimensionsRequest, user: dict = Depends(re
         user_id=user["id"],
     )
 
-    success_count = sum(1 for r in results if r["status"] == "success")
-    error_count = sum(1 for r in results if r["status"] == "error")
+    success_count, error_count, correction_count = _count_result_statuses(results)
 
     # Increment trial counter for successful copies
     if trial_info and success_count > 0:
         _increment_trial_copies(org_id, 1)
 
-    # Update any existing needs_dimensions log entries for this item
+    # Update any existing pending-correction log entries for this item
     if success_count > 0:
         db = get_db()
         dest_item_ids = {r["dest_seller"]: r["dest_item_id"] for r in results if r["status"] == "success"}
         new_errors = {r["dest_seller"]: r["error"] for r in results if r["status"] != "success" and r.get("error")}
-        new_status = "success" if error_count == 0 else "partial"
-        try:
-            db.table("copy_logs").update({
-                "status": new_status,
-                "dest_item_ids": dest_item_ids or None,
-                "error_details": new_errors or None,
-            }).eq("source_item_id", item_id).eq(
-                "source_seller", req.source
-            ).eq("status", "needs_dimensions").eq("org_id", org_id).execute()
-        except Exception as e:
-            logger.warning(f"Failed to update needs_dimensions logs for {item_id}: {e}")
+        new_status = _derive_log_status(results)
+        source_item_sku = next((r.get("sku") for r in results if r.get("sku")), None)
+        correction_details = next(
+            (r.get("correction_details") for r in results if isinstance(r.get("correction_details"), dict)),
+            None,
+        )
+        for pending_status in CORRECTION_PENDING_STATUSES:
+            try:
+                db.table("copy_logs").update({
+                    "status": new_status,
+                    "dest_item_ids": dest_item_ids or None,
+                    "error_details": new_errors or None,
+                    "correction_details": correction_details if new_status == CORRECTION_STATUS else None,
+                    "source_item_sku": source_item_sku,
+                }).eq("source_item_id", item_id).eq(
+                    "source_seller", req.source
+                ).eq("status", pending_status).eq("org_id", org_id).execute()
+            except Exception as e:
+                logger.warning("Failed to update pending correction logs for %s (%s): %s", item_id, pending_status, e)
 
     return {
         "total": len(results),
         "success": success_count,
         "errors": error_count,
+        "needs_correction": correction_count,
         "results": results,
     }
 
@@ -307,7 +384,8 @@ async def retry_dimensions(req: RetryDimensionsRequest, user: dict = Depends(req
     org_id = log["org_id"]
 
     # 2. Verify it's a dimension error (new status or old error with dimension message)
-    is_dim_error = log["status"] == "needs_dimensions"
+    correction_details = _get_correction_details_for_log(log)
+    is_dim_error = bool(correction_details and correction_details.get("kind") == "dimensions")
     if not is_dim_error and log["status"] == "error" and log.get("error_details"):
         details = log["error_details"]
         if isinstance(details, dict):
@@ -341,18 +419,24 @@ async def retry_dimensions(req: RetryDimensionsRequest, user: dict = Depends(req
         user_id=user["id"],
     )
 
-    success_count = sum(1 for r in results if r["status"] == "success")
-    error_count = sum(1 for r in results if r["status"] == "error")
+    success_count, error_count, correction_count = _count_result_statuses(results)
 
     # 5. Update the original log row
     dest_item_ids = {r["dest_seller"]: r["dest_item_id"] for r in results if r["status"] == "success"}
     new_errors = {r["dest_seller"]: r["error"] for r in results if r["status"] != "success" and r.get("error")}
-    new_status = "success" if error_count == 0 else ("partial" if success_count > 0 else "error")
+    new_status = _derive_log_status(results)
+    source_item_sku = next((r.get("sku") for r in results if r.get("sku")), None)
+    new_correction_details = next(
+        (r.get("correction_details") for r in results if isinstance(r.get("correction_details"), dict)),
+        None,
+    )
 
     db.table("copy_logs").update({
         "status": new_status,
         "dest_item_ids": dest_item_ids or None,
         "error_details": new_errors or None,
+        "correction_details": new_correction_details if new_status == CORRECTION_STATUS else None,
+        "source_item_sku": source_item_sku,
     }).eq("id", req.log_id).eq("org_id", org_id).execute()
 
     return {
@@ -360,7 +444,122 @@ async def retry_dimensions(req: RetryDimensionsRequest, user: dict = Depends(req
         "total": len(results),
         "success": success_count,
         "errors": error_count,
+        "needs_correction": correction_count,
         "results": results,
+    }
+
+
+@router.post("/retry-corrections")
+async def retry_corrections(req: RetryCorrectionsRequest, user: dict = Depends(require_active_org)):
+    """Retry one or more pending-correction logs using the same correction values."""
+    clean_log_ids = list(dict.fromkeys(log_id for log_id in req.log_ids if log_id))
+    if not clean_log_ids:
+        raise HTTPException(status_code=400, detail="Informe pelo menos um log para reprocessar")
+
+    db = get_db()
+    log_query = db.table("copy_logs").select("*")
+    if not user.get("is_super_admin"):
+        log_query = log_query.eq("org_id", user["org_id"])
+    log_rows = log_query.execute().data or []
+    logs = [row for row in log_rows if row.get("id") in clean_log_ids]
+    if len(logs) != len(clean_log_ids):
+        raise HTTPException(status_code=404, detail="Um ou mais logs nao foram encontrados")
+
+    enriched_logs: list[tuple[dict, dict]] = []
+    group_keys: set[str] = set()
+    for log in logs:
+        details = _get_correction_details_for_log(log)
+        if not details:
+            raise HTTPException(status_code=400, detail=f"Log {log['id']} nao esta aguardando correcao")
+        group_key = str(details.get("group_key") or "")
+        if not group_key:
+            raise HTTPException(status_code=400, detail=f"Log {log['id']} nao possui metadados de correcao")
+        group_keys.add(group_key)
+        enriched_logs.append((log, details))
+
+    if len(group_keys) != 1:
+        raise HTTPException(status_code=400, detail="Selecione apenas logs com o mesmo problema para corrigir em lote")
+
+    total_success = 0
+    total_errors = 0
+    total_needs_correction = 0
+    retried_logs = []
+
+    for log, details in enriched_logs:
+        source = log["source_seller"]
+        destinations = log["dest_sellers"] or []
+        org_id = log["org_id"]
+
+        if not _check_seller_permission(user, source, "from"):
+            raise HTTPException(status_code=403, detail=f"Sem permissao de origem para '{source}'")
+        denied = [d for d in destinations if not _check_seller_permission(user, d, "to")]
+        if denied:
+            raise HTTPException(status_code=403, detail=f"Sem permissao de destino para: {', '.join(denied)}")
+
+        if details.get("kind") == "dimensions":
+            dims = _extract_retry_dimensions(req.values)
+            if not dims:
+                raise HTTPException(status_code=400, detail="Informe pelo menos uma dimensao")
+            results = await copy_with_dimensions(
+                source_seller=source,
+                dest_sellers=destinations,
+                item_id=str(log["source_item_id"]),
+                dimensions=dims,
+                org_id=org_id,
+                user_id=user["id"],
+            )
+        else:
+            values = _extract_retry_attribute_values(req.values, details.get("fields", []))
+            if not values:
+                raise HTTPException(status_code=400, detail="Preencha os atributos obrigatorios antes de reenviar")
+            results = await copy_with_attribute_corrections(
+                source_seller=source,
+                dest_sellers=destinations,
+                item_id=str(log["source_item_id"]),
+                values=values,
+                org_id=org_id,
+                user_id=user["id"],
+            )
+
+        success_count, error_count, correction_count = _count_result_statuses(results)
+        total_success += success_count
+        total_errors += error_count
+        total_needs_correction += correction_count
+
+        dest_item_ids = {r["dest_seller"]: r["dest_item_id"] for r in results if r["status"] == "success"}
+        new_errors = {r["dest_seller"]: r["error"] for r in results if r["status"] != "success" and r.get("error")}
+        new_status = _derive_log_status(results)
+        source_item_sku = next((r.get("sku") for r in results if r.get("sku")), None)
+        new_correction_details = next(
+            (r.get("correction_details") for r in results if isinstance(r.get("correction_details"), dict)),
+            None,
+        )
+
+        db.table("copy_logs").update({
+            "status": new_status,
+            "dest_item_ids": dest_item_ids or None,
+            "error_details": new_errors or None,
+            "correction_details": new_correction_details if new_status == CORRECTION_STATUS else None,
+            "source_item_sku": source_item_sku,
+        }).eq("id", log["id"]).eq("org_id", org_id).execute()
+
+        retried_logs.append({
+            "log_id": log["id"],
+            "source_item_id": log["source_item_id"],
+            "status": new_status,
+            "success": success_count,
+            "errors": error_count,
+            "needs_correction": correction_count,
+            "results": results,
+        })
+
+    return {
+        "log_ids": clean_log_ids,
+        "total_logs": len(retried_logs),
+        "success": total_success,
+        "errors": total_errors,
+        "needs_correction": total_needs_correction,
+        "logs": retried_logs,
     }
 
 

@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from app.db.supabase import get_db
+from app.services.item_copier import CORRECTION_STATUS, _build_dimension_correction_details
 from app.services.shopee_api import (
     ShopeeApiError,
     get_item,
@@ -492,6 +493,7 @@ async def copy_single_item(
         "dest_item_id": None,
         "error": None,
         "sku": None,
+        "correction_details": None,
         "models_copied": 0,
         "models_total": 0,
     }
@@ -617,8 +619,9 @@ async def copy_single_item(
 
         if last_error:
             if _is_dimension_error(last_error):
-                result["status"] = "needs_dimensions"
+                result["status"] = CORRECTION_STATUS
                 result["error"] = "Item sem dimensoes/peso. Informe as dimensoes para continuar."
+                result["correction_details"] = _build_dimension_correction_details()
             else:
                 result["status"] = "error"
                 result["error"] = last_error
@@ -627,8 +630,9 @@ async def copy_single_item(
         err_msg = f"{e.error_code}: {e.message}" if e.error_code else e.message
         logger.error("Shopee copy failed for item %d -> shop %d: %s", item_id, dest_shop_id, err_msg)
         if _is_dimension_error(err_msg):
-            result["status"] = "needs_dimensions"
+            result["status"] = CORRECTION_STATUS
             result["error"] = "Item sem dimensoes/peso. Informe as dimensoes para continuar."
+            result["correction_details"] = _build_dimension_correction_details()
         else:
             result["status"] = "error"
             result["error"] = err_msg
@@ -697,7 +701,7 @@ async def _run_copy_job(
     all_results: list[dict] = []
     total_success = 0
     total_errors = 0
-    total_needs_dimensions = 0
+    total_needs_correction = 0
     dest_slug_list = [slug for slug, _ in dest_shops]
 
     # Pre-fetch logistics for each destination shop (once per shop, not per item)
@@ -729,9 +733,11 @@ async def _run_copy_job(
 
         dest_item_ids: dict[str, str] = {}
         item_errors: dict[str, str] = {}
-        has_needs_dimensions = False
+        has_needs_correction = False
+        correction_details: dict[str, Any] | None = None
         item_title = ""
         item_thumbnail = ""
+        item_sku: str | None = None
 
         # Pre-fetch source item data (once per item, reused across destinations)
         prefetched_source: dict | None = None
@@ -795,16 +801,20 @@ async def _run_copy_job(
             if not item_title and result.get("_title"):
                 item_title = result["_title"]
                 item_thumbnail = result.get("_thumbnail", "")
+            if not item_sku and result.get("sku"):
+                item_sku = result["sku"]
 
             if result["status"] == "success":
                 total_success += 1
                 if result.get("dest_item_id"):
                     dest_item_ids[dest_slug] = result["dest_item_id"]
-            elif result["status"] == "needs_dimensions":
-                total_needs_dimensions += 1
-                has_needs_dimensions = True
+            elif result["status"] == CORRECTION_STATUS:
+                total_needs_correction += 1
+                has_needs_correction = True
                 if result.get("error"):
                     item_errors[dest_slug] = result["error"]
+                if not correction_details and isinstance(result.get("correction_details"), dict):
+                    correction_details = result["correction_details"]
             else:
                 total_errors += 1
                 if result.get("error"):
@@ -815,8 +825,8 @@ async def _run_copy_job(
         # Determine final status for this item
         if dest_item_ids and not item_errors:
             item_status = "success"
-        elif has_needs_dimensions and not dest_item_ids:
-            item_status = "needs_dimensions"
+        elif has_needs_correction:
+            item_status = CORRECTION_STATUS
         elif dest_item_ids and item_errors:
             item_status = "partial"
         else:
@@ -828,8 +838,10 @@ async def _run_copy_job(
                 "status": item_status,
                 "dest_item_ids": dest_item_ids,
                 "error_details": item_errors if item_errors else None,
+                "correction_details": correction_details if item_status == CORRECTION_STATUS else None,
                 "source_item_title": item_title or None,
                 "source_item_thumbnail": item_thumbnail or None,
+                "source_item_sku": item_sku,
             }
             if log_id is not None:
                 db.table("shopee_copy_logs").update(update_data).eq("id", log_id).execute()
@@ -843,6 +855,8 @@ async def _run_copy_job(
                     "dest_item_ids": dest_item_ids,
                     "status": item_status,
                     "error_details": item_errors if item_errors else None,
+                    "correction_details": correction_details if item_status == CORRECTION_STATUS else None,
+                    "source_item_sku": item_sku,
                 }
                 db.table("shopee_copy_logs").insert(fallback).execute()
         except Exception as e:
@@ -852,7 +866,7 @@ async def _run_copy_job(
         "total": len(all_results),
         "success": total_success,
         "errors": total_errors,
-        "needs_dimensions": total_needs_dimensions,
+        "needs_correction": total_needs_correction,
         "results": all_results,
     }
 

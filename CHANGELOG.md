@@ -9,7 +9,17 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Added
+- Fluxo generico "Aguardando correções" no historico de copias, com `correction_details`, agrupamento por SKU+problema no ML e endpoint `/api/copy/retry-corrections` para reaplicar a mesma correção em lote
+
+### Changed
+- Pendencias de dimensoes e atributos agora usam o status unico `needs_correction`; logs ML e Shopee passam a salvar `source_item_sku` e metadados da correção para o frontend agrupar e exibir feedback apos o reenvio
+
 ### Fixed
+- Parser de erros ML nao mistura mais `required_fields` com `invalid_fields`, evitando retries com ajustes contraditorios no fluxo `family_name`
+- Copia ML agora busca o item origem com `include_attributes=all` e nao descarta mais `GTIN`, permitindo recuperar `item.attribute.missing_conditional_required` quando o codigo de barras existe nas variacoes
+- Extracao de atributos obrigatorios agora ignora codigos de categoria como `MLB1586`, reconhece erros `field.constraint.violated` (ex.: `WITH_USB`) e marca pendencias manuais como resolvidas nos `api_debug_logs`
+- Agrupamento de "Aguardando correções" nao junta varios itens Shopee em um unico reenvio de dimensoes invalido
 - Race condition (TOCTOU) no lock por loja Shopee (`_get_shop_lock`) — coroutines concorrentes podiam criar locks duplicados; agora usa `dict.setdefault` atomico
 - Copia Shopee agora aborta imediatamente quando nenhuma imagem foi enviada com sucesso, em vez de tentar criar o anuncio 3 vezes com lista de imagens vazia
 - Retry de copia Shopee (attempt 2) agora remove apenas atributos com valores vazios em vez de remover todos os atributos — preserva atributos obrigatorios da categoria

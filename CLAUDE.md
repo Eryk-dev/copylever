@@ -236,18 +236,20 @@ GET    /api/debug/env               # Check env vars (super_admin only, values m
 
 2. **Payload building** (`_build_item_payload` in item_copier.py):
    - **Include:** category_id, price, currency_id, available_quantity, buying_mode, condition, title, family_name, pictures, attributes, sale_terms, shipping, variations, channels, seller_custom_field
-   - **Exclude:** id, seller_id, date_created, sold_quantity, status, permalink, health, GTIN, package dimensions
+   - **Exclude:** id, seller_id, date_created, sold_quantity, status, permalink, health, package dimensions
    - **Pictures:** Use `secure_url`/`url` from source (NOT picture IDs — those fail cross-account)
    - **Shipping:** Always use `mode: "me2"`, set `free_shipping: false`
-   - **Attributes:** Filter out read-only (ITEM_CONDITION, GTIN, etc.)
+   - **Attributes:** Filter out read-only (ITEM_CONDITION, PACKAGE_*, HAS_COMPATIBILITIES, etc.), but preserve modifiable attrs like GTIN when source data has them
 
 3. **SKU extraction order:** item `seller_custom_field` → item attributes (SELLER_SKU) → variation-level fields
 
-4. **Compatibility API:** Two endpoints:
+4. **Source fetches for retry/correction:** use `GET /items/{id}?include_attributes=all` when you may need hidden variation attributes (ex: GTIN) for retries or manual corrections
+
+5. **Compatibility API:** Two endpoints:
    - `/items/{id}/compatibilities` (regular items)
    - `/user-products/{id}/compatibilities` (brand accounts, fallback on 400/403)
 
-5. **Rate limiting:** Exponential backoff on 429 (3s base, doubles, max 5 retries). 1-second pacing between compat calls.
+6. **Rate limiting:** Exponential backoff on 429 (3s base, doubles, max 5 retries). 1-second pacing between compat calls.
 
 ## Shopee API Patterns
 
@@ -338,10 +340,12 @@ The error almost always originates in one of these:
 ### Key principles learned:
 - **ML response `cause[]` mixes errors and warnings** — always check `type` field, ignore warnings
 - **ML error messages are inconsistent** — some use [brackets], some don't. Need multiple detection methods
+- **Required attributes may come as `field.constraint.violated`** — e.g. `WITH_USB is a required attribute...`; parse the attribute id from the message when ML doesn't use bracket lists
 - **Retry rebuilds lose state** — when safe_mode rebuilds payload, carry over discovered fields (official_store_id)
 - **seller-specific fields can't be copied** — official_store_id, local_pick_up, shipping mode are per-seller
 - **User Products vs Regular Items** — different schemas, different endpoints, different SKU handling
 - **Check both the field AND the attribute** — ML stores data in two places (e.g., seller_custom_field vs SELLER_SKU attribute)
+- **Context words are not the invalid field** — `variations is invalid with family name` must not be treated as `family_name invalid`
 - **Query the actual item via ML API** when the error is unclear — compare source vs dest item fields
 
 ## Changelog (MANDATORY)

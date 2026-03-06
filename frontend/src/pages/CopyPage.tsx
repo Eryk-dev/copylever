@@ -1,15 +1,36 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { API_BASE, type Seller, type ShopeeSeller, type CopyQueuedResponse, type CopyLog, type ItemPreview } from '../lib/api';
+import {
+  API_BASE,
+  type Seller,
+  type ShopeeSeller,
+  type CopyQueuedResponse,
+  type CopyLog,
+  type CorrectionDetails,
+  type ItemPreview,
+} from '../lib/api';
 import type { AuthUser } from '../hooks/useAuth';
 import CopyForm, { type CopyGroup, type Platform } from '../components/CopyForm';
-import DimensionForm, { type Dimensions } from '../components/DimensionForm';
+import CorrectionForm from '../components/CorrectionForm';
 import StatusBadge from '../components/StatusBadge';
-import { isDimensionError } from '../lib/helpers';
+import { getCorrectionDetails, isCorrectionPending } from '../lib/helpers';
 import { useToast } from '../components/Toast';
 
 const LOGS_PAGE_SIZE = 50;
 
 type UnifiedLog = CopyLog & { platform: Platform };
+type CorrectionValues = Record<string, string | number>;
+
+interface PendingCorrectionGroup {
+  key: string;
+  platform: Platform;
+  sourceSeller: string;
+  sku: string | null;
+  summary: string;
+  correction: CorrectionDetails;
+  logs: UnifiedLog[];
+  itemIds: string[];
+  destinations: string[];
+}
 
 interface Props {
   sellers: Seller[];
@@ -175,17 +196,25 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
     }
   }, [previewOpen, handlePreview]);
 
-  const handleLogRetry = useCallback(async (log: UnifiedLog, dims: Dimensions) => {
+  const handleCorrectionRetry = useCallback(async (log: UnifiedLog, values: CorrectionValues) => {
     try {
-      const endpoint = log.platform === 'ml' ? '/api/copy/retry-dimensions' : '/api/shopee/copy/with-dimensions';
+      const correction = getCorrectionDetails(log);
+      if (!correction) {
+        toast('Este log nao possui um formulario de correcao disponível.', 'error');
+        return;
+      }
+
+      const endpoint = correction.kind === 'dimensions' && log.platform === 'shopee'
+        ? '/api/shopee/copy/with-dimensions'
+        : '/api/copy/retry-corrections';
+      const body = endpoint === '/api/copy/retry-corrections'
+        ? { log_ids: [log.id], values }
+        : { source: log.source_seller, destinations: log.dest_sellers, item_id: String(log.source_item_id), dimensions: values };
+
       const res = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: headers(),
-        body: JSON.stringify(
-          log.platform === 'ml'
-            ? { log_id: log.id, dimensions: dims }
-            : { source: log.source_seller, destinations: log.dest_sellers, item_id: String(log.source_item_id), dimensions: dims }
-        ),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: 'Erro desconhecido' }));
@@ -193,7 +222,93 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
         return;
       }
       setRetryLogId(null);
-      toast('Cópia reenviada com as dimensões informadas.', 'success');
+      toast('Cópia reenviada com a correção informada.', 'success');
+      void loadLogs();
+    } catch (e) {
+      toast(String(e), 'error');
+    }
+  }, [headers, loadLogs, toast]);
+
+  const correctionGroups = useMemo<PendingCorrectionGroup[]>(() => {
+    const groups = new Map<string, PendingCorrectionGroup>();
+
+    for (const log of logs) {
+      if (!isCorrectionPending(log)) continue;
+      const correction = getCorrectionDetails(log);
+      if (!correction) continue;
+
+      const sku = log.source_item_sku || null;
+      const batchKey = log.platform === 'shopee'
+        ? log.source_item_id
+        : (sku || log.source_item_id);
+      const key = [
+        log.platform,
+        log.source_seller,
+        batchKey,
+        correction.group_key,
+      ].join('::');
+
+      const group = groups.get(key) || {
+        key,
+        platform: log.platform,
+        sourceSeller: log.source_seller,
+        sku,
+        summary: correction.summary,
+        correction,
+        logs: [],
+        itemIds: [],
+        destinations: [],
+      };
+
+      group.logs.push(log);
+      if (!group.itemIds.includes(log.source_item_id)) group.itemIds.push(log.source_item_id);
+      for (const dest of log.dest_sellers || []) {
+        if (!group.destinations.includes(dest)) group.destinations.push(dest);
+      }
+
+      groups.set(key, group);
+    }
+
+    return [...groups.values()].sort(
+      (a, b) => new Date(b.logs[0]?.created_at || 0).getTime() - new Date(a.logs[0]?.created_at || 0).getTime()
+    );
+  }, [logs]);
+
+  const handleCorrectionGroupSubmit = useCallback(async (group: PendingCorrectionGroup, values: CorrectionValues) => {
+    try {
+      const endpoint = group.platform === 'shopee' && group.correction.kind === 'dimensions'
+        ? '/api/shopee/copy/with-dimensions'
+        : '/api/copy/retry-corrections';
+
+      const body = endpoint === '/api/copy/retry-corrections'
+        ? { log_ids: group.logs.map(log => log.id), values }
+        : { source: group.sourceSeller, destinations: group.destinations, item_id: String(group.itemIds[0]), dimensions: values };
+
+      const res = await fetch(`${API_BASE}${endpoint}`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Erro desconhecido' }));
+        toast(err.detail, 'error');
+        return;
+      }
+
+      const data = await res.json().catch(() => null) as {
+        success?: number;
+        errors?: number;
+        needs_correction?: number;
+      } | null;
+      const successCount = data?.success || 0;
+      const remainingCount = (data?.errors || 0) + (data?.needs_correction || 0);
+      if (successCount > 0 && remainingCount === 0) {
+        toast(`${successCount} anúncio(s) copiado(s) após a correção.`, 'success');
+      } else if (successCount > 0) {
+        toast(`${successCount} anúncio(s) copiado(s), mas ainda restam ${remainingCount} pendência(s).`, 'success');
+      } else {
+        toast('A correção foi enviada, mas nenhum anúncio foi copiado nesta tentativa.', 'error');
+      }
       void loadLogs();
     } catch (e) {
       toast(String(e), 'error');
@@ -250,7 +365,7 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
     { key: 'success', label: 'Sucesso' },
     { key: 'partial', label: 'Parcial' },
     { key: 'error', label: 'Erros' },
-    { key: 'needs_dimensions', label: 'Aguardando dimensões' },
+    { key: 'needs_correction', label: 'Aguardando correções' },
   ];
 
   const hasAnySellers = (mlSourceSellers.length > 0 && mlDestSellers.length > 0)
@@ -358,22 +473,32 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
               </p>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-                {logs.map(log => (
-                  <LogCard
-                    key={`${log.platform}-${log.id}`}
-                    log={log}
-                    isRetrying={retryLogId === log.id && retryPlatform === log.platform}
-                    onRetryClick={() => {
-                      if (retryLogId === log.id && retryPlatform === log.platform) {
-                        setRetryLogId(null);
-                      } else {
-                        setRetryLogId(log.id);
-                        setRetryPlatform(log.platform);
-                      }
-                    }}
-                    onRetrySubmit={(dims) => handleLogRetry(log, dims)}
-                  />
-                ))}
+                {statusFilter === 'needs_correction' ? (
+                  correctionGroups.map(group => (
+                    <PendingCorrectionCard
+                      key={group.key}
+                      group={group}
+                      onSubmit={values => handleCorrectionGroupSubmit(group, values)}
+                    />
+                  ))
+                ) : (
+                  logs.map(log => (
+                    <LogCard
+                      key={`${log.platform}-${log.id}`}
+                      log={log}
+                      isRetrying={retryLogId === log.id && retryPlatform === log.platform}
+                      onRetryClick={() => {
+                        if (retryLogId === log.id && retryPlatform === log.platform) {
+                          setRetryLogId(null);
+                        } else {
+                          setRetryLogId(log.id);
+                          setRetryPlatform(log.platform);
+                        }
+                      }}
+                      onRetrySubmit={(values) => handleCorrectionRetry(log, values)}
+                    />
+                  ))
+                )}
               </div>
             )}
 
@@ -395,16 +520,17 @@ function LogCard({ log, isRetrying, onRetryClick, onRetrySubmit }: {
   log: UnifiedLog;
   isRetrying: boolean;
   onRetryClick: () => void;
-  onRetrySubmit: (dims: Dimensions) => void;
+  onRetrySubmit: (values: CorrectionValues) => void;
 }) {
-  const canRetry = isDimensionError(log);
+  const correction = getCorrectionDetails(log);
+  const canRetry = Boolean(correction);
   const destEntries = log.dest_item_ids ? Object.entries(log.dest_item_ids) : [];
   const errorEntries = log.error_details ? Object.entries(log.error_details) : [];
   const isShopee = log.platform === 'shopee';
 
   const accentMap: Record<string, string> = {
     success: 'var(--success)', error: 'var(--danger)', partial: 'var(--warning)',
-    pending: 'var(--ink-faint)', in_progress: 'var(--info)', needs_dimensions: 'var(--warning)',
+    pending: 'var(--ink-faint)', in_progress: 'var(--info)', needs_dimensions: 'var(--warning)', needs_correction: 'var(--warning)',
   };
 
   return (
@@ -498,26 +624,161 @@ function LogCard({ log, isRetrying, onRetryClick, onRetrySubmit }: {
                 border: `1px solid ${isRetrying ? 'var(--ink)' : 'rgba(217, 119, 6, 0.2)'}`,
                 cursor: 'pointer', transition: 'all 0.15s',
               }}>
-                {isRetrying ? 'Cancelar' : 'Informar dimensoes'}
+                {isRetrying ? 'Cancelar' : 'Corrigir e reenviar'}
               </button>
             )}
           </div>
         </div>
       </div>
 
-      {isRetrying && (
+      {isRetrying && correction && (
         <div className="animate-in" style={{
           background: 'var(--attention-bg)', border: '1px solid rgba(217, 119, 6, 0.12)',
           borderRadius: 10, padding: 'var(--space-3) var(--space-4)',
         }}>
-          <DimensionForm
-            itemIds={[log.source_item_id]}
-            destinations={log.dest_sellers || []}
+          <CorrectionForm
+            title="Correção necessária"
+            description={
+              <>
+                {log.source_item_sku && (
+                  <>
+                    <span style={{ fontWeight: 600, color: 'var(--ink)' }}>SKU: {log.source_item_sku}</span>
+                    {' — '}
+                  </>
+                )}
+                <span style={{ fontFamily: 'var(--font-mono)' }}>{log.source_item_id}</span>
+                {' '}&rarr; {(log.dest_sellers || []).join(', ')}
+                <br />
+                {correction.summary}
+              </>
+            }
+            fields={correction.fields}
+            submitLabel="Aplicar correção e copiar"
+            submittingLabel="Aplicando..."
             onSubmit={onRetrySubmit}
           />
         </div>
       )}
     </>
+  );
+}
+
+function PendingCorrectionCard({
+  group,
+  onSubmit,
+}: {
+  group: PendingCorrectionGroup;
+  onSubmit: (values: CorrectionValues) => void | Promise<void>;
+}) {
+  const primaryLog = group.logs[0];
+  const isShopee = group.platform === 'shopee';
+
+  return (
+    <div className="animate-in" style={{
+      background: 'var(--paper)',
+      borderRadius: 10,
+      border: '1px solid var(--line)',
+      borderLeftWidth: 3,
+      borderLeftColor: 'var(--warning)',
+      padding: 'var(--space-3) var(--space-4)',
+    }}>
+      <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+        {primaryLog?.source_item_thumbnail ? (
+          <img src={primaryLog.source_item_thumbnail} alt="" style={{
+            width: 44, height: 44, borderRadius: 8, objectFit: 'cover',
+            background: 'var(--surface)', flexShrink: 0, alignSelf: 'flex-start',
+          }} />
+        ) : (
+          <div style={{
+            width: 44, height: 44, borderRadius: 8, background: isShopee ? 'rgba(238,77,45,0.1)' : 'var(--surface)',
+            flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: isShopee ? '#EE4D2D' : 'var(--ink-faint)', fontSize: 'var(--text-xs)', fontWeight: 700,
+          }}>
+            {isShopee ? 'S' : 'ML'}
+          </div>
+        )}
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+            <span style={{
+              fontWeight: 600, fontSize: 'var(--text-sm)', color: 'var(--ink)',
+              flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              {group.summary}
+            </span>
+            <StatusBadge status="needs_correction" />
+          </div>
+
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
+            marginTop: 3, fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', flexWrap: 'wrap',
+          }}>
+            {group.sku && (
+              <>
+                <code style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)',
+                  background: 'var(--surface)', padding: '0 5px', borderRadius: 3, lineHeight: '18px',
+                }}>
+                  SKU {group.sku}
+                </code>
+                <span style={{ opacity: 0.4 }}>&middot;</span>
+              </>
+            )}
+            <span>{group.sourceSeller} &rarr; {group.destinations.join(', ')}</span>
+            <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap', flexShrink: 0 }}>
+              {new Date(primaryLog.created_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
+            </span>
+          </div>
+
+          <div style={{ marginTop: 'var(--space-2)', display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+            {group.logs.map(log => (
+              <div key={`${log.platform}-${log.id}`} style={{
+                display: 'flex',
+                gap: 'var(--space-2)',
+                alignItems: 'center',
+                fontSize: 'var(--text-xs)',
+                color: 'var(--ink-faint)',
+                flexWrap: 'wrap',
+              }}>
+                <code style={{ fontFamily: 'var(--font-mono)' }}>{log.source_item_id}</code>
+                <span>•</span>
+                <span>{log.dest_sellers.join(', ')}</span>
+                {log.error_details && Object.keys(log.error_details).length > 0 && (
+                  <>
+                    <span>•</span>
+                    <span style={{ color: 'var(--danger)' }}>
+                      {Object.values(log.error_details)[0]}
+                    </span>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 'var(--space-3)' }}>
+            <CorrectionForm
+              title="Correção necessária"
+              description={
+                <>
+                  {group.itemIds.length === 1 ? (
+                    <span style={{ fontFamily: 'var(--font-mono)' }}>{group.itemIds[0]}</span>
+                  ) : (
+                    <span>{group.itemIds.length} anúncio(s): <span style={{ fontFamily: 'var(--font-mono)' }}>{group.itemIds.join(', ')}</span></span>
+                  )}
+                  {' '}&rarr; {group.destinations.join(', ')}
+                  <br />
+                  Informe a correção uma vez para reaplicar em todo o grupo com o mesmo SKU e problema.
+                </>
+              }
+              fields={group.correction.fields}
+              submitLabel="Aplicar correção e copiar"
+              submittingLabel="Aplicando..."
+              onSubmit={onSubmit}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -551,4 +812,3 @@ export function Card({ title, action, collapsible, open, onToggle, children }: {
     </div>
   );
 }
-

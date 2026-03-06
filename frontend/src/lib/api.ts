@@ -11,13 +11,32 @@ export interface Seller {
   created_at: string;
 }
 
+export interface CorrectionField {
+  id: string;
+  label: string;
+  input?: 'text' | 'number';
+  unit?: string;
+  step?: string;
+  min?: number;
+  placeholder?: string;
+}
+
+export interface CorrectionDetails {
+  kind: 'dimensions' | 'attributes';
+  group_key: string;
+  summary: string;
+  fields: CorrectionField[];
+  attribute_ids?: string[];
+}
+
 export interface CopyResult {
   source_item_id: string;
   dest_seller: string;
-  status: 'success' | 'error' | 'pending' | 'needs_dimensions';
+  status: 'success' | 'error' | 'pending' | 'needs_dimensions' | 'needs_correction';
   dest_item_id: string | null;
   error: string | null;
   sku?: string | null;
+  correction_details?: CorrectionDetails | null;
 }
 
 export interface CopyResponse {
@@ -25,6 +44,7 @@ export interface CopyResponse {
   success: number;
   errors: number;
   needs_dimensions?: number;
+  needs_correction?: number;
   results: CopyResult[];
 }
 
@@ -43,6 +63,8 @@ export interface CopyLog {
   dest_item_ids: Record<string, string>;
   status: string;
   error_details: Record<string, string> | null;
+  correction_details?: CorrectionDetails | null;
+  source_item_sku?: string | null;
   source_item_title: string | null;
   source_item_thumbnail: string | null;
   created_at: string;
@@ -126,6 +148,8 @@ export interface ShopeeCopyLog {
   dest_item_ids: Record<string, string>;
   status: string;
   error_details: Record<string, string> | null;
+  correction_details?: CorrectionDetails | null;
+  source_item_sku?: string | null;
   source_item_title: string | null;
   source_item_thumbnail: string | null;
   created_at: string;
