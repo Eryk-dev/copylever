@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
-from app.routers import admin_users, auth, auth_ml, billing, compat, copy, super_admin
+from app.routers import admin_users, auth, auth_ml, auth_shopee, billing, compat, copy, shopee_copy, super_admin
 from app.routers.auth import require_super_admin
 
 logging.basicConfig(
@@ -46,6 +46,8 @@ app.include_router(billing.router)
 app.include_router(copy.router)
 app.include_router(compat.router)
 app.include_router(super_admin.router)
+app.include_router(auth_shopee.router)
+app.include_router(shopee_copy.router)
 
 
 @app.get("/api/health")
@@ -66,6 +68,10 @@ async def debug_env(user: dict = Depends(require_super_admin)):
         "supabase_key": "SET" if settings.supabase_key else "MISSING",
         "base_url": settings.base_url,
         "cors_origins": settings.cors_origins,
+        "shopee_partner_id": str(settings.shopee_partner_id) if settings.shopee_partner_id else "MISSING",
+        "shopee_partner_key": "SET" if settings.shopee_partner_key else "MISSING",
+        "shopee_redirect_uri": settings.shopee_redirect_uri or "MISSING",
+        "shopee_sandbox": settings.shopee_sandbox,
     }
 
 
