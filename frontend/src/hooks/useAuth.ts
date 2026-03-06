@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
-import { API_BASE, type Seller } from '../lib/api';
+import { API_BASE, type Seller, type ShopeeSeller } from '../lib/api';
 
 const TOKEN_KEY = 'copy-auth-token';
 
@@ -27,6 +27,7 @@ export function useAuth() {
   });
   const [user, setUser] = useState<AuthUser | null>(null);
   const [sellers, setSellers] = useState<Seller[]>([]);
+  const [shopeeSellers, setShopeeSellers] = useState<ShopeeSeller[]>([]);
   const [loadingSellers, setLoadingSellers] = useState(false);
   const [initializing, setInitializing] = useState(() => !!localStorage.getItem(TOKEN_KEY));
 
@@ -43,6 +44,7 @@ export function useAuth() {
     setUser(null);
     localStorage.removeItem(TOKEN_KEY);
     setSellers([]);
+    setShopeeSellers([]);
   }, []);
 
   const fetchMe = useCallback(async (t: string): Promise<AuthUser | null> => {
@@ -147,6 +149,34 @@ export function useAuth() {
     }
   }, [token, headers, loadSellers]);
 
+  const loadShopeeSellers = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/shopee/sellers`, {
+        headers: headers(),
+        cache: 'no-store',
+      });
+      if (res.status === 401) { clearAuth(); return; }
+      const data = await res.json();
+      setShopeeSellers(data);
+    } catch (e) {
+      console.error('Failed to load Shopee sellers:', e);
+    }
+  }, [token, headers, clearAuth]);
+
+  const disconnectShopeeSeller = useCallback(async (slug: string) => {
+    if (!token) return;
+    try {
+      await fetch(`${API_BASE}/api/shopee/sellers/${slug}`, {
+        method: 'DELETE',
+        headers: headers(),
+      });
+      await loadShopeeSellers();
+    } catch (e) {
+      console.error('Failed to disconnect Shopee seller:', e);
+    }
+  }, [token, headers, loadShopeeSellers]);
+
   // Fetch user on mount if token exists
   useEffect(() => {
     if (token && !user) {
@@ -162,8 +192,9 @@ export function useAuth() {
   useEffect(() => {
     if (token && user) {
       loadSellers();
+      loadShopeeSellers();
     }
-  }, [token, user, loadSellers]);
+  }, [token, user, loadSellers, loadShopeeSellers]);
 
   // Refresh on visibility change
   useEffect(() => {
@@ -171,11 +202,12 @@ export function useAuth() {
     const onVisibility = () => {
       if (document.visibilityState === 'visible') {
         void loadSellers();
+        void loadShopeeSellers();
       }
     };
     document.addEventListener('visibilitychange', onVisibility);
     return () => document.removeEventListener('visibilitychange', onVisibility);
-  }, [token, user, loadSellers]);
+  }, [token, user, loadSellers, loadShopeeSellers]);
 
   return {
     isAuthenticated,
@@ -189,6 +221,9 @@ export function useAuth() {
     loadingSellers,
     loadSellers,
     disconnectSeller,
+    shopeeSellers,
+    loadShopeeSellers,
+    disconnectShopeeSeller,
     headers,
   };
 }

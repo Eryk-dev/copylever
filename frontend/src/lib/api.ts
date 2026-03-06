@@ -93,6 +93,61 @@ export interface OrgWithStats extends Org {
   seller_count: number;
   copy_count: number;
   compat_count: number;
+  shopee_seller_count: number;
+  shopee_copy_count: number;
+}
+
+export interface ShopeeSeller {
+  slug: string;
+  name: string;
+  shop_id: number;
+  token_valid: boolean;
+  token_expires_at: string | null;
+  created_at: string;
+}
+
+export interface ShopeeCopyResult {
+  source_item_id: string;
+  dest_seller: string;
+  status: 'success' | 'error' | 'pending' | 'needs_dimensions';
+  dest_item_id: string | null;
+  error: string | null;
+  sku?: string | null;
+}
+
+export interface ShopeeCopyResponse {
+  total: number;
+  success: number;
+  errors: number;
+  needs_dimensions?: number;
+  results: ShopeeCopyResult[];
+}
+
+export interface ShopeeCopyLog {
+  id: number;
+  user_email: string | null;
+  source_seller: string;
+  dest_sellers: string[];
+  source_item_id: string;
+  dest_item_ids: Record<string, string>;
+  status: string;
+  error_details: Record<string, string> | null;
+  created_at: string;
+}
+
+export interface ShopeeItemPreview {
+  item_id: number;
+  item_name: string;
+  original_price: number;
+  stock: number;
+  category_id: number;
+  status: string;
+  image_url: string;
+  image_count: number;
+  model_count: number;
+  has_description: boolean;
+  weight: number;
+  shop_slug: string;
 }
 
 export interface CompatCopyResult {
