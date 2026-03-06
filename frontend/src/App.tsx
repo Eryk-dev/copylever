@@ -708,10 +708,10 @@ export default function App() {
 
       {/* Content */}
       <div className="animate-in">
-        {activeView === 'copy' && (
+        <div style={{ display: activeView === 'copy' ? undefined : 'none' }}>
           <CopyPage sellers={auth.sellers} shopeeSellers={auth.shopeeSellers} headers={auth.headers} user={auth.user} />
-        )}
-        {activeView === 'admin' && (
+        </div>
+        <div style={{ display: activeView === 'admin' ? undefined : 'none' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
             <nav style={{ display: 'flex', gap: 2, background: 'var(--surface)', borderRadius: 8, padding: 2, alignSelf: 'flex-start' }}>
               <ViewTab active={adminSubView === 'sellers'} onClick={() => setAdminSubView('sellers')}>
@@ -744,10 +744,10 @@ export default function App() {
               <BillingPage headers={auth.headers} />
             )}
           </div>
-        )}
-        {activeView === 'compat' && (
+        </div>
+        <div style={{ display: activeView === 'compat' ? undefined : 'none' }}>
           <CompatPage sellers={auth.sellers} headers={auth.headers} />
-        )}
+        </div>
         {activeView === 'super' && (
           <SuperAdminPage headers={auth.headers} />
         )}
