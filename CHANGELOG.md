@@ -1,0 +1,196 @@
+# Changelog
+
+Todas as mudancas notaveis deste projeto serao documentadas neste arquivo.
+
+O formato e baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
+e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
+
+---
+
+## [Unreleased]
+
+### Added
+- Trial system: 20 copias gratuitas por org antes de exigir assinatura
+- Migration `010_trial_copies.sql`: campos `trial_copies_used` e `trial_copies_limit` na tabela `orgs`
+- Endpoint `PUT /api/sellers/{slug}/name` para renomear sellers conectados
+- Billing status agora retorna `trial_copies_used`, `trial_copies_limit`, `trial_active`, `trial_exhausted`
+- `require_active_org` permite acesso durante trial (bloqueia quando esgotado com HTTP 402)
+- `_check_trial_limit()` e `_increment_trial_copies()` no router de copy
+
+### Changed
+- Billing status endpoint retorna campos adicionais de trial
+- `require_active_org` usa logica de trial em vez de bloquear imediatamente sem pagamento
+
+---
+
+## [1.0.0] - 2026-03-05
+
+Release estavel da plataforma Copy Anuncios ML. Plataforma SaaS multi-tenant completa
+para copiar anuncios e compatibilidades veiculares entre contas do Mercado Livre.
+
+### Core Platform
+
+#### Added
+- Copy engine com retry inteligente (ate 4 tentativas com ajuste automatico de payload)
+- Suporte a Regular Items e User Products (family_name vs title)
+- Suporte a brand accounts (official_store_id auto-detectado e cacheado)
+- Copy de descricao e compatibilidades veiculares apos criacao do item
+- Tratamento de dimensoes: status `needs_dimensions` com retry via frontend
+- Debug logging: toda falha de API logada em `api_debug_logs` com request/response completos
+- `error-history.yaml`: base de conhecimento estruturada de erros ML (34+ erros documentados)
+- Error Debugging Playbook no CLAUDE.md
+
+#### ML API Client (`ml_api.py`)
+- Client HTTP async (httpx) com gestao automatica de tokens por seller
+- Auto-refresh de tokens com locks async por seller (previne race conditions)
+- `MlApiError` exception customizada com status_code, method, url, detail, payload
+- Exponential backoff em 429 (rate limit): 3s base, max 5 retries
+- Suporte a User Products: fallback para `/user-products/{id}/compatibilities`
+- Busca por SKU: `search_items_by_sku` com query dupla (seller_sku + sku)
+
+#### Item Copier (`item_copier.py`, ~1100 linhas)
+- `_build_item_payload()`: transforma item source em payload de criacao
+  - Include: category_id, price, currency_id, available_quantity, buying_mode, condition, title/family_name, pictures (secure_url), attributes (filtrados), sale_terms, shipping (mode=me2), variations, channels, seller_custom_field
+  - Exclude: id, seller_id, date_created, sold_quantity, status, permalink, health, GTIN, package dimensions
+  - Atributos com id nulo filtrados automaticamente
+  - SELLER_SKU adicionado como atributo para User Products
+- `_adjust_payload_for_ml_error()`: ajusta payload baseado no erro ML
+- `copy_single_item()`: retry loop com safe_mode e preservacao de campos descobertos
+- `copy_with_dimensions()`: aplica dimensoes no source e copia
+- Fulfillment items: stock forcado para 1 quando source tem 0
+
+### Authentication & RBAC
+
+#### Added
+- Self-service signup: cria org + admin user + session token em uma chamada
+- Login por email com bcrypt password hashing
+- Session tokens: 32-byte URL-safe, TTL 7 dias, validados por request
+- RBAC com 3 niveis: `super_admin` > `admin` > `operator`
+- Permissoes granulares por seller: `can_copy_from`, `can_copy_to`
+- `can_run_compat` flag para acesso a compatibilidade
+- Admin promote via master password (bootstrap do primeiro admin)
+- Forgot/reset password com token por email (SMTP), expira em 1 hora
+- Reset invalida todas as sessions do usuario (seguranca)
+- Protecao contra remocao do ultimo admin da org
+- Audit logging: toda acao de auth logada em `auth_logs`
+
+### Multi-Tenant SaaS
+
+#### Added
+- Tabela `orgs` como unidade de tenant (billing, data isolation)
+- `org_id` FK em todas as tabelas (users, copy_sellers, permissions, logs)
+- Data isolation: todo query filtra por `org_id`
+- Super-admin bypassa checks de org (acesso global)
+- `GET /api/super/orgs` com stats de uso (30 dias)
+- `PUT /api/super/orgs/{org_id}` para ativar/desativar orgs
+- Migration `007_multi_tenant.sql` + `008_backfill_org_data.sql`
+
+### Billing (Stripe)
+
+#### Added
+- Stripe Checkout integration para assinaturas
+- Stripe Customer Portal para gerenciamento de pagamento
+- Webhook handler: `checkout.session.completed`, `customer.subscription.deleted`, `customer.subscription.updated`
+- Paywall: bloqueia acesso ate assinatura ativa
+- Auto-detect payment apos retorno do Stripe (polling 2s, max 10 tentativas)
+- Billing status endpoint com info de assinatura
+
+### Vehicle Compatibility Copy
+
+#### Added
+- Preview de compatibilidades com contagem de veiculos
+- Extracao de SKUs: item-level (seller_custom_field + SELLER_SKU attr) + variation-level
+- Busca por SKU em todos os sellers conectados (paralelo, semaphore 10)
+- Copy de compatibilidades: regular items + User Products (fallback automatico)
+- Background tasks para operacoes longas
+- Rate limiting: 1s pacing entre calls de compat
+- Limite de 50 SKUs por busca
+
+### Frontend (React 19 + TypeScript + Vite)
+
+#### Added
+- SPA servida pelo FastAPI (monolito, Docker multi-stage)
+- Auth via `useAuth()` hook, token em localStorage, header `X-Auth-Token`
+- CopyPage: paste de IDs, auto-detect de seller source, selecao de destinos, preview, copy com confirmacao
+- CopyForm: auto-resolve de sellers, deduplicacao de IDs, two-step confirmation
+- CopyProgress: resultados com retry de dimensoes inline
+- DimensionForm: input de dimensoes agrupado por SKU
+- CompatPage: preview de source, busca por SKU, copy de compatibilidades
+- Admin: CRUD de usuarios, permissoes por seller, OAuth install
+- SuperAdminPage: gestao de orgs com stats
+- BillingPage: status de assinatura, checkout, portal
+- Login/Signup com validacao e animacao de erro (shake)
+- Landing page redesenhada (tier 1 quality)
+- Connect screen para onboarding (quando nenhum seller conectado)
+- Polling 5s para progresso de operacoes in_progress
+- Permission-aware: tabs e sellers filtrados por role e permissoes
+- CSS variables design system (--ink, --paper, --surface, --line, etc.)
+- Flash prevention: `initializing` state no refresh
+
+### Infrastructure
+
+#### Added
+- FastAPI backend com Uvicorn
+- Supabase (PostgreSQL) com service_role key (bypass RLS)
+- Docker multi-stage build (Node frontend + Python backend)
+- Deploy via Easypanel
+- CORS configuravel via env var
+- Health check endpoints (`/api/health`, `/health`)
+- Debug env endpoint (`/api/debug/env`, super_admin only)
+- 10 migrations SQL (001-010)
+
+### Database Schema
+
+#### Tables
+- `orgs` — multi-tenant: id, name, email, active, payment_active, stripe_*, trial_*
+- `users` — auth: id, email, username, password_hash, role, is_super_admin, can_run_compat, org_id
+- `user_sessions` — sessions: token (32-byte), user_id, expires_at (7 days)
+- `user_permissions` — RBAC: user_id, seller_slug, can_copy_from, can_copy_to
+- `password_reset_tokens` — reset: token, user_id, expires_at (1 hour)
+- `auth_logs` — audit: user_id, username, org_id, action
+- `copy_sellers` — ML OAuth: slug, ml_user_id, ml_access/refresh_token, official_store_id, org_id
+- `copy_logs` — copy history: source_seller, dest_sellers[], source_item_id, status, dest_item_ids, error_details
+- `compat_logs` — compat history: source_item_id, skus[], targets (JSONB), success/error counts
+- `api_debug_logs` — debug: full request/response, attempt_number, adjustments, resolved flag
+
+### Bug Fixes (acumulados pre-release)
+- OAuth token: preservar refresh_token existente quando ML nao retorna novo
+- OAuth token exchange: usar endpoint MercadoPago (nao MercadoLibre)
+- family_name: detectar erro sem brackets, truncar para 60 chars no length error
+- official_store_id: buscar de items ativos do seller (nao de /users/me), cachear no DB
+- Atributos com id nulo: filtrar automaticamente no payload
+- local_pick_up: forcar false (multi-warehouse sellers rejeitam true)
+- SELLER_SKU: adicionar como atributo para User Products (interface ML le do atributo)
+- Fulfillment items: forcar stock 1 quando source tem 0
+- Variations + family_name: remover variations quando conflitam com family_name
+- SKU search: filtrar sellers inativos, tratar erros gracefully
+- Compat copy: passar source_compat_products no flow de User Products
+- Preview: auto-detect seller via fallback autenticado em 403
+- Resolve sellers: resolver em paralelo, filtrar por can_copy_from
+- Cross-org: prevenir acesso cross-org em copy_logs, admin_users, permissions
+- Race conditions: lock por seller no token refresh, prevenir paste+blur duplicado
+- Deduplicacao: normalizar IDs (MLB/MLB-/numeros) e deduplicar
+
+---
+
+## Convencoes de Versionamento
+
+- **MAJOR** (X.0.0): breaking changes na API ou estrutura de dados
+- **MINOR** (0.X.0): nova funcionalidade (ex: integracao Shopee)
+- **PATCH** (0.0.X): bugfix ou melhoria sem mudar interface
+
+### Formato de Commits
+```
+tipo: descricao curta
+
+tipos: feat, fix, chore, docs, style, refactor, perf
+```
+
+### Processo de Release
+1. Atualizar CHANGELOG.md movendo itens de [Unreleased] para nova versao
+2. Criar commit: `chore: release vX.Y.Z`
+3. Criar tag: `git tag -a vX.Y.Z -m "vX.Y.Z"`
+4. Push: `git push && git push --tags`
+
+[Unreleased]: https://github.com/user/copy-anuncios/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/user/copy-anuncios/releases/tag/v1.0.0

@@ -292,6 +292,37 @@ The error almost always originates in one of these:
 - **Check both the field AND the attribute** — ML stores data in two places (e.g., seller_custom_field vs SELLER_SKU attribute)
 - **Query the actual item via ML API** when the error is unclear — compare source vs dest item fields
 
+## Changelog (MANDATORY)
+
+**File:** `CHANGELOG.md` — Registro de todas as mudancas do projeto. Segue [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](https://semver.org/).
+
+**File:** `VERSION` — Versao atual do projeto (ex: `1.0.0`).
+
+**REGRA: Toda mudanca feita no codigo DEVE ser registrada no CHANGELOG.md:**
+1. Adicionar entrada na secao `[Unreleased]` sob a categoria correta:
+   - `### Added` — funcionalidade nova
+   - `### Changed` — mudanca em funcionalidade existente
+   - `### Fixed` — correcao de bug
+   - `### Removed` — remocao de funcionalidade
+   - `### Security` — correcao de vulnerabilidade
+   - `### Deprecated` — funcionalidade marcada para remocao futura
+2. Cada entrada deve ser uma linha descritiva e concisa em portugues
+3. Agrupar entradas relacionadas (ex: backend + frontend de uma mesma feature)
+4. Ao fazer release: mover itens de `[Unreleased]` para nova versao com data
+
+**Versionamento:**
+- **MAJOR** (X.0.0): breaking changes na API ou estrutura de dados
+- **MINOR** (0.X.0): nova funcionalidade (ex: integracao Shopee)
+- **PATCH** (0.0.X): bugfix ou melhoria sem mudar interface
+
+**Processo de release:**
+1. Mover entradas de `[Unreleased]` para `[X.Y.Z] - YYYY-MM-DD`
+2. Atualizar `VERSION`
+3. Commit: `chore: release vX.Y.Z`
+4. Tag: `git tag -a vX.Y.Z -m "vX.Y.Z"`
+
+**Isso e obrigatorio e nao-negociavel.** Nenhum commit deve ser feito sem a entrada correspondente no CHANGELOG.
+
 ## Error History (MANDATORY)
 
 **File:** `error-history.yaml` — Structured knowledge base of all errors and corrections.
