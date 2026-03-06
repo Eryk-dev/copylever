@@ -159,6 +159,9 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
                 thumbnail: data.image_url,
                 pictures_count: data.image_count,
                 variations_count: data.model_count,
+                weight: data.weight,
+                has_description: data.has_description,
+                stock: data.stock,
               } as ItemPreview;
             }
           } catch { return null; }
@@ -325,9 +328,15 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
                     R$ {p.price?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                   </p>
                 </div>
-                <div style={{ display: 'flex', gap: 'var(--space-3)', fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', flexShrink: 0 }}>
+                <div style={{ display: 'flex', gap: 'var(--space-3)', fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', flexShrink: 0, alignItems: 'center', flexWrap: 'wrap' }}>
                   <span>{p.pictures_count} fotos</span>
                   <span>{p.variations_count} var.</span>
+                  {p.weight != null && <span>{p.weight >= 1000 ? `${(p.weight / 1000).toFixed(1)}kg` : `${p.weight}g`}</span>}
+                  {p.has_description === false && (
+                    <span style={{ color: 'var(--warning)', fontWeight: 600 }} title="Shopee exige descricao para criar anuncio">
+                      Sem descricao
+                    </span>
+                  )}
                 </div>
               </div>
             ))}

@@ -67,6 +67,9 @@ export interface ItemPreview {
   has_compatibilities: boolean;
   description_length: number;
   channels: string[];
+  weight?: number;
+  has_description?: boolean;
+  stock?: number;
 }
 
 export interface CompatPreview {
