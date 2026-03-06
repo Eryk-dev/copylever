@@ -26,11 +26,31 @@ _token_locks: dict[int, asyncio.Lock] = {}
 _RATE_LIMIT_RETRIES = 5
 _RATE_LIMIT_BASE_WAIT = 2  # seconds
 
+# Reusable HTTP client (lazy singleton for connection pooling)
+_http_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    """Return the shared httpx.AsyncClient, creating it on first call."""
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            timeout=60.0,
+        )
+    return _http_client
+
+
+async def close_client() -> None:
+    """Close the shared HTTP client (call on app shutdown)."""
+    global _http_client
+    if _http_client is not None:
+        await _http_client.aclose()
+        _http_client = None
+
 
 def _get_shop_lock(shop_id: int) -> asyncio.Lock:
-    if shop_id not in _token_locks:
-        _token_locks[shop_id] = asyncio.Lock()
-    return _token_locks[shop_id]
+    return _token_locks.setdefault(shop_id, asyncio.Lock())
 
 
 def _base_url() -> str:
@@ -128,6 +148,17 @@ def _raise_for_shopee(resp: httpx.Response) -> None:
             message=message,
             payload=payload,
         )
+
+
+def _is_rate_limited(resp: httpx.Response) -> bool:
+    """Check if Shopee response indicates rate limiting (error containing 'too_fast')."""
+    try:
+        body = resp.json()
+        if isinstance(body, dict):
+            return "too_fast" in str(body.get("error", ""))
+    except ValueError:
+        pass
+    return False
 
 
 # ── Auth ────────────────────────────────────────────────────
@@ -283,13 +314,24 @@ async def _get_token(shop_id: int, org_id: str) -> str:
         expire_in = data.get("expire_in", 14400)  # 4 hours default
         new_expires = datetime.now(timezone.utc) + timedelta(seconds=expire_in)
 
-        # Shopee refresh tokens last ~30 days from original grant
         update_data: dict[str, Any] = {
             "access_token": new_access,
             "token_expires_at": new_expires.isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         if new_refresh:
             update_data["refresh_token"] = new_refresh
+            # Compute refresh_token_expires_at from API response or fallback to 30 days
+            refresh_expire_in = data.get("refresh_token_expire_in")
+            if refresh_expire_in:
+                update_data["refresh_token_expires_at"] = (
+                    datetime.now(timezone.utc) + timedelta(seconds=refresh_expire_in)
+                ).isoformat()
+            else:
+                logger.warning("Shopee refresh response missing refresh_token_expire_in for shop %d — using 30-day default", shop_id)
+                update_data["refresh_token_expires_at"] = (
+                    datetime.now(timezone.utc) + timedelta(days=30)
+                ).isoformat()
 
         db.table("shopee_sellers").update(update_data).eq(
             "shop_id", shop_id
@@ -309,24 +351,37 @@ async def _shop_get(
     shop_id: int,
     extra_params: dict | None = None,
 ) -> dict:
-    """Signed GET request to a shop-level Shopee API."""
-    ts = int(time.time())
-    sign = _sign(path, ts, access_token, shop_id)
+    """Signed GET request to a shop-level Shopee API. Retries on rate limiting."""
     base = _base_url()
-    params = {
-        "partner_id": settings.shopee_partner_id,
-        "timestamp": ts,
-        "sign": sign,
-        "access_token": access_token,
-        "shop_id": shop_id,
-    }
-    if extra_params:
-        params.update(extra_params)
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(f"{base}{path}", params=params)
+    for attempt in range(_RATE_LIMIT_RETRIES + 1):
+        ts = int(time.time())
+        sign = _sign(path, ts, access_token, shop_id)
+        params = {
+            "partner_id": settings.shopee_partner_id,
+            "timestamp": ts,
+            "sign": sign,
+            "access_token": access_token,
+            "shop_id": shop_id,
+        }
+        if extra_params:
+            params.update(extra_params)
+
+        client = _get_client()
+        resp = await client.get(f"{base}{path}", params=params, timeout=30.0)
+
+        if _is_rate_limited(resp) and attempt < _RATE_LIMIT_RETRIES:
+            wait = _RATE_LIMIT_BASE_WAIT * (2 ** attempt)
+            logger.warning("Shopee rate limit on GET %s (attempt %d/%d) — waiting %ds", path, attempt + 1, _RATE_LIMIT_RETRIES, wait)
+            await asyncio.sleep(wait)
+            continue
+
         _raise_for_shopee(resp)
         return resp.json()
+
+    # Exhausted retries — let _raise_for_shopee handle the final response
+    _raise_for_shopee(resp)  # type: ignore[possibly-undefined]
+    return resp.json()  # type: ignore[possibly-undefined]
 
 
 async def _shop_post(
@@ -337,24 +392,36 @@ async def _shop_post(
     extra_params: dict | None = None,
     timeout: float = 30.0,
 ) -> dict:
-    """Signed POST request to a shop-level Shopee API."""
-    ts = int(time.time())
-    sign = _sign(path, ts, access_token, shop_id)
+    """Signed POST request to a shop-level Shopee API. Retries on rate limiting."""
     base = _base_url()
-    params = {
-        "partner_id": settings.shopee_partner_id,
-        "timestamp": ts,
-        "sign": sign,
-        "access_token": access_token,
-        "shop_id": shop_id,
-    }
-    if extra_params:
-        params.update(extra_params)
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(f"{base}{path}", params=params, json=body)
+    for attempt in range(_RATE_LIMIT_RETRIES + 1):
+        ts = int(time.time())
+        sign = _sign(path, ts, access_token, shop_id)
+        params = {
+            "partner_id": settings.shopee_partner_id,
+            "timestamp": ts,
+            "sign": sign,
+            "access_token": access_token,
+            "shop_id": shop_id,
+        }
+        if extra_params:
+            params.update(extra_params)
+
+        client = _get_client()
+        resp = await client.post(f"{base}{path}", params=params, json=body, timeout=timeout)
+
+        if _is_rate_limited(resp) and attempt < _RATE_LIMIT_RETRIES:
+            wait = _RATE_LIMIT_BASE_WAIT * (2 ** attempt)
+            logger.warning("Shopee rate limit on POST %s (attempt %d/%d) — waiting %ds", path, attempt + 1, _RATE_LIMIT_RETRIES, wait)
+            await asyncio.sleep(wait)
+            continue
+
         _raise_for_shopee(resp)
         return resp.json()
+
+    _raise_for_shopee(resp)  # type: ignore[possibly-undefined]
+    return resp.json()  # type: ignore[possibly-undefined]
 
 
 # ── Shop-level API wrappers ─────────────────────────────────
@@ -433,28 +500,41 @@ async def upload_image(shop_id: int, image_url: str, org_id: str) -> dict:
     """POST /api/v2/media_space/upload_image — upload image by URL.
 
     Returns {"image_info": {"image_id": "..."}} on success.
+    Retries on rate limiting with exponential backoff.
     """
     token = await _get_token(shop_id, org_id)
     path = "/api/v2/media_space/upload_image"
-    ts = int(time.time())
-    sign = _sign(path, ts, token, shop_id)
     base = _base_url()
-    params = {
-        "partner_id": settings.shopee_partner_id,
-        "timestamp": ts,
-        "sign": sign,
-        "access_token": token,
-        "shop_id": shop_id,
-    }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    for attempt in range(_RATE_LIMIT_RETRIES + 1):
+        ts = int(time.time())
+        sign = _sign(path, ts, token, shop_id)
+        params = {
+            "partner_id": settings.shopee_partner_id,
+            "timestamp": ts,
+            "sign": sign,
+            "access_token": token,
+            "shop_id": shop_id,
+        }
+
+        client = _get_client()
         resp = await client.post(
             f"{base}{path}",
             params=params,
             data={"url": image_url},
         )
+
+        if _is_rate_limited(resp) and attempt < _RATE_LIMIT_RETRIES:
+            wait = _RATE_LIMIT_BASE_WAIT * (2 ** attempt)
+            logger.warning("Shopee rate limit on upload_image (attempt %d/%d) — waiting %ds", attempt + 1, _RATE_LIMIT_RETRIES, wait)
+            await asyncio.sleep(wait)
+            continue
+
         _raise_for_shopee(resp)
         return resp.json()
+
+    _raise_for_shopee(resp)  # type: ignore[possibly-undefined]
+    return resp.json()  # type: ignore[possibly-undefined]
 
 
 async def add_item(shop_id: int, payload: dict, org_id: str) -> dict:
@@ -466,6 +546,59 @@ async def add_item(shop_id: int, payload: dict, org_id: str) -> dict:
         shop_id,
         payload,
         timeout=60.0,
+    )
+
+
+async def init_tier_variation(
+    shop_id: int, item_id: int, tier_variation: list[dict], org_id: str
+) -> dict:
+    """POST /api/v2/product/init_tier_variation — define variation tiers for an item.
+
+    Payload format:
+        tier_variation: [
+            {
+                "name": "Color",
+                "option_list": [
+                    {"option": "Red", "image": {"image_id": "..."}},  # image optional
+                    {"option": "Blue"}
+                ]
+            },
+            {
+                "name": "Size",
+                "option_list": [{"option": "S"}, {"option": "M"}, {"option": "L"}]
+            }
+        ]
+    """
+    token = await _get_token(shop_id, org_id)
+    return await _shop_post(
+        "/api/v2/product/init_tier_variation",
+        token,
+        shop_id,
+        {"item_id": item_id, "tier_variation": tier_variation},
+    )
+
+
+async def add_model(
+    shop_id: int, item_id: int, model_list: list[dict], org_id: str
+) -> dict:
+    """POST /api/v2/product/add_model — create variation models (SKU combinations).
+
+    Payload format:
+        model_list: [
+            {
+                "tier_index": [0, 0],       # indexes into tier_variation options
+                "normal_stock": 10,
+                "original_price": 99.90,
+                "model_sku": "SKU-RED-S"    # optional
+            }
+        ]
+    """
+    token = await _get_token(shop_id, org_id)
+    return await _shop_post(
+        "/api/v2/product/add_model",
+        token,
+        shop_id,
+        {"item_id": item_id, "model_list": model_list},
     )
 
 

@@ -67,6 +67,9 @@ export interface ItemPreview {
   has_compatibilities: boolean;
   description_length: number;
   channels: string[];
+  weight?: number;
+  has_description?: boolean;
+  stock?: number;
 }
 
 export interface CompatPreview {
@@ -112,23 +115,6 @@ export interface ShopeeSeller {
   token_valid: boolean;
   token_expires_at: string | null;
   created_at: string;
-}
-
-export interface ShopeeCopyResult {
-  source_item_id: string;
-  dest_seller: string;
-  status: 'success' | 'error' | 'pending' | 'needs_dimensions';
-  dest_item_id: string | null;
-  error: string | null;
-  sku?: string | null;
-}
-
-export interface ShopeeCopyResponse {
-  total: number;
-  success: number;
-  errors: number;
-  needs_dimensions?: number;
-  results: ShopeeCopyResult[];
 }
 
 export interface ShopeeCopyLog {

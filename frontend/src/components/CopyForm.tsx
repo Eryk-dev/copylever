@@ -159,6 +159,15 @@ export default function CopyForm({
       const deniedSlugs: string[] = [];
       const promises: Promise<void>[] = [];
 
+      // Check if user pasted Shopee URLs but has no Shopee sellers connected
+      const shopeeOnlyNoSellers = ids.some(id => {
+        const info = hints[id];
+        return info?.hint === 'shopee' && !hasShopee;
+      });
+      if (shopeeOnlyNoSellers && shopeeCandidates.length === 0) {
+        setResolveError('Nenhuma loja Shopee conectada');
+      }
+
       if (mlCandidates.length > 0) {
         promises.push((async () => {
           try {
@@ -196,7 +205,11 @@ export default function CopyForm({
               body: JSON.stringify({ item_ids: shopeeCandidates.map(c => c.apiId) }),
               signal: controller.signal,
             });
-            if (!res.ok) return;
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({ detail: res.statusText }));
+              setResolveError(err.detail || `Erro ao resolver sellers Shopee (${res.status})`);
+              return;
+            }
             const data: { results: { item_id: string; shop_slug: string }[]; errors: { item_id: string }[] } = await res.json();
             for (const r of data.results) {
               const candidate = shopeeCandidates.find(c => c.apiId === r.item_id);
@@ -362,17 +375,25 @@ export default function CopyForm({
             e.preventDefault();
             const pasted = e.clipboardData.getData('text').trim();
             if (!pasted) return;
+            // Normalize each pasted line: add MLB prefix to pure numbers, normalize MLB variants
+            const lines = pasted.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+            const processed = lines.map(line => {
+              const c = classifyInput(line);
+              if (c.hint === 'ml') return c.display;
+              if (/^\d+$/.test(line)) return `MLB${line}`;
+              return c.display || line;
+            }).join('\n');
             const ta = e.currentTarget;
             const start = ta.selectionStart;
             const end = ta.selectionEnd;
             const before = itemIdsText.slice(0, start);
             const after = itemIdsText.slice(end);
             const needsBefore = before.length > 0 && !before.endsWith('\n');
-            const newText = before + (needsBefore ? '\n' : '') + pasted + '\n' + after;
+            const newText = before + (needsBefore ? '\n' : '') + processed + after;
             setItemIdsText(newText);
             setConfirming(false);
             pendingResolve.current = true;
-            const cursorPos = before.length + (needsBefore ? 1 : 0) + pasted.length + 1;
+            const cursorPos = before.length + (needsBefore ? 1 : 0) + processed.length;
             requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = cursorPos; });
           }}
           onBlur={normalizeAndResolve}

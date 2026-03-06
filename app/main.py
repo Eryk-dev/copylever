@@ -45,6 +45,12 @@ async def cleanup_stale_tasks():
     except Exception as e:
         logger.warning("Failed to clean up stale tasks: %s", e)
 
+@app.on_event("shutdown")
+async def shutdown_http_clients():
+    """Close shared Shopee HTTP client on app shutdown."""
+    from app.services.shopee_api import close_client
+    await close_client()
+
 # CORS
 origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 app.add_middleware(

@@ -2,9 +2,12 @@
 OAuth2 flow for Shopee Open Platform + shop management.
 Uses shopee_sellers table (separate from ML copy_sellers).
 """
+import hmac as _hmac
 import logging
+import html as _html
+import re
+import time
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
@@ -28,12 +31,20 @@ async def install(user: dict = Depends(require_active_org)):
     from app.config import settings
 
     org_id = user["org_id"]
-    # Shopee passes state back as query param on redirect
+    # CSRF protection: HMAC-sign the state with partner_key + timestamp
+    ts = str(int(time.time()))
+    token = _hmac.new(
+        settings.shopee_partner_key.encode(),
+        f"{org_id}:{ts}".encode(),
+        "sha256",
+    ).hexdigest()[:16]
+    state_value = f"org_{org_id}_{token}_{ts}"
+
     redirect = settings.shopee_redirect_uri
     if "?" in redirect:
-        redirect += f"&state=org_{org_id}"
+        redirect += f"&state={state_value}"
     else:
-        redirect += f"?state=org_{org_id}"
+        redirect += f"?state={state_value}"
 
     auth_url = generate_auth_url(redirect_url=redirect)
     return {"redirect_url": auth_url}
@@ -42,14 +53,42 @@ async def install(user: dict = Depends(require_active_org)):
 @router.get("/api/shopee/callback")
 async def callback(code: str, shop_id: int, state: str = ""):
     """Callback from Shopee OAuth. Exchange code for tokens, save to shopee_sellers."""
+    from app.config import settings
+
     if not state:
         raise HTTPException(status_code=400, detail="Missing state")
 
-    org_id = None
-    if state.startswith("org_"):
-        org_id = state[4:]
-    if not org_id:
-        raise HTTPException(status_code=400, detail="Missing org_id in state")
+    # Parse state: org_{org_id}_{token}_{ts}
+    # rsplit from end: ts (digits), token (16 hex), then org_{org_id} as prefix
+    if not state.startswith("org_"):
+        raise HTTPException(status_code=400, detail="Estado OAuth invalido")
+
+    # Strip "org_" prefix, then rsplit to extract ts and token from the end
+    after_prefix = state[4:]  # '{org_id}_{token}_{ts}'
+    r_parts = after_prefix.rsplit("_", 2)
+    if len(r_parts) != 3:
+        raise HTTPException(status_code=400, detail="Estado OAuth invalido")
+
+    org_id, token, ts_str = r_parts[0], r_parts[1], r_parts[2]
+    if not org_id or not token or not ts_str:
+        raise HTTPException(status_code=400, detail="Estado OAuth invalido")
+
+    # Validate HMAC token
+    expected = _hmac.new(
+        settings.shopee_partner_key.encode(),
+        f"{org_id}:{ts_str}".encode(),
+        "sha256",
+    ).hexdigest()[:16]
+    if not _hmac.compare_digest(token, expected):
+        raise HTTPException(status_code=400, detail="Token CSRF invalido")
+
+    # Validate timestamp (max 10 minutes)
+    try:
+        ts_val = int(ts_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Timestamp invalido no estado OAuth")
+    if abs(int(time.time()) - ts_val) > 600:
+        raise HTTPException(status_code=400, detail="Estado OAuth expirado (max 10 minutos)")
 
     try:
         token_data = await exchange_code(code, shop_id)
@@ -62,14 +101,20 @@ async def callback(code: str, shop_id: int, state: str = ""):
     expire_in = token_data.get("expire_in", 14400)  # 4 hours
 
     if not access_token:
+        logger.error("Shopee OAuth returned no access_token. Response: %s", token_data)
         raise HTTPException(
             status_code=502,
-            detail=f"Shopee OAuth returned no access_token. Response: {token_data}",
+            detail="Shopee OAuth returned no access_token. Please try again.",
         )
 
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=expire_in)
-    # Shopee refresh tokens expire in ~30 days
-    refresh_expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+    # Use refresh_token_expire_in from Shopee response if available, fallback to 30 days
+    refresh_expire_in = token_data.get("refresh_token_expire_in")
+    if refresh_expire_in:
+        refresh_expires_at = datetime.now(timezone.utc) + timedelta(seconds=refresh_expire_in)
+    else:
+        logger.warning("Shopee token response missing refresh_token_expire_in — using 30-day default")
+        refresh_expires_at = datetime.now(timezone.utc) + timedelta(days=30)
 
     # Fetch shop info
     try:
@@ -80,7 +125,10 @@ async def callback(code: str, shop_id: int, state: str = ""):
         logger.warning(f"Failed to fetch Shopee shop info: {e}")
         shop_name = f"shop_{shop_id}"
 
-    slug = shop_name.lower().replace(" ", "-")[:50]
+    # Sanitize slug: only [a-z0-9-], fallback to shop-{shop_id}
+    slug = re.sub(r"[^a-z0-9-]", "", shop_name.lower().replace(" ", "-"))[:50]
+    if not slug:
+        slug = f"shop-{shop_id}"
 
     try:
         db = get_db()
@@ -111,6 +159,17 @@ async def callback(code: str, shop_id: int, state: str = ""):
             }).eq("id", existing["id"]).execute()
             logger.info(f"Shopee OAuth: updated tokens for shop {shop_id} (org={org_id})")
             return _success_page(shop_name, already_exists=True)
+
+        # Deduplicate slug within org
+        existing_slugs = db.table("shopee_sellers").select("slug").eq(
+            "org_id", org_id
+        ).like("slug", f"{slug}%").execute()
+        taken = {r["slug"] for r in (existing_slugs.data or [])}
+        if slug in taken:
+            suffix = 2
+            while f"{slug}-{suffix}" in taken:
+                suffix += 1
+            slug = f"{slug}-{suffix}"
 
         # Create new
         db.table("shopee_sellers").insert({
@@ -198,10 +257,11 @@ async def disconnect_seller(slug: str, user: dict = Depends(require_active_org))
 
 
 def _success_page(shop_name: str, already_exists: bool) -> HTMLResponse:
+    safe_name = _html.escape(shop_name)
     if already_exists:
-        message = f"Loja <strong>{shop_name}</strong> j&aacute; estava cadastrada. Tokens atualizados com sucesso."
+        message = f"Loja <strong>{safe_name}</strong> j&aacute; estava cadastrada. Tokens atualizados com sucesso."
     else:
-        message = f"Loja <strong>{shop_name}</strong> conectada com sucesso!"
+        message = f"Loja <strong>{safe_name}</strong> conectada com sucesso!"
 
     html = f"""<!DOCTYPE html>
 <html lang="pt-BR">

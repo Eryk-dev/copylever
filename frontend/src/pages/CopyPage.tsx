@@ -3,6 +3,8 @@ import { API_BASE, type Seller, type ShopeeSeller, type CopyQueuedResponse, type
 import type { AuthUser } from '../hooks/useAuth';
 import CopyForm, { type CopyGroup, type Platform } from '../components/CopyForm';
 import DimensionForm, { type Dimensions } from '../components/DimensionForm';
+import StatusBadge from '../components/StatusBadge';
+import { isDimensionError } from '../lib/helpers';
 import { useToast } from '../components/Toast';
 
 const LOGS_PAGE_SIZE = 50;
@@ -14,16 +16,6 @@ interface Props {
   shopeeSellers: ShopeeSeller[];
   headers: () => Record<string, string>;
   user: AuthUser | null;
-}
-
-function isDimensionError(log: CopyLog): boolean {
-  if (log.status === 'needs_dimensions') return true;
-  if (log.status === 'error' && log.error_details) {
-    return Object.values(log.error_details).some(
-      msg => typeof msg === 'string' && (msg.toLowerCase().includes('dimenso') || msg.toLowerCase().includes('dimension'))
-    );
-  }
-  return false;
 }
 
 export default function CopyPage({ sellers, shopeeSellers, headers, user }: Props) {
@@ -159,6 +151,9 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
                 thumbnail: data.image_url,
                 pictures_count: data.image_count,
                 variations_count: data.model_count,
+                weight: data.weight,
+                has_description: data.has_description,
+                stock: data.stock,
               } as ItemPreview;
             }
           } catch { return null; }
@@ -180,16 +175,16 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
     }
   }, [previewOpen, handlePreview]);
 
-  const handleLogRetry = useCallback(async (logId: number, dims: Dimensions, platform: Platform) => {
+  const handleLogRetry = useCallback(async (log: UnifiedLog, dims: Dimensions) => {
     try {
-      const endpoint = platform === 'ml' ? '/api/copy/retry-dimensions' : '/api/shopee/copy/with-dimensions';
+      const endpoint = log.platform === 'ml' ? '/api/copy/retry-dimensions' : '/api/shopee/copy/with-dimensions';
       const res = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: headers(),
         body: JSON.stringify(
-          platform === 'ml'
-            ? { log_id: logId, dimensions: dims }
-            : { log_id: logId, dimensions: dims }
+          log.platform === 'ml'
+            ? { log_id: log.id, dimensions: dims }
+            : { source: log.source_seller, destinations: log.dest_sellers, item_id: String(log.source_item_id), dimensions: dims }
         ),
       });
       if (!res.ok) {
@@ -325,9 +320,15 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
                     R$ {p.price?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                   </p>
                 </div>
-                <div style={{ display: 'flex', gap: 'var(--space-3)', fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', flexShrink: 0 }}>
+                <div style={{ display: 'flex', gap: 'var(--space-3)', fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', flexShrink: 0, alignItems: 'center', flexWrap: 'wrap' }}>
                   <span>{p.pictures_count} fotos</span>
                   <span>{p.variations_count} var.</span>
+                  {p.weight != null && <span>{p.weight >= 1000 ? `${(p.weight / 1000).toFixed(1)}kg` : `${p.weight}g`}</span>}
+                  {p.has_description === false && (
+                    <span style={{ color: 'var(--warning)', fontWeight: 600 }} title="Shopee exige descricao para criar anuncio">
+                      Sem descricao
+                    </span>
+                  )}
                 </div>
               </div>
             ))}
@@ -370,7 +371,7 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
                         setRetryPlatform(log.platform);
                       }
                     }}
-                    onRetrySubmit={(dims) => handleLogRetry(log.id, dims, log.platform)}
+                    onRetrySubmit={(dims) => handleLogRetry(log, dims)}
                   />
                 ))}
               </div>
@@ -551,28 +552,3 @@ export function Card({ title, action, collapsible, open, onToggle, children }: {
   );
 }
 
-const statusLabels: Record<string, string> = {
-  needs_dimensions: 'Aguardando dimensões',
-  in_progress: 'Copiando...',
-  pending: 'Pendente',
-  success: 'Sucesso',
-  error: 'Erro',
-  partial: 'Parcial',
-};
-
-function StatusBadge({ status }: { status: string }) {
-  const c: Record<string, string> = { success: 'var(--success)', error: 'var(--danger)', partial: 'var(--warning)', pending: 'var(--ink-faint)', in_progress: 'var(--info)', needs_dimensions: 'var(--warning)' };
-  const bg: Record<string, string> = { success: 'rgba(16, 185, 129, 0.08)', error: 'rgba(239, 68, 68, 0.08)', partial: 'rgba(245, 158, 11, 0.08)', in_progress: 'rgba(59, 130, 246, 0.08)', needs_dimensions: 'rgba(245, 158, 11, 0.08)' };
-  const isInProgress = status === 'in_progress';
-  return (
-    <span style={{
-      color: c[status] || 'var(--ink-faint)', fontWeight: 600, fontSize: 'var(--text-xs)',
-      textTransform: 'uppercase', background: bg[status] || 'transparent',
-      padding: '2px 8px', borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 6,
-      animation: isInProgress ? 'pulse-badge 1.5s ease-in-out infinite' : undefined,
-    }}>
-      {isInProgress && <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'currentColor', animation: 'pulse-dot 1.5s ease-in-out infinite' }} />}
-      {statusLabels[status] || status}
-    </span>
-  );
-}

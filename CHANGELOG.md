@@ -9,6 +9,55 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Fixed
+- Race condition (TOCTOU) no lock por loja Shopee (`_get_shop_lock`) — coroutines concorrentes podiam criar locks duplicados; agora usa `dict.setdefault` atomico
+- Copia Shopee agora aborta imediatamente quando nenhuma imagem foi enviada com sucesso, em vez de tentar criar o anuncio 3 vezes com lista de imagens vazia
+- Retry de copia Shopee (attempt 2) agora remove apenas atributos com valores vazios em vez de remover todos os atributos — preserva atributos obrigatorios da categoria
+- Token refresh Shopee agora atualiza `updated_at` na tabela `shopee_sellers`
+- Condicao do item Shopee (`condition`) agora vem do item origem em vez de hardcoded `NEW`
+- Removido import nao utilizado `urlencode` de `auth_shopee.py`
+- Busca de canais logisticos Shopee agora tem try/except especifico com mensagem clara em vez de cair no handler generico
+- Debug logs Shopee agora incluem campo `platform: 'shopee'` para distinguir de logs ML
+- Expiracao do refresh token Shopee agora usa `refresh_token_expire_in` da resposta da API em vez de hardcoded 30 dias; fallback para 30 dias se campo ausente
+- Token refresh Shopee agora recalcula `refresh_token_expires_at` quando um novo refresh token e retornado
+- Slug de lojas Shopee agora sanitizado para conter apenas `[a-z0-9-]`, com fallback para `shop-{shop_id}` e sufixo numerico (`-2`, `-3`, ...) em caso de duplicata na mesma org
+- Schema Shopee corrigido: FK `shopee_sellers.org_id` agora ON DELETE CASCADE, FKs `shopee_copy_logs.org_id` e `user_id` agora ON DELETE SET NULL, `org_id` nullable em `shopee_copy_logs`, indice `slug+org_id` agora UNIQUE, adicionados indices em `created_at` e `source_seller`
+
+### Security
+- Protecao CSRF no fluxo OAuth Shopee — parametro `state` agora assinado com HMAC-SHA256 (usando `partner_key`) e inclui timestamp; callback valida assinatura e rejeita estados expirados (>10 minutos)
+- Corrigido vazamento de token data na resposta HTTP do OAuth callback — agora logado server-side e retorna mensagem generica ao client
+- Corrigido XSS na pagina de sucesso OAuth Shopee — `shop_name` agora sanitizado com `html.escape()` antes de inserir no HTML
+- Upload de imagens Shopee agora aborta se a imagem de capa (indice 0) falhar, evitando que outra imagem assuma a posicao de capa
+- `_minimal_payload` do retry 3 agora usa `condition` do payload original em vez de hardcoded `NEW`
+
+### Fixed (Frontend)
+- Botao "Informar dimensoes" para copias Shopee agora envia payload correto (`source`, `destinations`, `item_id`, `dimensions`) em vez de `log_id` — antes a requisicao sempre falhava pois o backend esperava campos diferentes
+- Erro ao resolver sellers Shopee agora exibe mensagem ao usuario em vez de falhar silenciosamente; mensagem especifica 'Nenhuma loja Shopee conectada' quando usuario cola URL Shopee sem ter loja conectada
+
+### Added (Frontend)
+- Preview Shopee agora exibe peso do item (em g ou kg) e alerta visual quando item nao tem descricao (Shopee exige descricao para criar anuncio)
+- Tela de onboarding (empty state) agora inclui botao "Conectar loja Shopee" ao lado do botao do Mercado Livre, para orgs que usam apenas Shopee
+- QuickStartGuide atualizado para mencionar Shopee como opcao de conexao
+- Paywall (tela de assinatura) agora lista "Integracao com Shopee" entre as funcionalidades do plano
+
+### Removed
+- Removido arquivo `ShopeeCopyPage.tsx` (~950 linhas de codigo morto) — componente nunca importado ou renderizado; toda logica util ja foi integrada ao `CopyPage.tsx` unificado
+- Removidos tipos mortos `ShopeeCopyResponse` e `ShopeeCopyResult` de `api.ts` — nunca importados por nenhum componente
+
+### Changed (Frontend)
+- Extraido componente `StatusBadge` para `frontend/src/components/StatusBadge.tsx` (antes duplicado inline em CopyPage)
+- Extraida funcao `isDimensionError` para `frontend/src/lib/helpers.ts` com suporte adicional a keyword 'weight' para erros Shopee
+
+### Added
+- Rate limiting com backoff exponencial no cliente Shopee API — `_shop_get`, `_shop_post` e `upload_image` agora detectam erro `too_fast` e fazem retry automatico (ate 5 tentativas: 2s, 4s, 8s, 16s, 32s)
+- Cliente HTTP reutilizavel (singleton `httpx.AsyncClient`) para APIs Shopee — conexoes TCP reutilizadas via connection pooling (max 20 conexoes, 10 keep-alive), com shutdown graceful registrado no FastAPI
+- Upload de imagens Shopee agora e paralelo com semaforo (max 3 simultaneos) via `asyncio.gather` — reduz tempo de upload de ~18s para ~6s em itens com 9 imagens, mantendo ordem (primeira imagem = capa)
+- Cache de canais logisticos por loja destino em operacoes de copia Shopee — busca feita 1 vez por loja (nao por item x destino), reduzindo chamadas de N*M para M
+- Reutilizacao de dados do item origem entre lojas destino em copias Shopee — busca feita 1 vez por item (nao por item x destino), reduzindo chamadas de 3*N para 3 por item
+- Refatoracao DRY: logica duplicada entre `copy_items` e `copy_with_dimensions` extraida para funcao interna `_run_copy_job` — ambas funcoes publicas agora sao thin wrappers
+- Metodos `init_tier_variation` e `add_model` no cliente Shopee API — wrappers para `/api/v2/product/init_tier_variation` (definir tiers de variacao) e `/api/v2/product/add_model` (criar combinacoes SKU com preco/estoque)
+- Copia de variacoes Shopee: produtos com variacoes (cor, tamanho) agora sao copiados com todos os modelos, precos individuais, estoque por SKU e imagens de tier; se `init_tier_variation` ou `add_model` falhar, item e criado com status 'partial'; resultado inclui `models_copied` e `models_total`
+
 ### Changed
 - **Historico de copias ML redesenhado**: tabela substituida por cards com borda de status colorida, titulo do item em destaque, MLB ID em tag mono, fluxo origem/destinos, chips verdes para novos MLBs criados, bloco de erros com destaque vermelho, e form de dimensoes inline. Responsivo e com suporte completo a dark mode via classes CSS (`log-chip-success`, `log-error-block`)
 

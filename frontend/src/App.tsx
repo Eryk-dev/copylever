@@ -35,6 +35,7 @@ export default function App() {
   const [billingMessage, setBillingMessage] = useState<string | null>(null);
   const [paywallLoading, setPaywallLoading] = useState(false);
   const [connectingMl, setConnectingMl] = useState(false);
+  const [connectingShopee, setConnectingShopee] = useState(false);
   const [quickStartDismissed, setQuickStartDismissed] = useState(true);
   const [trialCopiesUsed, setTrialCopiesUsed] = useState(0);
   const [trialCopiesLimit, setTrialCopiesLimit] = useState(20);
@@ -310,6 +311,7 @@ export default function App() {
                 'Cópia ilimitada de anúncios',
                 'Cópia de compatibilidades veiculares',
                 'Múltiplas contas do Mercado Livre',
+                'Integração com Shopee',
                 'Usuários e permissões por conta',
                 'Dimensões e atributos automáticos',
               ].map((feature) => (
@@ -415,6 +417,21 @@ export default function App() {
       }
     };
 
+    const handleConnectShopee = async () => {
+      setConnectingShopee(true);
+      try {
+        const res = await fetch(`${API_BASE}/api/shopee/install`, { headers: auth.headers() });
+        if (!res.ok) {
+          setConnectingShopee(false);
+          return;
+        }
+        const data = await res.json();
+        if (data.redirect_url) window.location.href = data.redirect_url;
+      } catch {
+        setConnectingShopee(false);
+      }
+    };
+
     return (
       <div style={{
         minHeight: '100vh',
@@ -447,28 +464,50 @@ export default function App() {
             lineHeight: 1.6,
             marginBottom: 'var(--space-8)',
           }}>
-            Para começar a copiar anúncios, conecte pelo menos uma conta do Mercado Livre.
+            Para começar a copiar anúncios, conecte pelo menos uma conta do Mercado Livre ou loja da Shopee.
           </p>
 
-          <button
-            onClick={handleConnectMl}
-            disabled={connectingMl}
-            className="btn-primary"
-            style={{
-              width: '100%',
-              padding: '14px 24px',
-              fontSize: 'var(--text-base)',
-              fontWeight: 600,
-              borderRadius: 10,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 'var(--space-2)',
-            }}
-          >
-            {connectingMl && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--paper)' }} />}
-            {connectingMl ? 'Redirecionando...' : 'Conectar conta do Mercado Livre'}
-          </button>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+            <button
+              onClick={handleConnectMl}
+              disabled={connectingMl}
+              className="btn-primary"
+              style={{
+                width: '100%',
+                padding: '14px 24px',
+                fontSize: 'var(--text-base)',
+                fontWeight: 600,
+                borderRadius: 10,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 'var(--space-2)',
+              }}
+            >
+              {connectingMl && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--paper)' }} />}
+              {connectingMl ? 'Redirecionando...' : 'Conectar conta do Mercado Livre'}
+            </button>
+
+            <button
+              onClick={handleConnectShopee}
+              disabled={connectingShopee}
+              className="btn-primary"
+              style={{
+                width: '100%',
+                padding: '14px 24px',
+                fontSize: 'var(--text-base)',
+                fontWeight: 600,
+                borderRadius: 10,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 'var(--space-2)',
+              }}
+            >
+              {connectingShopee && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--paper)' }} />}
+              {connectingShopee ? 'Redirecionando...' : 'Conectar loja Shopee'}
+            </button>
+          </div>
 
           <div style={{ marginTop: 'var(--space-6)' }}>
             <button
@@ -669,10 +708,10 @@ export default function App() {
 
       {/* Content */}
       <div className="animate-in">
-        {activeView === 'copy' && (
+        <div style={{ display: activeView === 'copy' ? undefined : 'none' }}>
           <CopyPage sellers={auth.sellers} shopeeSellers={auth.shopeeSellers} headers={auth.headers} user={auth.user} />
-        )}
-        {activeView === 'admin' && (
+        </div>
+        <div style={{ display: activeView === 'admin' ? undefined : 'none' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
             <nav style={{ display: 'flex', gap: 2, background: 'var(--surface)', borderRadius: 8, padding: 2, alignSelf: 'flex-start' }}>
               <ViewTab active={adminSubView === 'sellers'} onClick={() => setAdminSubView('sellers')}>
@@ -705,10 +744,10 @@ export default function App() {
               <BillingPage headers={auth.headers} />
             )}
           </div>
-        )}
-        {activeView === 'compat' && (
+        </div>
+        <div style={{ display: activeView === 'compat' ? undefined : 'none' }}>
           <CompatPage sellers={auth.sellers} headers={auth.headers} />
-        )}
+        </div>
         {activeView === 'super' && (
           <SuperAdminPage headers={auth.headers} />
         )}
@@ -807,7 +846,7 @@ function QuickStartGuide({
         <QuickStartStep
           step="1"
           title="Revise sellers conectados"
-          description="Abra Admin > Sellers para conectar novas contas do Mercado Livre ou revisar tokens antes de operar em produção."
+          description="Abra Admin > Sellers para conectar novas contas do Mercado Livre ou lojas da Shopee, e revisar tokens antes de operar em produção."
           actionLabel="Abrir sellers"
           onAction={onOpenSellers}
         />

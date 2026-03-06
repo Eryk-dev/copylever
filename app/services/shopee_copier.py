@@ -15,6 +15,8 @@ from app.services.shopee_api import (
     get_logistics_channels,
     upload_image,
     add_item,
+    init_tier_variation,
+    add_model,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,24 +53,55 @@ async def _fetch_source_item(shop_id: int, item_id: int, org_id: str) -> dict:
     if models_resp.get("response", {}).get("model"):
         models = models_resp["response"]["model"]
 
+    tier_variation = []
+    if models_resp.get("response", {}).get("tier_variation"):
+        tier_variation = models_resp["response"]["tier_variation"]
+
     return {
         "base_info": base_info,
         "extra_info": extra_info,
         "models": models,
+        "tier_variation": tier_variation,
     }
+
+
+_UPLOAD_CONCURRENCY = 3
 
 
 async def _upload_images(
     dest_shop_id: int, image_urls: list[str], org_id: str
 ) -> list[str]:
-    """Upload images to dest shop. Max 9 images. Retry 1x per image on failure."""
-    urls = image_urls[:MAX_IMAGES]
-    image_ids: list[str] = []
+    """Upload images to dest shop concurrently (max 3 at a time).
 
-    for url in urls:
-        image_id = await _upload_single_image(dest_shop_id, url, org_id)
-        if image_id:
-            image_ids.append(image_id)
+    Max 9 images. Retry 1x per image on failure.
+    Order of returned image_ids matches input URL order (first = cover).
+    """
+    urls = image_urls[:MAX_IMAGES]
+    if not urls:
+        return []
+
+    sem = asyncio.Semaphore(_UPLOAD_CONCURRENCY)
+
+    async def _guarded_upload(url: str) -> str | None:
+        async with sem:
+            return await _upload_single_image(dest_shop_id, url, org_id)
+
+    results = await asyncio.gather(*[_guarded_upload(u) for u in urls])
+
+    # Preserve order but check if cover (first) image failed
+    if results and results[0] is None:
+        logger.warning(
+            "Cover image (index 0) failed to upload for shop %d — aborting all images",
+            dest_shop_id,
+        )
+        return []
+
+    image_ids = [img_id for img_id in results if img_id is not None]
+
+    logger.info(
+        "Image upload complete: %d/%d successful for shop %d",
+        len(image_ids), len(urls), dest_shop_id,
+    )
 
     return image_ids
 
@@ -163,8 +196,12 @@ def _build_shopee_payload(
         "image": {"image_id_list": image_id_list},
         "weight": weight,
         "logistic_info": logistic_info,
-        "condition": "NEW",
+        "condition": base.get("condition", "NEW"),
     }
+
+    # If item has variations, stock is managed per-model — exclude from add_item
+    if base.get("has_model"):
+        payload.pop("normal_stock", None)
 
     # Pre-order
     pre_order = base.get("pre_order", {})
@@ -267,6 +304,7 @@ def _log_debug(
             "api_method": api_method,
             "api_url": api_url,
             "response_status": response_status,
+            "platform": "shopee",
         }
         if user_id:
             row["user_id"] = user_id
@@ -284,13 +322,17 @@ def _is_dimension_error(error_message: str) -> bool:
 
 
 def _strip_attributes(payload: dict) -> dict:
-    """Remove brand and non-essential attributes for retry attempt 2."""
+    """Remove brand and non-essential attributes for retry attempt 2.
+
+    Keeps attributes that have non-empty attribute_value_list (real values).
+    Removes attributes with empty values (often brand or optional attrs that
+    cause validation errors).
+    """
     p = dict(payload)
     if "attribute_list" in p:
-        # Keep only mandatory-looking attributes (remove brand etc.)
         p["attribute_list"] = [
             a for a in p["attribute_list"]
-            if a.get("is_mandatory")
+            if a.get("attribute_value_list")
         ]
         if not p["attribute_list"]:
             del p["attribute_list"]
@@ -308,8 +350,122 @@ def _minimal_payload(payload: dict) -> dict:
         "image": payload.get("image", {"image_id_list": []}),
         "weight": payload.get("weight", 0.5),
         "logistic_info": payload.get("logistic_info", []),
-        "condition": "NEW",
+        "condition": payload.get("condition", "NEW"),
     }
+
+
+# ── Variation copy ─────────────────────────────────────────
+
+
+async def _copy_variations(
+    dest_shop_id: int,
+    new_item_id: int,
+    source_data: dict,
+    org_id: str,
+    user_id: str | None = None,
+) -> dict:
+    """Copy tier variations and models to a newly created item.
+
+    Returns {"models_copied": int, "models_total": int, "error": str | None}.
+    """
+    tier_variation = source_data.get("tier_variation", [])
+    models = source_data.get("models", [])
+
+    if not tier_variation or not models:
+        return {"models_copied": 0, "models_total": 0, "error": None}
+
+    models_total = len(models)
+
+    # Build tier_variation payload — upload tier images if present
+    tiers_payload: list[dict] = []
+    for tier in tier_variation:
+        tier_entry: dict[str, Any] = {"name": tier.get("name", "")}
+        options: list[dict] = []
+        for opt in tier.get("option_list", []):
+            opt_entry: dict[str, Any] = {"option": opt.get("option", "")}
+            img = opt.get("image") or {}
+            img_url = img.get("image_url")
+            if img_url:
+                img_id = await _upload_single_image(dest_shop_id, img_url, org_id)
+                if img_id:
+                    opt_entry["image"] = {"image_id": img_id}
+            options.append(opt_entry)
+        tier_entry["option_list"] = options
+        tiers_payload.append(tier_entry)
+
+    # init_tier_variation — define tier structure
+    try:
+        await init_tier_variation(dest_shop_id, new_item_id, tiers_payload, org_id)
+    except Exception as e:
+        err_msg = f"init_tier_variation failed: {e}"
+        logger.error(
+            "Variation init failed for item %d shop %d: %s",
+            new_item_id, dest_shop_id, e,
+        )
+        _log_debug(
+            action="shopee_init_tier_variation",
+            source_item_id=str(new_item_id),
+            dest_seller=str(dest_shop_id),
+            error_message=err_msg,
+            request_payload={"tier_variation": tiers_payload},
+            user_id=user_id,
+            org_id=org_id,
+        )
+        return {"models_copied": 0, "models_total": models_total, "error": err_msg}
+
+    # Build model_list from source models
+    model_list: list[dict] = []
+    for m in models:
+        # Extract price
+        price_info = m.get("price_info", [])
+        original_price = price_info[0].get("original_price", 0) if price_info else 0
+
+        # Extract stock
+        stock = 0
+        stock_v2 = m.get("stock_info_v2", {})
+        if stock_v2:
+            stock = stock_v2.get("summary_info", {}).get("total_available_stock", 0)
+        if stock <= 0:
+            for si in m.get("stock_info", []):
+                if si.get("stock_type") == 2:
+                    stock = si.get("normal_stock", 0) or si.get("current_stock", 0)
+                    break
+        if stock <= 0:
+            stock = 1  # Minimum stock
+
+        entry: dict[str, Any] = {
+            "tier_index": m.get("tier_index", []),
+            "normal_stock": stock,
+            "original_price": original_price,
+        }
+        if m.get("model_sku"):
+            entry["model_sku"] = m["model_sku"]
+        model_list.append(entry)
+
+    # add_model — create SKU combinations
+    try:
+        await add_model(dest_shop_id, new_item_id, model_list, org_id)
+        logger.info(
+            "Variations copied for item %d shop %d: %d models",
+            new_item_id, dest_shop_id, len(model_list),
+        )
+        return {"models_copied": len(model_list), "models_total": models_total, "error": None}
+    except Exception as e:
+        err_msg = f"add_model failed: {e}"
+        logger.error(
+            "Model creation failed for item %d shop %d: %s",
+            new_item_id, dest_shop_id, e,
+        )
+        _log_debug(
+            action="shopee_add_model",
+            source_item_id=str(new_item_id),
+            dest_seller=str(dest_shop_id),
+            error_message=err_msg,
+            request_payload={"model_list": model_list},
+            user_id=user_id,
+            org_id=org_id,
+        )
+        return {"models_copied": 0, "models_total": models_total, "error": err_msg}
 
 
 # ── Core copy functions ────────────────────────────────────
@@ -322,6 +478,8 @@ async def copy_single_item(
     org_id: str,
     user_id: str | None = None,
     dimensions: dict | None = None,
+    logistics: list[dict] | None = None,
+    source_data: dict | None = None,
 ) -> dict:
     """
     Copy a single Shopee item from source shop to dest shop.
@@ -334,12 +492,15 @@ async def copy_single_item(
         "dest_item_id": None,
         "error": None,
         "sku": None,
+        "models_copied": 0,
+        "models_total": 0,
     }
 
     try:
-        # 1. Fetch source item
-        logger.info("Fetching Shopee item %d from shop %d", item_id, source_shop_id)
-        source_data = await _fetch_source_item(source_shop_id, item_id, org_id)
+        # 1. Fetch source item (skip if pre-fetched)
+        if source_data is None:
+            logger.info("Fetching Shopee item %d from shop %d", item_id, source_shop_id)
+            source_data = await _fetch_source_item(source_shop_id, item_id, org_id)
         result["sku"] = source_data.get("base_info", {}).get("item_sku") or None
         result["_title"] = source_data.get("base_info", {}).get("item_name") or ""
         image_url_list = source_data.get("base_info", {}).get("image", {}).get("image_url_list", [])
@@ -349,10 +510,41 @@ async def copy_single_item(
         image_urls = source_data.get("base_info", {}).get("image", {}).get("image_url_list", [])
         image_ids = await _upload_images(dest_shop_id, image_urls, org_id)
         if not image_ids:
-            logger.warning("No images uploaded for item %d — proceeding without images", item_id)
+            err_msg = "Falha no upload de todas as imagens — nao e possivel criar o anuncio"
+            logger.error("No images uploaded for item %d -> shop %d — aborting", item_id, dest_shop_id)
+            _log_debug(
+                action="shopee_image_upload_failed",
+                source_item_id=str(item_id),
+                dest_seller=str(dest_shop_id),
+                error_message=err_msg,
+                request_payload={"image_urls": image_urls},
+                user_id=user_id,
+                org_id=org_id,
+            )
+            result["status"] = "error"
+            result["error"] = err_msg
+            return result
 
-        # 3. Fetch dest logistics
-        logistics = await _fetch_dest_logistics(dest_shop_id, org_id)
+        # 3. Fetch dest logistics (skip if pre-fetched)
+        if logistics is None:
+            try:
+                logistics = await _fetch_dest_logistics(dest_shop_id, org_id)
+            except Exception as e:
+                err_msg = "Falha ao buscar canais logisticos da loja destino"
+                logger.error(
+                    "Logistics fetch failed for shop %d: %s", dest_shop_id, e,
+                )
+                _log_debug(
+                    action="shopee_logistics_fetch_failed",
+                    source_item_id=str(item_id),
+                    dest_seller=str(dest_shop_id),
+                    error_message=f"{err_msg}: {e}",
+                    user_id=user_id,
+                    org_id=org_id,
+                )
+                result["status"] = "error"
+                result["error"] = err_msg
+                return result
 
         # 4. Build payload
         payload = _build_shopee_payload(source_data, image_ids, logistics, dimensions)
@@ -408,6 +600,20 @@ async def copy_single_item(
                 )
                 if attempt == MAX_RETRY_ATTEMPTS:
                     break  # exhausted retries
+
+        # 6. Handle variations if item was created successfully
+        if not last_error and result.get("dest_item_id"):
+            has_model = source_data.get("base_info", {}).get("has_model", False)
+            if has_model:
+                var_result = await _copy_variations(
+                    dest_shop_id, int(result["dest_item_id"]),
+                    source_data, org_id, user_id,
+                )
+                result["models_copied"] = var_result["models_copied"]
+                result["models_total"] = var_result["models_total"]
+                if var_result["error"]:
+                    result["status"] = "partial"
+                    result["error"] = var_result["error"]
 
         if last_error:
             if _is_dimension_error(last_error):
@@ -471,31 +677,38 @@ def _resolve_shop_id(slug: str, org_id: str) -> int:
     return result.data["shop_id"]
 
 
-async def copy_items(
-    source_slug: str,
-    dest_slugs: list[str],
+async def _run_copy_job(
+    source_shop_id: int,
     item_ids: list[int],
-    user_id: str,
+    dest_shops: list[tuple[str, int]],
     org_id: str,
+    user_id: str,
+    source_slug: str,
+    dimensions: dict | None = None,
 ) -> dict:
-    """
-    Copy multiple Shopee items to multiple destination shops.
-    Logs each result to shopee_copy_logs table.
+    """Core copy loop shared by copy_items and copy_with_dimensions.
+
+    Pre-fetches logistics per dest shop and source data per item,
+    then iterates items x destinations calling copy_single_item.
     Returns {total, success, errors, needs_dimensions, results}.
     """
     db = get_db()
-
-    # Resolve slugs to shop_ids
-    source_shop_id = _resolve_shop_id(source_slug, org_id)
-    dest_shops: list[tuple[str, int]] = []
-    for slug in dest_slugs:
-        shop_id = _resolve_shop_id(slug, org_id)
-        dest_shops.append((slug, shop_id))
 
     all_results: list[dict] = []
     total_success = 0
     total_errors = 0
     total_needs_dimensions = 0
+    dest_slug_list = [slug for slug, _ in dest_shops]
+
+    # Pre-fetch logistics for each destination shop (once per shop, not per item)
+    logistics_cache: dict[int, list[dict]] = {}
+    failed_dests: set[int] = set()
+    for d_slug, d_shop_id in dest_shops:
+        try:
+            logistics_cache[d_shop_id] = await _fetch_dest_logistics(d_shop_id, org_id)
+        except Exception as e:
+            logger.error("Logistics pre-fetch failed for shop %d (%s): %s", d_shop_id, d_slug, e)
+            failed_dests.add(d_shop_id)
 
     for item_id in item_ids:
         # Create in_progress log entry
@@ -505,7 +718,7 @@ async def copy_items(
                 "user_id": user_id,
                 "org_id": org_id,
                 "source_seller": source_slug,
-                "dest_sellers": [slug for slug, _ in dest_shops],
+                "dest_sellers": dest_slug_list,
                 "source_item_id": item_id,
                 "status": "in_progress",
             }
@@ -520,12 +733,61 @@ async def copy_items(
         item_title = ""
         item_thumbnail = ""
 
+        # Pre-fetch source item data (once per item, reused across destinations)
+        prefetched_source: dict | None = None
+        try:
+            prefetched_source = await _fetch_source_item(source_shop_id, item_id, org_id)
+        except Exception as e:
+            logger.error("Source fetch failed for item %d shop %d: %s", item_id, source_shop_id, e)
+            err_msg = f"Falha ao buscar item de origem: {e}"
+            for d_slug, _ in dest_shops:
+                err_result: dict[str, Any] = {
+                    "source_item_id": str(item_id),
+                    "dest_seller": d_slug,
+                    "status": "error",
+                    "dest_item_id": None,
+                    "error": err_msg,
+                    "sku": None,
+                }
+                all_results.append(err_result)
+                total_errors += 1
+                item_errors[d_slug] = err_msg
+            # Update log and skip to next item
+            try:
+                err_update: dict[str, Any] = {
+                    "status": "error",
+                    "dest_item_ids": {},
+                    "error_details": item_errors,
+                }
+                if log_id is not None:
+                    db.table("shopee_copy_logs").update(err_update).eq("id", log_id).execute()
+            except Exception as log_e:
+                logger.error("Failed to update shopee_copy_logs for item %d: %s", item_id, log_e)
+            continue
+
         for dest_slug, dest_shop_id in dest_shops:
+            # Skip destinations where logistics pre-fetch failed
+            if dest_shop_id in failed_dests:
+                result: dict[str, Any] = {
+                    "source_item_id": str(item_id),
+                    "dest_seller": dest_slug,
+                    "status": "error",
+                    "dest_item_id": None,
+                    "error": "Falha ao buscar canais logisticos da loja destino",
+                    "sku": None,
+                }
+                all_results.append(result)
+                total_errors += 1
+                item_errors[dest_slug] = result["error"]
+                continue
+
             result = await copy_single_item(
                 source_shop_id, dest_shop_id, item_id, org_id,
                 user_id=user_id,
+                dimensions=dimensions,
+                logistics=logistics_cache.get(dest_shop_id),
+                source_data=prefetched_source,
             )
-            # Use slug as key in results for readability
             result["dest_seller"] = dest_slug
             all_results.append(result)
 
@@ -548,7 +810,6 @@ async def copy_items(
                 if result.get("error"):
                     item_errors[dest_slug] = result["error"]
 
-            # Rate limit pacing between copies
             await asyncio.sleep(COPY_PACING_SECONDS)
 
         # Determine final status for this item
@@ -577,7 +838,7 @@ async def copy_items(
                     "user_id": user_id,
                     "org_id": org_id,
                     "source_seller": source_slug,
-                    "dest_sellers": [slug for slug, _ in dest_shops],
+                    "dest_sellers": dest_slug_list,
                     "source_item_id": item_id,
                     "dest_item_ids": dest_item_ids,
                     "status": item_status,
@@ -596,6 +857,21 @@ async def copy_items(
     }
 
 
+async def copy_items(
+    source_slug: str,
+    dest_slugs: list[str],
+    item_ids: list[int],
+    user_id: str,
+    org_id: str,
+) -> dict:
+    """Copy multiple Shopee items to multiple destination shops."""
+    source_shop_id = _resolve_shop_id(source_slug, org_id)
+    dest_shops = [(slug, _resolve_shop_id(slug, org_id)) for slug in dest_slugs]
+    return await _run_copy_job(
+        source_shop_id, item_ids, dest_shops, org_id, user_id, source_slug,
+    )
+
+
 async def copy_with_dimensions(
     source_slug: str,
     dest_slugs: list[str],
@@ -605,91 +881,9 @@ async def copy_with_dimensions(
     org_id: str,
 ) -> dict:
     """Copy a single Shopee item with user-provided dimensions."""
-    db = get_db()
-
     source_shop_id = _resolve_shop_id(source_slug, org_id)
-    dest_shops: list[tuple[str, int]] = []
-    for slug in dest_slugs:
-        shop_id = _resolve_shop_id(slug, org_id)
-        dest_shops.append((slug, shop_id))
-
-    all_results: list[dict] = []
-    total_success = 0
-    total_errors = 0
-
-    # Create log entry
-    log_id: int | None = None
-    try:
-        log_insert: dict[str, Any] = {
-            "user_id": user_id,
-            "org_id": org_id,
-            "source_seller": source_slug,
-            "dest_sellers": [slug for slug, _ in dest_shops],
-            "source_item_id": item_id,
-            "status": "in_progress",
-        }
-        log_row = db.table("shopee_copy_logs").insert(log_insert).execute()
-        log_id = log_row.data[0]["id"] if log_row.data else None
-    except Exception as e:
-        logger.error("Failed to create shopee_copy_logs entry for item %d: %s", item_id, e)
-
-    dest_item_ids: dict[str, str] = {}
-    item_errors: dict[str, str] = {}
-
-    for dest_slug, dest_shop_id in dest_shops:
-        result = await copy_single_item(
-            source_shop_id, dest_shop_id, item_id, org_id,
-            user_id=user_id, dimensions=dimensions,
-        )
-        result["dest_seller"] = dest_slug
-        all_results.append(result)
-
-        if result["status"] == "success":
-            total_success += 1
-            if result.get("dest_item_id"):
-                dest_item_ids[dest_slug] = result["dest_item_id"]
-        else:
-            total_errors += 1
-            if result.get("error"):
-                item_errors[dest_slug] = result["error"]
-
-        await asyncio.sleep(COPY_PACING_SECONDS)
-
-    # Final status
-    if dest_item_ids and not item_errors:
-        item_status = "success"
-    elif dest_item_ids and item_errors:
-        item_status = "partial"
-    else:
-        item_status = "error"
-
-    # Update log
-    try:
-        update_data: dict[str, Any] = {
-            "status": item_status,
-            "dest_item_ids": dest_item_ids,
-            "error_details": item_errors if item_errors else None,
-        }
-        if log_id is not None:
-            db.table("shopee_copy_logs").update(update_data).eq("id", log_id).execute()
-        else:
-            fallback: dict[str, Any] = {
-                "user_id": user_id,
-                "org_id": org_id,
-                "source_seller": source_slug,
-                "dest_sellers": [slug for slug, _ in dest_shops],
-                "source_item_id": item_id,
-                "dest_item_ids": dest_item_ids,
-                "status": item_status,
-                "error_details": item_errors if item_errors else None,
-            }
-            db.table("shopee_copy_logs").insert(fallback).execute()
-    except Exception as e:
-        logger.error("Failed to update shopee_copy_logs for item %d: %s", item_id, e)
-
-    return {
-        "total": len(all_results),
-        "success": total_success,
-        "errors": total_errors,
-        "results": all_results,
-    }
+    dest_shops = [(slug, _resolve_shop_id(slug, org_id)) for slug in dest_slugs]
+    return await _run_copy_job(
+        source_shop_id, [item_id], dest_shops, org_id, user_id, source_slug,
+        dimensions=dimensions,
+    )
