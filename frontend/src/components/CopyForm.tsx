@@ -375,17 +375,25 @@ export default function CopyForm({
             e.preventDefault();
             const pasted = e.clipboardData.getData('text').trim();
             if (!pasted) return;
+            // Normalize each pasted line: add MLB prefix to pure numbers, normalize MLB variants
+            const lines = pasted.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+            const processed = lines.map(line => {
+              const c = classifyInput(line);
+              if (c.hint === 'ml') return c.display;
+              if (/^\d+$/.test(line)) return `MLB${line}`;
+              return c.display || line;
+            }).join('\n');
             const ta = e.currentTarget;
             const start = ta.selectionStart;
             const end = ta.selectionEnd;
             const before = itemIdsText.slice(0, start);
             const after = itemIdsText.slice(end);
             const needsBefore = before.length > 0 && !before.endsWith('\n');
-            const newText = before + (needsBefore ? '\n' : '') + pasted + '\n' + after;
+            const newText = before + (needsBefore ? '\n' : '') + processed + after;
             setItemIdsText(newText);
             setConfirming(false);
             pendingResolve.current = true;
-            const cursorPos = before.length + (needsBefore ? 1 : 0) + pasted.length + 1;
+            const cursorPos = before.length + (needsBefore ? 1 : 0) + processed.length;
             requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = cursorPos; });
           }}
           onBlur={normalizeAndResolve}
