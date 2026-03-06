@@ -30,6 +30,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Rate limiting com backoff exponencial no cliente Shopee API — `_shop_get`, `_shop_post` e `upload_image` agora detectam erro `too_fast` e fazem retry automatico (ate 5 tentativas: 2s, 4s, 8s, 16s, 32s)
 - Cliente HTTP reutilizavel (singleton `httpx.AsyncClient`) para APIs Shopee — conexoes TCP reutilizadas via connection pooling (max 20 conexoes, 10 keep-alive), com shutdown graceful registrado no FastAPI
 - Upload de imagens Shopee agora e paralelo com semaforo (max 3 simultaneos) via `asyncio.gather` — reduz tempo de upload de ~18s para ~6s em itens com 9 imagens, mantendo ordem (primeira imagem = capa)
+- Cache de canais logisticos por loja destino em operacoes de copia Shopee — busca feita 1 vez por loja (nao por item x destino), reduzindo chamadas de N*M para M
 
 ### Changed
 - **Historico de copias ML redesenhado**: tabela substituida por cards com borda de status colorida, titulo do item em destaque, MLB ID em tag mono, fluxo origem/destinos, chips verdes para novos MLBs criados, bloco de erros com destaque vermelho, e form de dimensoes inline. Responsivo e com suporte completo a dark mode via classes CSS (`log-chip-success`, `log-error-block`)

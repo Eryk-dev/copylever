@@ -344,6 +344,7 @@ async def copy_single_item(
     org_id: str,
     user_id: str | None = None,
     dimensions: dict | None = None,
+    logistics: list[dict] | None = None,
 ) -> dict:
     """
     Copy a single Shopee item from source shop to dest shop.
@@ -386,25 +387,26 @@ async def copy_single_item(
             result["error"] = err_msg
             return result
 
-        # 3. Fetch dest logistics
-        try:
-            logistics = await _fetch_dest_logistics(dest_shop_id, org_id)
-        except Exception as e:
-            err_msg = "Falha ao buscar canais logisticos da loja destino"
-            logger.error(
-                "Logistics fetch failed for shop %d: %s", dest_shop_id, e,
-            )
-            _log_debug(
-                action="shopee_logistics_fetch_failed",
-                source_item_id=str(item_id),
-                dest_seller=str(dest_shop_id),
-                error_message=f"{err_msg}: {e}",
-                user_id=user_id,
-                org_id=org_id,
-            )
-            result["status"] = "error"
-            result["error"] = err_msg
-            return result
+        # 3. Fetch dest logistics (skip if pre-fetched)
+        if logistics is None:
+            try:
+                logistics = await _fetch_dest_logistics(dest_shop_id, org_id)
+            except Exception as e:
+                err_msg = "Falha ao buscar canais logisticos da loja destino"
+                logger.error(
+                    "Logistics fetch failed for shop %d: %s", dest_shop_id, e,
+                )
+                _log_debug(
+                    action="shopee_logistics_fetch_failed",
+                    source_item_id=str(item_id),
+                    dest_seller=str(dest_shop_id),
+                    error_message=f"{err_msg}: {e}",
+                    user_id=user_id,
+                    org_id=org_id,
+                )
+                result["status"] = "error"
+                result["error"] = err_msg
+                return result
 
         # 4. Build payload
         payload = _build_shopee_payload(source_data, image_ids, logistics, dimensions)
@@ -549,6 +551,16 @@ async def copy_items(
     total_errors = 0
     total_needs_dimensions = 0
 
+    # Pre-fetch logistics for each destination shop (once per shop, not per item)
+    logistics_cache: dict[int, list[dict]] = {}
+    failed_dests: set[int] = set()
+    for dest_slug, dest_shop_id in dest_shops:
+        try:
+            logistics_cache[dest_shop_id] = await _fetch_dest_logistics(dest_shop_id, org_id)
+        except Exception as e:
+            logger.error("Logistics pre-fetch failed for shop %d (%s): %s", dest_shop_id, dest_slug, e)
+            failed_dests.add(dest_shop_id)
+
     for item_id in item_ids:
         # Create in_progress log entry
         log_id: int | None = None
@@ -573,9 +585,25 @@ async def copy_items(
         item_thumbnail = ""
 
         for dest_slug, dest_shop_id in dest_shops:
+            # Skip destinations where logistics pre-fetch failed
+            if dest_shop_id in failed_dests:
+                result: dict[str, Any] = {
+                    "source_item_id": str(item_id),
+                    "dest_seller": dest_slug,
+                    "status": "error",
+                    "dest_item_id": None,
+                    "error": "Falha ao buscar canais logisticos da loja destino",
+                    "sku": None,
+                }
+                all_results.append(result)
+                total_errors += 1
+                item_errors[dest_slug] = result["error"]
+                continue
+
             result = await copy_single_item(
                 source_shop_id, dest_shop_id, item_id, org_id,
                 user_id=user_id,
+                logistics=logistics_cache.get(dest_shop_id),
             )
             # Use slug as key in results for readability
             result["dest_seller"] = dest_slug
@@ -669,6 +697,16 @@ async def copy_with_dimensions(
     total_success = 0
     total_errors = 0
 
+    # Pre-fetch logistics for each destination shop
+    logistics_cache: dict[int, list[dict]] = {}
+    failed_dests: set[int] = set()
+    for dest_slug, dest_shop_id in dest_shops:
+        try:
+            logistics_cache[dest_shop_id] = await _fetch_dest_logistics(dest_shop_id, org_id)
+        except Exception as e:
+            logger.error("Logistics pre-fetch failed for shop %d (%s): %s", dest_shop_id, dest_slug, e)
+            failed_dests.add(dest_shop_id)
+
     # Create log entry
     log_id: int | None = None
     try:
@@ -689,9 +727,25 @@ async def copy_with_dimensions(
     item_errors: dict[str, str] = {}
 
     for dest_slug, dest_shop_id in dest_shops:
+        # Skip destinations where logistics pre-fetch failed
+        if dest_shop_id in failed_dests:
+            result: dict[str, Any] = {
+                "source_item_id": str(item_id),
+                "dest_seller": dest_slug,
+                "status": "error",
+                "dest_item_id": None,
+                "error": "Falha ao buscar canais logisticos da loja destino",
+                "sku": None,
+            }
+            all_results.append(result)
+            total_errors += 1
+            item_errors[dest_slug] = result["error"]
+            continue
+
         result = await copy_single_item(
             source_shop_id, dest_shop_id, item_id, org_id,
             user_id=user_id, dimensions=dimensions,
+            logistics=logistics_cache.get(dest_shop_id),
         )
         result["dest_seller"] = dest_slug
         all_results.append(result)
