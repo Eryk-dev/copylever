@@ -421,8 +421,8 @@ const s: Record<string, React.CSSProperties> = {
     display: 'flex', flexDirection: 'column', gap: 24,
   },
   heroEyebrow: {
-    fontSize: 12, fontWeight: 500, color: 'var(--lp-ink-4)', letterSpacing: '0.04em',
-    border: '1px solid var(--lp-line)', padding: '5px 14px',
+    fontSize: 12, fontWeight: 500, color: '#ffe600', letterSpacing: '0.04em',
+    border: '1px solid rgba(255,230,0,0.25)', padding: '5px 14px',
     borderRadius: 100, width: 'fit-content',
   },
   h1: {
