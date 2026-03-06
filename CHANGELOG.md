@@ -12,6 +12,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 ### Changed
 - Preview da compatibilidade agora carrega automaticamente ao digitar o ID (debounce de 600ms), sem precisar clicar fora
 - Preview de cópia: preço exibe "R$" em vez do código "BRL", cor verde dinheiro (`--success`)
+- Formulário de cópia: ao colar um MLB, adiciona quebra de linha automaticamente para o próximo ID
 
 ### Added
 - Trial system: 20 copias gratuitas por org antes de exigir assinatura

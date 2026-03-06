@@ -195,7 +195,27 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
         <textarea
           value={itemIdsText}
           onChange={e => { setItemIdsText(e.target.value); setConfirming(false); }}
-          onPaste={() => { pendingResolve.current = true; }}
+          onPaste={e => {
+            e.preventDefault();
+            const pasted = e.clipboardData.getData('text').trim();
+            if (!pasted) return;
+            const ta = e.currentTarget;
+            const start = ta.selectionStart;
+            const end = ta.selectionEnd;
+            const before = itemIdsText.slice(0, start);
+            const after = itemIdsText.slice(end);
+            // Add newline before if cursor is right after text (no newline)
+            const needsBefore = before.length > 0 && !before.endsWith('\n');
+            const newText = before + (needsBefore ? '\n' : '') + pasted + '\n' + after;
+            setItemIdsText(newText);
+            setConfirming(false);
+            pendingResolve.current = true;
+            // Move cursor to after the pasted content + newline
+            const cursorPos = before.length + (needsBefore ? 1 : 0) + pasted.length + 1;
+            requestAnimationFrame(() => {
+              ta.selectionStart = ta.selectionEnd = cursorPos;
+            });
+          }}
           onBlur={normalizeAndResolve}
           placeholder={"Cole os IDs dos anúncios (um por linha)\n1234567890\nMLB9876543210"}
           rows={4}
