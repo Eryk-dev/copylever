@@ -18,7 +18,7 @@
         "Typecheck passes"
       ],
       "priority": 1,
-      "passes": true,
+      "passes": false,
       "notes": "Phase 1 already created `app/services/shopee_api.py` with all API wrappers: get_item, get_item_extra, get_model_list, get_logistics_channels, upload_image, add_item, _get_token. The shopee_api module handles HMAC signing and token management. The copier just orchestrates calls. Use the existing patterns from `app/services/item_copier.py` (the ML copy engine) for reference — it has similar _build_item_payload and fetch functions. Shopee returns base_info items inside response.item_list[0]. Shopee image URLs are in item.image.image_url_list. Weight is in kg (float). The description comes from get_item_extra_info response. Models/variations come from get_model_list response."
     },
     {
@@ -35,7 +35,7 @@
         "Typecheck passes"
       ],
       "priority": 2,
-      "passes": true,
+      "passes": false,
       "notes": "Depends on US-001 helpers. The shopee_sellers table has columns: slug, shop_id, org_id. To resolve slug→shop_id: db.table('shopee_sellers').select('shop_id').eq('slug', slug).eq('org_id', org_id).single().execute(). For api_debug_logs: use same table as ML (columns: source_item_id, dest_seller, attempt_number, error_message, request_payload, response_body, resolved, created_at). For shopee_copy_logs: columns are user_id, org_id, source_seller, dest_sellers, source_item_id, status, dest_item_ids (jsonb), error_details (jsonb). Use get_db() from app.db.supabase. ShopeeApiError is imported from app.services.shopee_api. If error message contains 'dimension' or 'weight', set status to 'needs_dimensions'."
     },
     {
@@ -54,7 +54,7 @@
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": true,
+      "passes": false,
       "notes": "Mirror the pattern from `app/routers/copy.py` which has the same endpoint structure for ML. The _check_trial_limit function is in copy.py — either import it or copy the pattern (query orgs table for payment_active, trial_copies_used, trial_copies_limit). _increment_trial_copies is also in copy.py: db.table('orgs').update({'trial_copies_used': used + count}).eq('id', org_id).execute(). For permissions: query user_permissions table with .eq('user_id', user_id).eq('seller_slug', slug) and check can_copy_from/can_copy_to. Admin role (user['role'] == 'admin') bypasses permission checks. For resolve-sellers: the shopee_api.get_item function returns response with item_list — if item_list is not empty, that shop has the item. Use try/except ShopeeApiError to handle items not found."
     },
     {
@@ -69,7 +69,7 @@
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": true,
+      "passes": false,
       "notes": "In admin_users.py: the GET permissions endpoint queries user_permissions joined with copy_sellers. Add a second query to shopee_sellers for the same org. Build the merged list: for each seller in copy_sellers add platform='ml', for each in shopee_sellers add platform='shopee'. Then join with existing user_permissions to get can_copy_from/can_copy_to for each. The PUT endpoint already upserts by user_id + seller_slug — this works for Shopee slugs too since user_permissions doesn't have a platform column. The slug uniqueness across platforms is sufficient (ML slugs come from ML user nicknames, Shopee slugs from shop names — very unlikely to collide)."
     },
     {
@@ -82,7 +82,7 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": true,
+      "passes": false,
       "notes": "In super_admin.py list_orgs: after the existing queries for user_count, seller_count, copy_count, compat_count, add: shopee_seller_count = db.table('shopee_sellers').select('id', count='exact').eq('org_id', org_id).eq('active', True).execute().count or 0, and shopee_copy_count = db.table('shopee_copy_logs').select('id', count='exact').eq('org_id', org_id).gte('created_at', thirty_days_ago).execute().count or 0. Add both to the enriched dict."
     },
     {
@@ -106,7 +106,7 @@
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": true,
+      "passes": false,
       "notes": "In api.ts: add the interfaces after the existing ML ones. ShopeeSeller mirrors Seller but with shop_id instead of ml_user_id. ShopeeCopyLog mirrors CopyLog. ShopeeItemPreview is Shopee-specific. In useAuth.ts: follow the exact same pattern as loadSellers/disconnectSeller but targeting /api/shopee/sellers endpoints. Import ShopeeSeller from api.ts. The hook currently returns {isAuthenticated, initializing, token, user, login, signup, logout, sellers, loadingSellers, loadSellers, disconnectSeller, headers}. Add shopeeSellers, loadShopeeSellers, disconnectShopeeSeller to the return."
     },
     {
@@ -127,7 +127,7 @@
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": true,
+      "passes": false,
       "notes": "Mirror the structure of CopyPage.tsx as closely as possible. CopyPage uses CopyForm and CopyProgress components — for Shopee, build the form and progress inline in ShopeeCopyPage (simpler than creating separate components, and avoids over-engineering since patterns differ). Key differences from ML CopyPage: (1) uses shopeeSellers instead of sellers, (2) API endpoints are /api/shopee/copy/* instead of /api/copy/*, (3) item IDs are numbers (not MLBxxxxxx), (4) resolve-sellers returns shop_slug instead of seller_slug. The DimensionForm component at frontend/src/components/DimensionForm.tsx exports { Dimensions } type and the component — reuse it. The Card component is exported from CopyPage.tsx. The useToast hook is at frontend/src/components/Toast.tsx. Shop chips should have an orange tint (#EE4D2D at 10% opacity) to differentiate from ML's default style."
     },
     {
@@ -144,7 +144,7 @@
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": true,
+      "passes": false,
       "notes": "In App.tsx: the visibleTabs useMemo builds an array of View values. Add tabs.push('shopee') right after tabs.push('copy') with the same condition. The nav section renders ViewTab components for each visible tab — add one for 'shopee'. The content section has conditional rendering per activeView — add {activeView === 'shopee' && <ShopeeCopyPage .../>}. The empty-state check on line ~402 checks auth.sellers.length === 0 — update to also check auth.shopeeSellers.length === 0. The auth hook now exposes shopeeSellers from US-006."
     },
     {
@@ -164,7 +164,7 @@
         "Typecheck passes"
       ],
       "priority": 9,
-      "passes": true,
+      "passes": false,
       "notes": "In Admin.tsx: the component currently receives Props { sellers, loadSellers, disconnectSeller, headers }. Add shopeeSellers, loadShopeeSellers, disconnectShopeeSeller to Props. The ML section uses a Card component with seller list items — duplicate the pattern for Shopee. The install flow for ML: fetch /api/ml/install → redirect. For Shopee: fetch /api/shopee/install → redirect. The rename flow for ML: PUT /api/sellers/{slug}/name. For Shopee: PUT /api/shopee/sellers/{slug}/name. Also update the Admin rendering in App.tsx to pass the new props: <Admin sellers={auth.sellers} loadSellers={auth.loadSellers} disconnectSeller={auth.disconnectSeller} headers={auth.headers} shopeeSellers={auth.shopeeSellers} loadShopeeSellers={auth.loadShopeeSellers} disconnectShopeeSeller={auth.disconnectShopeeSeller} />"
     },
     {
@@ -179,7 +179,7 @@
         "Typecheck passes"
       ],
       "priority": 10,
-      "passes": true,
+      "passes": false,
       "notes": "In SuperAdminPage.tsx: the table renders columns for each org stat. Add two new <th> and <td> elements for shopee_seller_count and shopee_copy_count. Use org.shopee_seller_count ?? 0 and org.shopee_copy_count ?? 0 for display. Keep the same styling as existing columns."
     },
     {
@@ -193,7 +193,7 @@
         "Typecheck passes"
       ],
       "priority": 11,
-      "passes": true,
+      "passes": false,
       "notes": "CHANGELOG.md already has a Shopee Integration Phase 1 section under [Unreleased]. Add Phase 2 entries below it. CLAUDE.md already documents shopee_api.py, auth_shopee.py, and the Shopee API Patterns section. Add the copy router and copier to the structure and routes sections. Keep entries concise and in Portuguese."
     }
   ]

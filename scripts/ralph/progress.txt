@@ -154,3 +154,44 @@ Started: Fri Mar  6 00:04:59 -03 2026
   - ShopeeCopyPage accepts `shopeeSellers` prop (not `sellers`) — different prop name from CopyPage
   - Admin component will need Shopee props in US-009 (shopeeSellers, loadShopeeSellers, disconnectShopeeSeller)
 ---
+
+## 2026-03-06 - US-009
+- Added Shopee sellers section to `frontend/src/pages/Admin.tsx`:
+  - Updated Props interface with shopeeSellers, loadShopeeSellers, disconnectShopeeSeller
+  - Added separate state for Shopee rename/disconnect/install (shopeeEditingSlug, shopeeDisconnecting, etc.)
+  - Added handleShopeeRename (PUT /api/shopee/sellers/{slug}/name)
+  - Added handleShopeeInstall (GET /api/shopee/install → redirect)
+  - Added handleShopeeRefresh and handleShopeeDisconnect
+  - "Conectar loja Shopee" card with orange-styled button (#EE4D2D)
+  - "Lojas Shopee" card with shop list: orange Shopee badge, name, slug, rename, shop_id, connect date, disconnect
+  - Visual separator (hr line) between ML and Shopee sections
+- Updated `frontend/src/App.tsx` to pass Shopee props to Admin component
+- Files changed: `frontend/src/pages/Admin.tsx`, `frontend/src/App.tsx`
+- **Learnings for future iterations:**
+  - Admin uses separate state variables for ML vs Shopee editing/disconnecting (shopeeEditingSlug vs editingSlug) to avoid conflicts
+  - Shopee install endpoint is GET /api/shopee/install (same pattern as ML's GET /api/ml/install)
+  - Shopee rename endpoint is PUT /api/shopee/sellers/{slug}/name (vs ML's PUT /api/sellers/{slug}/name)
+  - Orange badge uses `rgba(238, 77, 45, 0.1)` background with `#EE4D2D` text color
+  - ShopeeSeller has `shop_id` and `created_at` fields useful for display in admin list
+---
+
+## 2026-03-06 - US-010
+- Added 'Shopee Sellers' and 'Shopee Cópias (30d)' columns to SuperAdminPage orgs table
+- Columns display `org.shopee_seller_count ?? 0` and `org.shopee_copy_count ?? 0`
+- Positioned after existing 'Compats (30d)' column, before 'Criado em'
+- Files changed: `frontend/src/pages/SuperAdminPage.tsx`
+- **Learnings for future iterations:**
+  - OrgWithStats already had shopee_seller_count and shopee_copy_count from US-006 — just needed to render them
+  - Use `?? 0` for optional numeric fields in case backend returns undefined/null
+  - Table columns use `.map(h => ...)` pattern — just add to the header array and add `<td>` in same order
+---
+
+## 2026-03-06 - US-011
+- Updated CHANGELOG.md: added "Shopee Integration (Phase 2 — Copy Engine + Frontend)" section with 10 entries covering backend (copier, router, permissions, super admin) and frontend (types, hook, page, tab, admin, super admin)
+- Updated CLAUDE.md: added 5 Shopee Copy routes to API Routes section, added shopee_copier.py and shopee_copy.py to Project Structure, updated migrations count (001-011), updated page listings (ShopeeCopyPage), updated tab description (Copy, Shopee, Compat, Admin)
+- Files changed: `CHANGELOG.md`, `CLAUDE.md`
+- **Learnings for future iterations:**
+  - CLAUDE.md already had Phase 1 Shopee sections (OAuth, API Patterns, env vars, DB schema) from prior work — only needed to add Phase 2 items
+  - Pre-existing mypy errors in shopee_api.py are expected (param type mismatches) — not a blocker for typecheck
+  - This was the final story — all 11 user stories now pass
+---

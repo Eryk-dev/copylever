@@ -7,6 +7,12 @@ class Settings(BaseSettings):
     ml_secret_key: str = ""
     ml_redirect_uri: str = ""
 
+    # Shopee Open Platform
+    shopee_partner_id: int = 0
+    shopee_partner_key: str = ""
+    shopee_redirect_uri: str = ""
+    shopee_sandbox: bool = False
+
     # Supabase (same project as lever money)
     supabase_url: str = ""
     supabase_service_role_key: str = ""
