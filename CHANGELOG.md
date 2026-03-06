@@ -32,6 +32,9 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Added (Frontend)
 - Preview Shopee agora exibe peso do item (em g ou kg) e alerta visual quando item nao tem descricao (Shopee exige descricao para criar anuncio)
+- Tela de onboarding (empty state) agora inclui botao "Conectar loja Shopee" ao lado do botao do Mercado Livre, para orgs que usam apenas Shopee
+- QuickStartGuide atualizado para mencionar Shopee como opcao de conexao
+- Paywall (tela de assinatura) agora lista "Integracao com Shopee" entre as funcionalidades do plano
 
 ### Added
 - Rate limiting com backoff exponencial no cliente Shopee API — `_shop_get`, `_shop_post` e `upload_image` agora detectam erro `too_fast` e fazem retry automatico (ate 5 tentativas: 2s, 4s, 8s, 16s, 32s)
