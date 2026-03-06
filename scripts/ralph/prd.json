@@ -82,7 +82,7 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": "In super_admin.py list_orgs: after the existing queries for user_count, seller_count, copy_count, compat_count, add: shopee_seller_count = db.table('shopee_sellers').select('id', count='exact').eq('org_id', org_id).eq('active', True).execute().count or 0, and shopee_copy_count = db.table('shopee_copy_logs').select('id', count='exact').eq('org_id', org_id).gte('created_at', thirty_days_ago).execute().count or 0. Add both to the enriched dict."
     },
     {
@@ -106,7 +106,7 @@
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": "In api.ts: add the interfaces after the existing ML ones. ShopeeSeller mirrors Seller but with shop_id instead of ml_user_id. ShopeeCopyLog mirrors CopyLog. ShopeeItemPreview is Shopee-specific. In useAuth.ts: follow the exact same pattern as loadSellers/disconnectSeller but targeting /api/shopee/sellers endpoints. Import ShopeeSeller from api.ts. The hook currently returns {isAuthenticated, initializing, token, user, login, signup, logout, sellers, loadingSellers, loadSellers, disconnectSeller, headers}. Add shopeeSellers, loadShopeeSellers, disconnectShopeeSeller to the return."
     },
     {
@@ -127,7 +127,7 @@
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": "Mirror the structure of CopyPage.tsx as closely as possible. CopyPage uses CopyForm and CopyProgress components — for Shopee, build the form and progress inline in ShopeeCopyPage (simpler than creating separate components, and avoids over-engineering since patterns differ). Key differences from ML CopyPage: (1) uses shopeeSellers instead of sellers, (2) API endpoints are /api/shopee/copy/* instead of /api/copy/*, (3) item IDs are numbers (not MLBxxxxxx), (4) resolve-sellers returns shop_slug instead of seller_slug. The DimensionForm component at frontend/src/components/DimensionForm.tsx exports { Dimensions } type and the component — reuse it. The Card component is exported from CopyPage.tsx. The useToast hook is at frontend/src/components/Toast.tsx. Shop chips should have an orange tint (#EE4D2D at 10% opacity) to differentiate from ML's default style."
     },
     {
@@ -144,7 +144,7 @@
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "notes": "In App.tsx: the visibleTabs useMemo builds an array of View values. Add tabs.push('shopee') right after tabs.push('copy') with the same condition. The nav section renders ViewTab components for each visible tab — add one for 'shopee'. The content section has conditional rendering per activeView — add {activeView === 'shopee' && <ShopeeCopyPage .../>}. The empty-state check on line ~402 checks auth.sellers.length === 0 — update to also check auth.shopeeSellers.length === 0. The auth hook now exposes shopeeSellers from US-006."
     },
     {
