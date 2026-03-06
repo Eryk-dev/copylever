@@ -28,6 +28,7 @@ export function useAuth() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [sellers, setSellers] = useState<Seller[]>([]);
   const [loadingSellers, setLoadingSellers] = useState(false);
+  const [initializing, setInitializing] = useState(() => !!localStorage.getItem(TOKEN_KEY));
 
   const isAuthenticated = !!token && !!user;
 
@@ -151,7 +152,9 @@ export function useAuth() {
     if (token && !user) {
       fetchMe(token).then(me => {
         if (me) setUser(me);
-      });
+      }).finally(() => setInitializing(false));
+    } else {
+      setInitializing(false);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -176,6 +179,7 @@ export function useAuth() {
 
   return {
     isAuthenticated,
+    initializing,
     token,
     user,
     login,

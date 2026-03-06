@@ -146,6 +146,9 @@ export default function App() {
     ? view
     : visibleTabs[0] ?? 'copy';
 
+  // Wait for auth to resolve — show themed blank screen to avoid flash
+  if (auth.initializing) return <div style={{ minHeight: '100vh', background: 'var(--paper)' }} />;
+
   if (!auth.isAuthenticated) {
     if (authView === 'landing') {
       return (
