@@ -549,6 +549,59 @@ async def add_item(shop_id: int, payload: dict, org_id: str) -> dict:
     )
 
 
+async def init_tier_variation(
+    shop_id: int, item_id: int, tier_variation: list[dict], org_id: str
+) -> dict:
+    """POST /api/v2/product/init_tier_variation — define variation tiers for an item.
+
+    Payload format:
+        tier_variation: [
+            {
+                "name": "Color",
+                "option_list": [
+                    {"option": "Red", "image": {"image_id": "..."}},  # image optional
+                    {"option": "Blue"}
+                ]
+            },
+            {
+                "name": "Size",
+                "option_list": [{"option": "S"}, {"option": "M"}, {"option": "L"}]
+            }
+        ]
+    """
+    token = await _get_token(shop_id, org_id)
+    return await _shop_post(
+        "/api/v2/product/init_tier_variation",
+        token,
+        shop_id,
+        {"item_id": item_id, "tier_variation": tier_variation},
+    )
+
+
+async def add_model(
+    shop_id: int, item_id: int, model_list: list[dict], org_id: str
+) -> dict:
+    """POST /api/v2/product/add_model — create variation models (SKU combinations).
+
+    Payload format:
+        model_list: [
+            {
+                "tier_index": [0, 0],       # indexes into tier_variation options
+                "normal_stock": 10,
+                "original_price": 99.90,
+                "model_sku": "SKU-RED-S"    # optional
+            }
+        ]
+    """
+    token = await _get_token(shop_id, org_id)
+    return await _shop_post(
+        "/api/v2/product/add_model",
+        token,
+        shop_id,
+        {"item_id": item_id, "model_list": model_list},
+    )
+
+
 async def update_item(shop_id: int, item_id: int, payload: dict, org_id: str) -> dict:
     """POST /api/v2/product/update_item — update existing product."""
     token = await _get_token(shop_id, org_id)
