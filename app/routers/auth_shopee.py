@@ -4,7 +4,6 @@ Uses shopee_sellers table (separate from ML copy_sellers).
 """
 import logging
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse

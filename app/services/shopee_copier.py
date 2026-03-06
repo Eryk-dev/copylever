@@ -163,7 +163,7 @@ def _build_shopee_payload(
         "image": {"image_id_list": image_id_list},
         "weight": weight,
         "logistic_info": logistic_info,
-        "condition": "NEW",
+        "condition": base.get("condition", "NEW"),
     }
 
     # Pre-order

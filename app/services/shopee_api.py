@@ -285,6 +285,7 @@ async def _get_token(shop_id: int, org_id: str) -> str:
         update_data: dict[str, Any] = {
             "access_token": new_access,
             "token_expires_at": new_expires.isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         if new_refresh:
             update_data["refresh_token"] = new_refresh

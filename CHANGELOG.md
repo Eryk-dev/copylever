@@ -13,6 +13,9 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Race condition (TOCTOU) no lock por loja Shopee (`_get_shop_lock`) — coroutines concorrentes podiam criar locks duplicados; agora usa `dict.setdefault` atomico
 - Copia Shopee agora aborta imediatamente quando nenhuma imagem foi enviada com sucesso, em vez de tentar criar o anuncio 3 vezes com lista de imagens vazia
 - Retry de copia Shopee (attempt 2) agora remove apenas atributos com valores vazios em vez de remover todos os atributos — preserva atributos obrigatorios da categoria
+- Token refresh Shopee agora atualiza `updated_at` na tabela `shopee_sellers`
+- Condicao do item Shopee (`condition`) agora vem do item origem em vez de hardcoded `NEW`
+- Removido import nao utilizado `urlencode` de `auth_shopee.py`
 
 ### Changed
 - **Historico de copias ML redesenhado**: tabela substituida por cards com borda de status colorida, titulo do item em destaque, MLB ID em tag mono, fluxo origem/destinos, chips verdes para novos MLBs criados, bloco de erros com destaque vermelho, e form de dimensoes inline. Responsivo e com suporte completo a dark mode via classes CSS (`log-chip-success`, `log-error-block`)
