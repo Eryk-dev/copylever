@@ -87,6 +87,15 @@ async def _upload_images(
             return await _upload_single_image(dest_shop_id, url, org_id)
 
     results = await asyncio.gather(*[_guarded_upload(u) for u in urls])
+
+    # Preserve order but check if cover (first) image failed
+    if results and results[0] is None:
+        logger.warning(
+            "Cover image (index 0) failed to upload for shop %d — aborting all images",
+            dest_shop_id,
+        )
+        return []
+
     image_ids = [img_id for img_id in results if img_id is not None]
 
     logger.info(
@@ -341,7 +350,7 @@ def _minimal_payload(payload: dict) -> dict:
         "image": payload.get("image", {"image_id_list": []}),
         "weight": payload.get("weight", 0.5),
         "logistic_info": payload.get("logistic_info", []),
-        "condition": "NEW",
+        "condition": payload.get("condition", "NEW"),
     }
 
 

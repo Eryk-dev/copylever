@@ -4,6 +4,7 @@ Uses shopee_sellers table (separate from ML copy_sellers).
 """
 import hmac as _hmac
 import logging
+import html as _html
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -100,9 +101,10 @@ async def callback(code: str, shop_id: int, state: str = ""):
     expire_in = token_data.get("expire_in", 14400)  # 4 hours
 
     if not access_token:
+        logger.error("Shopee OAuth returned no access_token. Response: %s", token_data)
         raise HTTPException(
             status_code=502,
-            detail=f"Shopee OAuth returned no access_token. Response: {token_data}",
+            detail="Shopee OAuth returned no access_token. Please try again.",
         )
 
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=expire_in)
@@ -255,10 +257,11 @@ async def disconnect_seller(slug: str, user: dict = Depends(require_active_org))
 
 
 def _success_page(shop_name: str, already_exists: bool) -> HTMLResponse:
+    safe_name = _html.escape(shop_name)
     if already_exists:
-        message = f"Loja <strong>{shop_name}</strong> j&aacute; estava cadastrada. Tokens atualizados com sucesso."
+        message = f"Loja <strong>{safe_name}</strong> j&aacute; estava cadastrada. Tokens atualizados com sucesso."
     else:
-        message = f"Loja <strong>{shop_name}</strong> conectada com sucesso!"
+        message = f"Loja <strong>{safe_name}</strong> conectada com sucesso!"
 
     html = f"""<!DOCTYPE html>
 <html lang="pt-BR">
