@@ -104,14 +104,19 @@ async def require_active_org(x_auth_token: str = Header(...)) -> dict:
 
     db = get_db()
     org_result = db.table("orgs").select(
-        "active, payment_active"
+        "active, payment_active, trial_copies_used, trial_copies_limit"
     ).eq("id", user["org_id"]).single().execute()
 
     if not org_result.data or not org_result.data.get("active"):
         raise HTTPException(status_code=403, detail="Organizacao desativada")
 
-    if not org_result.data.get("payment_active"):
-        raise HTTPException(status_code=402, detail="Assinatura pendente")
+    org = org_result.data
+    if not org.get("payment_active"):
+        # Allow access if still within trial limits
+        used = org.get("trial_copies_used", 0)
+        limit = org.get("trial_copies_limit", 20)
+        if used >= limit:
+            raise HTTPException(status_code=402, detail="Periodo de teste encerrado")
 
     return user
 

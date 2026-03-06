@@ -163,13 +163,21 @@ async def billing_status(user: dict = Depends(require_user)):
 
     db = get_db()
     org_result = db.table("orgs").select(
-        "payment_active, stripe_subscription_id"
+        "payment_active, stripe_subscription_id, trial_copies_used, trial_copies_limit"
     ).eq("id", user["org_id"]).single().execute()
 
     if not org_result.data:
         raise HTTPException(status_code=404, detail="Organizacao nao encontrada")
 
+    org = org_result.data
+    used = org.get("trial_copies_used", 0)
+    limit = org.get("trial_copies_limit", 20)
+
     return {
-        "payment_active": org_result.data["payment_active"],
-        "stripe_subscription_id": org_result.data.get("stripe_subscription_id"),
+        "payment_active": org["payment_active"],
+        "stripe_subscription_id": org.get("stripe_subscription_id"),
+        "trial_copies_used": used,
+        "trial_copies_limit": limit,
+        "trial_active": not org["payment_active"] and used < limit,
+        "trial_exhausted": not org["payment_active"] and used >= limit,
     }

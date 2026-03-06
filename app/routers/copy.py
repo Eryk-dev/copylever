@@ -17,6 +17,50 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/copy", tags=["copy"])
 
 
+def _check_trial_limit(org_id: str, requested_copies: int) -> dict | None:
+    """Check if org is on trial and has enough remaining copies.
+
+    Returns None if org has active payment (no trial needed).
+    Returns dict with allowed/remaining/message otherwise.
+    """
+    db = get_db()
+    org = db.table("orgs").select(
+        "payment_active, trial_copies_used, trial_copies_limit"
+    ).eq("id", org_id).single().execute().data
+
+    if not org or org.get("payment_active"):
+        return None  # Paid org, no trial limits
+
+    used = org.get("trial_copies_used", 0)
+    limit = org.get("trial_copies_limit", 20)
+    remaining = max(0, limit - used)
+
+    if remaining <= 0:
+        return {
+            "allowed": False,
+            "remaining": 0,
+            "message": f"Periodo de teste encerrado. Voce usou todas as {limit} copias gratuitas. Assine para continuar.",
+        }
+
+    if requested_copies > remaining:
+        return {
+            "allowed": False,
+            "remaining": remaining,
+            "message": f"Voce tem {remaining} copia(s) gratuita(s) restante(s). Reduza a quantidade ou assine para copias ilimitadas.",
+        }
+
+    return {"allowed": True, "remaining": remaining}
+
+
+def _increment_trial_copies(org_id: str, count: int):
+    """Increment trial_copies_used for an org."""
+    db = get_db()
+    org = db.table("orgs").select("trial_copies_used").eq("id", org_id).single().execute().data
+    if org:
+        new_val = (org.get("trial_copies_used", 0) or 0) + count
+        db.table("orgs").update({"trial_copies_used": new_val}).eq("id", org_id).execute()
+
+
 async def _resolve_item_seller(item_id: str, org_id: str, skip_seller: str | None = None) -> tuple[str | None, dict | None]:
     """Try all connected sellers IN PARALLEL to find one that can fetch the item.
 
@@ -114,6 +158,12 @@ async def copy_anuncios(req: CopyRequest, user: dict = Depends(require_active_or
         raise HTTPException(status_code=400, detail="No valid item IDs provided")
 
     org_id = user["org_id"]
+
+    # Check trial limits for unpaid orgs
+    trial_info = _check_trial_limit(org_id, len(clean_ids))
+    if trial_info and not trial_info["allowed"]:
+        raise HTTPException(status_code=402, detail=trial_info["message"])
+
     results = await copy_items(
         source_seller=req.source,
         dest_sellers=req.destinations,
@@ -125,6 +175,10 @@ async def copy_anuncios(req: CopyRequest, user: dict = Depends(require_active_or
     success_count = sum(1 for r in results if r["status"] == "success")
     error_count = sum(1 for r in results if r["status"] == "error")
     dim_count = sum(1 for r in results if r["status"] == "needs_dimensions")
+
+    # Increment trial counter for successful copies
+    if trial_info and success_count > 0:
+        _increment_trial_copies(org_id, success_count)
 
     return {
         "total": len(results),
@@ -151,6 +205,12 @@ async def copy_with_dims(req: CopyWithDimensionsRequest, user: dict = Depends(re
 
     org_id = user["org_id"]
     item_id = req.item_id.strip()
+
+    # Check trial limits for unpaid orgs
+    trial_info = _check_trial_limit(org_id, 1)
+    if trial_info and not trial_info["allowed"]:
+        raise HTTPException(status_code=402, detail=trial_info["message"])
+
     results = await copy_with_dimensions(
         source_seller=req.source,
         dest_sellers=req.destinations,
@@ -162,6 +222,10 @@ async def copy_with_dims(req: CopyWithDimensionsRequest, user: dict = Depends(re
 
     success_count = sum(1 for r in results if r["status"] == "success")
     error_count = sum(1 for r in results if r["status"] == "error")
+
+    # Increment trial counter for successful copies
+    if trial_info and success_count > 0:
+        _increment_trial_copies(org_id, 1)
 
     # Update any existing needs_dimensions log entries for this item
     if success_count > 0:

@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 from app.config import settings
 from app.db.supabase import get_db
@@ -160,6 +161,30 @@ async def list_sellers(user: dict = Depends(require_active_org)):
         })
 
     return sellers
+
+
+class RenameSellerRequest(BaseModel):
+    name: str
+
+
+@router.put("/api/sellers/{slug}/name")
+async def rename_seller(slug: str, body: RenameSellerRequest, user: dict = Depends(require_active_org)):
+    """Rename a connected seller."""
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Nome não pode ser vazio")
+    if len(name) > 100:
+        raise HTTPException(status_code=400, detail="Nome muito longo (máx. 100 caracteres)")
+
+    db = get_db()
+    result = db.table("copy_sellers").update({
+        "name": name,
+    }).eq("slug", slug).eq("org_id", user["org_id"]).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail=f"Seller '{slug}' não encontrado")
+
+    return {"status": "ok", "slug": slug, "name": name}
 
 
 @router.delete("/api/sellers/{slug}")
