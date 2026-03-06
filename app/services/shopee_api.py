@@ -26,6 +26,28 @@ _token_locks: dict[int, asyncio.Lock] = {}
 _RATE_LIMIT_RETRIES = 5
 _RATE_LIMIT_BASE_WAIT = 2  # seconds
 
+# Reusable HTTP client (lazy singleton for connection pooling)
+_http_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    """Return the shared httpx.AsyncClient, creating it on first call."""
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            timeout=60.0,
+        )
+    return _http_client
+
+
+async def close_client() -> None:
+    """Close the shared HTTP client (call on app shutdown)."""
+    global _http_client
+    if _http_client is not None:
+        await _http_client.aclose()
+        _http_client = None
+
 
 def _get_shop_lock(shop_id: int) -> asyncio.Lock:
     return _token_locks.setdefault(shop_id, asyncio.Lock())
@@ -345,8 +367,8 @@ async def _shop_get(
         if extra_params:
             params.update(extra_params)
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(f"{base}{path}", params=params)
+        client = _get_client()
+        resp = await client.get(f"{base}{path}", params=params, timeout=30.0)
 
         if _is_rate_limited(resp) and attempt < _RATE_LIMIT_RETRIES:
             wait = _RATE_LIMIT_BASE_WAIT * (2 ** attempt)
@@ -386,8 +408,8 @@ async def _shop_post(
         if extra_params:
             params.update(extra_params)
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(f"{base}{path}", params=params, json=body)
+        client = _get_client()
+        resp = await client.post(f"{base}{path}", params=params, json=body, timeout=timeout)
 
         if _is_rate_limited(resp) and attempt < _RATE_LIMIT_RETRIES:
             wait = _RATE_LIMIT_BASE_WAIT * (2 ** attempt)
@@ -495,12 +517,12 @@ async def upload_image(shop_id: int, image_url: str, org_id: str) -> dict:
             "shop_id": shop_id,
         }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                f"{base}{path}",
-                params=params,
-                data={"url": image_url},
-            )
+        client = _get_client()
+        resp = await client.post(
+            f"{base}{path}",
+            params=params,
+            data={"url": image_url},
+        )
 
         if _is_rate_limited(resp) and attempt < _RATE_LIMIT_RETRIES:
             wait = _RATE_LIMIT_BASE_WAIT * (2 ** attempt)
