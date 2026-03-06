@@ -1,14 +1,17 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { API_BASE, type Seller, type CopyQueuedResponse, type CopyLog, type ItemPreview } from '../lib/api';
+import { API_BASE, type Seller, type ShopeeSeller, type CopyQueuedResponse, type CopyLog, type ItemPreview } from '../lib/api';
 import type { AuthUser } from '../hooks/useAuth';
-import CopyForm, { type CopyGroup } from '../components/CopyForm';
+import CopyForm, { type CopyGroup, type Platform } from '../components/CopyForm';
 import DimensionForm, { type Dimensions } from '../components/DimensionForm';
 import { useToast } from '../components/Toast';
 
 const LOGS_PAGE_SIZE = 50;
 
+type UnifiedLog = CopyLog & { platform: Platform };
+
 interface Props {
   sellers: Seller[];
+  shopeeSellers: ShopeeSeller[];
   headers: () => Record<string, string>;
   user: AuthUser | null;
 }
@@ -23,10 +26,10 @@ function isDimensionError(log: CopyLog): boolean {
   return false;
 }
 
-export default function CopyPage({ sellers, headers, user }: Props) {
+export default function CopyPage({ sellers, shopeeSellers, headers, user }: Props) {
   const { toast } = useToast();
   const [copying, setCopying] = useState(false);
-  const [logs, setLogs] = useState<CopyLog[]>([]);
+  const [logs, setLogs] = useState<UnifiedLog[]>([]);
   const [logsLoaded, setLogsLoaded] = useState(false);
   const [logsOpen, setLogsOpen] = useState(true);
   const [previews, setPreviews] = useState<ItemPreview[]>([]);
@@ -34,38 +37,54 @@ export default function CopyPage({ sellers, headers, user }: Props) {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
-  const resolvedItemsRef = useRef<Array<[string, string]>>([]);
   const [hasMoreLogs, setHasMoreLogs] = useState(false);
   const [retryLogId, setRetryLogId] = useState<number | null>(null);
+  const [retryPlatform, setRetryPlatform] = useState<Platform>('ml');
 
   const loadLogs = useCallback(async () => {
     const params = new URLSearchParams({ limit: String(LOGS_PAGE_SIZE), offset: '0' });
     if (statusFilter) params.set('status', statusFilter);
     try {
-      const res = await fetch(`${API_BASE}/api/copy/logs?${params}`, { headers: headers(), cache: 'no-store' });
-      if (res.ok) {
-        const data: CopyLog[] = await res.json();
-        setLogs(data);
-        setHasMoreLogs(data.length === LOGS_PAGE_SIZE);
-        setLogsLoaded(true);
-      }
+      const [mlRes, shopeeRes] = await Promise.all([
+        fetch(`${API_BASE}/api/copy/logs?${params}`, { headers: headers(), cache: 'no-store' }),
+        fetch(`${API_BASE}/api/shopee/copy/logs?${params}`, { headers: headers(), cache: 'no-store' }),
+      ]);
+      const mlLogs: CopyLog[] = mlRes.ok ? await mlRes.json() : [];
+      const shopeeLogs: CopyLog[] = shopeeRes.ok ? await shopeeRes.json() : [];
+      const merged: UnifiedLog[] = [
+        ...mlLogs.map(l => ({ ...l, platform: 'ml' as Platform })),
+        ...shopeeLogs.map(l => ({ ...l, platform: 'shopee' as Platform })),
+      ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+       .slice(0, LOGS_PAGE_SIZE);
+      setLogs(merged);
+      setHasMoreLogs(mlLogs.length === LOGS_PAGE_SIZE || shopeeLogs.length === LOGS_PAGE_SIZE);
+      setLogsLoaded(true);
     } catch (e) { console.error('Failed to load logs:', e); }
   }, [headers, statusFilter]);
 
   const loadMoreLogs = useCallback(async () => {
-    const params = new URLSearchParams({ limit: String(LOGS_PAGE_SIZE), offset: String(logs.length) });
-    if (statusFilter) params.set('status', statusFilter);
+    // For merged logs, load more from both and merge
+    const mlCount = logs.filter(l => l.platform === 'ml').length;
+    const shopeeCount = logs.filter(l => l.platform === 'shopee').length;
+    const mlParams = new URLSearchParams({ limit: String(LOGS_PAGE_SIZE), offset: String(mlCount) });
+    const shopeeParams = new URLSearchParams({ limit: String(LOGS_PAGE_SIZE), offset: String(shopeeCount) });
+    if (statusFilter) { mlParams.set('status', statusFilter); shopeeParams.set('status', statusFilter); }
     try {
-      const res = await fetch(`${API_BASE}/api/copy/logs?${params}`, { headers: headers(), cache: 'no-store' });
-      if (res.ok) {
-        const data: CopyLog[] = await res.json();
-        setLogs(prev => [...prev, ...data]);
-        setHasMoreLogs(data.length === LOGS_PAGE_SIZE);
-      }
+      const [mlRes, shopeeRes] = await Promise.all([
+        fetch(`${API_BASE}/api/copy/logs?${mlParams}`, { headers: headers(), cache: 'no-store' }),
+        fetch(`${API_BASE}/api/shopee/copy/logs?${shopeeParams}`, { headers: headers(), cache: 'no-store' }),
+      ]);
+      const mlLogs: CopyLog[] = mlRes.ok ? await mlRes.json() : [];
+      const shopeeLogs: CopyLog[] = shopeeRes.ok ? await shopeeRes.json() : [];
+      const newLogs: UnifiedLog[] = [
+        ...mlLogs.map(l => ({ ...l, platform: 'ml' as Platform })),
+        ...shopeeLogs.map(l => ({ ...l, platform: 'shopee' as Platform })),
+      ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      setLogs(prev => [...prev, ...newLogs]);
+      setHasMoreLogs(mlLogs.length === LOGS_PAGE_SIZE || shopeeLogs.length === LOGS_PAGE_SIZE);
     } catch (e) { console.error('Failed to load more logs:', e); }
-  }, [headers, statusFilter, logs.length]);
+  }, [headers, statusFilter, logs]);
 
-  // Reset logs when filter changes
   useEffect(() => {
     setLogs([]);
     setLogsLoaded(false);
@@ -74,15 +93,22 @@ export default function CopyPage({ sellers, headers, user }: Props) {
 
   const handleCopy = useCallback(async (groups: CopyGroup[], destinations: string[]) => {
     setCopying(true);
-
     let totalQueued = 0;
 
+    // Split destinations by platform
+    const mlDestSlugs = destinations.filter(d => sellers.some(s => s.slug === d));
+    const shopeeDestSlugs = destinations.filter(d => shopeeSellers.some(s => s.slug === d));
+
     for (const group of groups) {
+      const dests = group.platform === 'ml' ? mlDestSlugs : shopeeDestSlugs;
+      if (dests.length === 0) continue;
+
+      const endpoint = group.platform === 'ml' ? '/api/copy' : '/api/shopee/copy';
       try {
-        const res = await fetch(`${API_BASE}/api/copy`, {
+        const res = await fetch(`${API_BASE}${endpoint}`, {
           method: 'POST',
           headers: headers(),
-          body: JSON.stringify({ source: group.source, destinations, item_ids: group.itemIds }),
+          body: JSON.stringify({ source: group.source, destinations: dests, item_ids: group.itemIds }),
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: 'Erro desconhecido' }));
@@ -97,13 +123,13 @@ export default function CopyPage({ sellers, headers, user }: Props) {
     }
 
     if (totalQueued > 0) {
-      toast(`${totalQueued} item(s) enfileirado(s). Acompanhe no historico abaixo.`, 'success');
+      toast(`${totalQueued} item(s) enfileirado(s). Acompanhe no histórico abaixo.`, 'success');
     }
     setCopying(false);
     void loadLogs();
-  }, [headers, loadLogs, toast]);
+  }, [headers, loadLogs, toast, sellers, shopeeSellers]);
 
-  const handlePreview = useCallback(async (items: Array<[string, string]>) => {
+  const handlePreview = useCallback(async (items: Array<[string, string, Platform]>) => {
     if (!items.length) return;
     setPreviewOpen(true);
     setPreviewLoading(true);
@@ -111,15 +137,30 @@ export default function CopyPage({ sellers, headers, user }: Props) {
     setPreviews([]);
     try {
       const results = await Promise.all(
-        items.map(async ([rawId, seller]) => {
+        items.map(async ([rawId, seller, platform]) => {
           try {
-            let itemId = rawId.trim();
-            const m = itemId.match(/MLB[-]?(\d+)/i);
-            if (m) itemId = `MLB${m[1]}`;
-            else if (/^\d+$/.test(itemId)) itemId = `MLB${itemId}`;
-            const res = await fetch(`${API_BASE}/api/copy/preview/${itemId}?seller=${encodeURIComponent(seller)}`, { headers: headers(), cache: 'no-store' });
-            if (!res.ok) return null;
-            return await res.json() as ItemPreview;
+            if (platform === 'ml') {
+              let itemId = rawId.trim();
+              const m = itemId.match(/MLB[-]?(\d+)/i);
+              if (m) itemId = `MLB${m[1]}`;
+              else if (/^\d+$/.test(itemId)) itemId = `MLB${itemId}`;
+              const res = await fetch(`${API_BASE}/api/copy/preview/${itemId}?seller=${encodeURIComponent(seller)}`, { headers: headers(), cache: 'no-store' });
+              if (!res.ok) return null;
+              return await res.json() as ItemPreview;
+            } else {
+              const res = await fetch(`${API_BASE}/api/shopee/copy/preview/${rawId}`, { headers: headers(), cache: 'no-store' });
+              if (!res.ok) return null;
+              const data = await res.json();
+              // Normalize to ItemPreview shape
+              return {
+                id: String(data.item_id),
+                title: data.item_name,
+                price: data.original_price,
+                thumbnail: data.image_url,
+                pictures_count: data.image_count,
+                variations_count: data.model_count,
+              } as ItemPreview;
+            }
           } catch { return null; }
         })
       );
@@ -130,8 +171,7 @@ export default function CopyPage({ sellers, headers, user }: Props) {
     finally { setPreviewLoading(false); }
   }, [headers]);
 
-  const handleResolvedChange = useCallback((items: Array<[string, string]>) => {
-    resolvedItemsRef.current = items;
+  const handleResolvedChange = useCallback((items: Array<[string, string, Platform]>) => {
     if (previewOpen && items.length > 0) {
       handlePreview(items);
     } else if (items.length === 0) {
@@ -140,12 +180,17 @@ export default function CopyPage({ sellers, headers, user }: Props) {
     }
   }, [previewOpen, handlePreview]);
 
-  const handleLogRetry = useCallback(async (logId: number, dims: Dimensions) => {
+  const handleLogRetry = useCallback(async (logId: number, dims: Dimensions, platform: Platform) => {
     try {
-      const res = await fetch(`${API_BASE}/api/copy/retry-dimensions`, {
+      const endpoint = platform === 'ml' ? '/api/copy/retry-dimensions' : '/api/shopee/copy/with-dimensions';
+      const res = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: headers(),
-        body: JSON.stringify({ log_id: logId, dimensions: dims }),
+        body: JSON.stringify(
+          platform === 'ml'
+            ? { log_id: logId, dimensions: dims }
+            : { log_id: logId, dimensions: dims }
+        ),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: 'Erro desconhecido' }));
@@ -173,23 +218,36 @@ export default function CopyPage({ sellers, headers, user }: Props) {
   }, [hasInProgress, loadLogs]);
 
   useEffect(() => {
-    if (!logsLoaded) {
-      void loadLogs();
-    }
+    if (!logsLoaded) { void loadLogs(); }
   }, [logsLoaded, loadLogs]);
 
   const isAdmin = user?.role === 'admin';
-  const sourceSellers = useMemo(() => {
+
+  // ML source/dest sellers (permission-filtered)
+  const mlSourceSellers = useMemo(() => {
     if (!user || isAdmin) return sellers;
     const allowed = new Set(user.permissions.filter(p => p.can_copy_from).map(p => p.seller_slug));
     return sellers.filter(s => allowed.has(s.slug));
   }, [sellers, user, isAdmin]);
 
-  const destSellers = useMemo(() => {
+  const mlDestSellers = useMemo(() => {
     if (!user || isAdmin) return sellers;
     const allowed = new Set(user.permissions.filter(p => p.can_copy_to).map(p => p.seller_slug));
     return sellers.filter(s => allowed.has(s.slug));
   }, [sellers, user, isAdmin]);
+
+  // Shopee source/dest sellers (permission-filtered)
+  const shopeeSourceSellers = useMemo(() => {
+    if (!user || isAdmin) return shopeeSellers;
+    const allowed = new Set(user.permissions.filter(p => p.can_copy_from).map(p => p.seller_slug));
+    return shopeeSellers.filter(s => allowed.has(s.slug));
+  }, [shopeeSellers, user, isAdmin]);
+
+  const shopeeDestSellers = useMemo(() => {
+    if (!user || isAdmin) return shopeeSellers;
+    const allowed = new Set(user.permissions.filter(p => p.can_copy_to).map(p => p.seller_slug));
+    return shopeeSellers.filter(s => allowed.has(s.slug));
+  }, [shopeeSellers, user, isAdmin]);
 
   const filterTabs = [
     { key: '', label: 'Todos' },
@@ -200,24 +258,18 @@ export default function CopyPage({ sellers, headers, user }: Props) {
     { key: 'needs_dimensions', label: 'Aguardando dimensões' },
   ];
 
-  const hasAnySellers = sourceSellers.length > 0 && destSellers.length > 0;
+  const hasAnySellers = (mlSourceSellers.length > 0 && mlDestSellers.length > 0)
+    || (shopeeSourceSellers.length > 0 && shopeeDestSellers.length > 0);
 
   if (!hasAnySellers) {
     return (
       <div style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 'var(--space-3)',
-        padding: 'var(--space-8) var(--space-4)',
-        background: 'var(--surface)',
-        borderRadius: 8,
-        color: 'var(--ink-faint)',
-        textAlign: 'center',
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+        gap: 'var(--space-3)', padding: 'var(--space-8) var(--space-4)',
+        background: 'var(--surface)', borderRadius: 8, color: 'var(--ink-faint)', textAlign: 'center',
       }}>
         <p style={{ fontSize: 'var(--text-sm)', fontWeight: 500 }}>
-          Nenhum seller disponível. Peça ao admin para liberar acesso.
+          Nenhuma conta disponível. Peça ao admin para liberar acesso.
         </p>
       </div>
     );
@@ -225,7 +277,17 @@ export default function CopyPage({ sellers, headers, user }: Props) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
-      <CopyForm sourceSellers={sourceSellers} destSellers={destSellers} headers={headers} onCopy={handleCopy} onPreview={handlePreview} onResolvedChange={handleResolvedChange} copying={copying} />
+      <CopyForm
+        mlSourceSellers={mlSourceSellers}
+        mlDestSellers={mlDestSellers}
+        shopeeSourceSellers={shopeeSourceSellers}
+        shopeeDestSellers={shopeeDestSellers}
+        headers={headers}
+        onCopy={handleCopy}
+        onPreview={handlePreview}
+        onResolvedChange={handleResolvedChange}
+        copying={copying}
+      />
 
       {previewLoading && (
         <Card title="Preview">
@@ -243,26 +305,16 @@ export default function CopyPage({ sellers, headers, user }: Props) {
       {previews.length > 0 && (
         <Card title={`Preview (${previews.length})`} action={
           <button onClick={() => { setPreviews([]); setPreviewOpen(false); }} style={{
-            background: 'none',
-            color: 'var(--ink-faint)',
-            fontSize: 'var(--text-sm)',
-            padding: '2px 6px',
-            borderRadius: 4,
-            lineHeight: 1,
-          }}>
-            {'\u2715'}
-          </button>
+            background: 'none', color: 'var(--ink-faint)', fontSize: 'var(--text-sm)',
+            padding: '2px 6px', borderRadius: 4, lineHeight: 1,
+          }}>{'\u2715'}</button>
         }>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
             {previews.map(p => (
               <div key={p.id} className="animate-in" style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 'var(--space-3)',
+                display: 'flex', alignItems: 'center', gap: 'var(--space-3)',
                 padding: 'var(--space-2) var(--space-3)',
-                background: 'var(--paper)',
-                borderRadius: 6,
-                border: '1px solid var(--line)',
+                background: 'var(--paper)', borderRadius: 6, border: '1px solid var(--line)',
               }}>
                 {p.thumbnail && (
                   <img src={p.thumbnail} alt="" style={{ width: 48, height: 48, borderRadius: 4, objectFit: 'cover', background: 'var(--surface)', flexShrink: 0 }} />
@@ -282,40 +334,20 @@ export default function CopyPage({ sellers, headers, user }: Props) {
           </div>
         </Card>
       )}
+
       {/* Logs */}
-      <Card
-        title={`Histórico (${logs.length}${hasMoreLogs ? '+' : ''})`}
-        collapsible
-        open={logsOpen}
-        onToggle={() => setLogsOpen(!logsOpen)}
-      >
+      <Card title={`Histórico (${logs.length}${hasMoreLogs ? '+' : ''})`} collapsible open={logsOpen} onToggle={() => setLogsOpen(!logsOpen)}>
         {logsOpen && (
           <>
-            {/* Status filter tabs */}
-            <div style={{
-              display: 'flex',
-              gap: 'var(--space-2)',
-              marginBottom: 'var(--space-3)',
-              flexWrap: 'wrap',
-            }}>
+            <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-3)', flexWrap: 'wrap' }}>
               {filterTabs.map(tab => (
-                <button
-                  key={tab.key}
-                  onClick={() => setStatusFilter(tab.key)}
-                  style={{
-                    padding: '4px 12px',
-                    borderRadius: 4,
-                    fontSize: 'var(--text-xs)',
-                    fontWeight: 600,
-                    background: statusFilter === tab.key ? 'var(--ink)' : 'transparent',
-                    color: statusFilter === tab.key ? 'var(--paper)' : 'var(--ink-faint)',
-                    border: `1px solid ${statusFilter === tab.key ? 'var(--ink)' : 'var(--line)'}`,
-                    cursor: 'pointer',
-                    transition: 'all 0.15s',
-                  }}
-                >
-                  {tab.label}
-                </button>
+                <button key={tab.key} onClick={() => setStatusFilter(tab.key)} style={{
+                  padding: '4px 12px', borderRadius: 4, fontSize: 'var(--text-xs)', fontWeight: 600,
+                  background: statusFilter === tab.key ? 'var(--ink)' : 'transparent',
+                  color: statusFilter === tab.key ? 'var(--paper)' : 'var(--ink-faint)',
+                  border: `1px solid ${statusFilter === tab.key ? 'var(--ink)' : 'var(--line)'}`,
+                  cursor: 'pointer', transition: 'all 0.15s',
+                }}>{tab.label}</button>
               ))}
             </div>
 
@@ -327,36 +359,29 @@ export default function CopyPage({ sellers, headers, user }: Props) {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
                 {logs.map(log => (
                   <LogCard
-                    key={log.id}
+                    key={`${log.platform}-${log.id}`}
                     log={log}
-                    isRetrying={retryLogId === log.id}
-                    onRetryClick={() => setRetryLogId(retryLogId === log.id ? null : log.id)}
-                    onRetrySubmit={(dims) => handleLogRetry(log.id, dims)}
+                    isRetrying={retryLogId === log.id && retryPlatform === log.platform}
+                    onRetryClick={() => {
+                      if (retryLogId === log.id && retryPlatform === log.platform) {
+                        setRetryLogId(null);
+                      } else {
+                        setRetryLogId(log.id);
+                        setRetryPlatform(log.platform);
+                      }
+                    }}
+                    onRetrySubmit={(dims) => handleLogRetry(log.id, dims, log.platform)}
                   />
                 ))}
               </div>
             )}
 
-            {/* Load more */}
             {hasMoreLogs && (
-              <button
-                onClick={loadMoreLogs}
-                style={{
-                  display: 'block',
-                  width: '100%',
-                  padding: 'var(--space-2)',
-                  marginTop: 'var(--space-3)',
-                  background: 'none',
-                  color: 'var(--ink-faint)',
-                  fontSize: 'var(--text-xs)',
-                  fontWeight: 500,
-                  cursor: 'pointer',
-                  border: '1px solid var(--line)',
-                  borderRadius: 6,
-                }}
-              >
-                Carregar mais...
-              </button>
+              <button onClick={loadMoreLogs} style={{
+                display: 'block', width: '100%', padding: 'var(--space-2)', marginTop: 'var(--space-3)',
+                background: 'none', color: 'var(--ink-faint)', fontSize: 'var(--text-xs)', fontWeight: 500,
+                cursor: 'pointer', border: '1px solid var(--line)', borderRadius: 6,
+              }}>Carregar mais...</button>
             )}
           </>
         )}
@@ -366,7 +391,7 @@ export default function CopyPage({ sellers, headers, user }: Props) {
 }
 
 function LogCard({ log, isRetrying, onRetryClick, onRetrySubmit }: {
-  log: CopyLog;
+  log: UnifiedLog;
   isRetrying: boolean;
   onRetryClick: () => void;
   onRetrySubmit: (dims: Dimensions) => void;
@@ -374,6 +399,7 @@ function LogCard({ log, isRetrying, onRetryClick, onRetrySubmit }: {
   const canRetry = isDimensionError(log);
   const destEntries = log.dest_item_ids ? Object.entries(log.dest_item_ids) : [];
   const errorEntries = log.error_details ? Object.entries(log.error_details) : [];
+  const isShopee = log.platform === 'shopee';
 
   const accentMap: Record<string, string> = {
     success: 'var(--success)', error: 'var(--danger)', partial: 'var(--warning)',
@@ -383,79 +409,45 @@ function LogCard({ log, isRetrying, onRetryClick, onRetrySubmit }: {
   return (
     <>
       <div className="animate-in" style={{
-        background: 'var(--paper)',
-        borderRadius: 10,
-        border: '1px solid var(--line)',
-        borderLeftWidth: 3,
+        background: 'var(--paper)', borderRadius: 10,
+        border: '1px solid var(--line)', borderLeftWidth: 3,
         borderLeftColor: accentMap[log.status] || 'var(--line)',
         padding: 'var(--space-3) var(--space-4)',
       }}>
         <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
-          {/* Thumbnail */}
           {log.source_item_thumbnail ? (
-            <img
-              src={log.source_item_thumbnail}
-              alt=""
-              style={{
-                width: 44, height: 44,
-                borderRadius: 8,
-                objectFit: 'cover',
-                background: 'var(--surface)',
-                flexShrink: 0,
-                alignSelf: 'flex-start',
-              }}
-            />
+            <img src={log.source_item_thumbnail} alt="" style={{
+              width: 44, height: 44, borderRadius: 8, objectFit: 'cover',
+              background: 'var(--surface)', flexShrink: 0, alignSelf: 'flex-start',
+            }} />
           ) : (
             <div style={{
-              width: 44, height: 44,
-              borderRadius: 8,
-              background: 'var(--surface)',
-              flexShrink: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--ink-faint)',
-              fontSize: 'var(--text-xs)',
+              width: 44, height: 44, borderRadius: 8, background: isShopee ? 'rgba(238,77,45,0.1)' : 'var(--surface)',
+              flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: isShopee ? '#EE4D2D' : 'var(--ink-faint)', fontSize: 'var(--text-xs)', fontWeight: 700,
             }}>
-              MLB
+              {isShopee ? 'S' : 'ML'}
             </div>
           )}
 
-          {/* Content */}
           <div style={{ flex: 1, minWidth: 0 }}>
-            {/* Line 1: Title + Status badge */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
               <span style={{
-                fontWeight: 600,
-                fontSize: 'var(--text-sm)',
-                color: 'var(--ink)',
-                flex: 1,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
+                fontWeight: 600, fontSize: 'var(--text-sm)', color: 'var(--ink)',
+                flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}>
                 {log.source_item_title || log.source_item_id}
               </span>
               <StatusBadge status={log.status} />
             </div>
 
-            {/* Line 2: MLB ID + flow + timestamp */}
             <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 'var(--space-2)',
-              marginTop: 3,
-              fontSize: 'var(--text-xs)',
-              color: 'var(--ink-faint)',
-              flexWrap: 'wrap',
+              display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
+              marginTop: 3, fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', flexWrap: 'wrap',
             }}>
               <code style={{
-                fontFamily: 'var(--font-mono)',
-                fontSize: 'var(--text-xs)',
-                background: 'var(--surface)',
-                padding: '0 5px',
-                borderRadius: 3,
-                lineHeight: '18px',
+                fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)',
+                background: 'var(--surface)', padding: '0 5px', borderRadius: 3, lineHeight: '18px',
               }}>
                 {log.source_item_id}
               </code>
@@ -466,17 +458,12 @@ function LogCard({ log, isRetrying, onRetryClick, onRetrySubmit }: {
               </span>
             </div>
 
-            {/* Destination new IDs as chips */}
             {destEntries.length > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-1)', marginTop: 'var(--space-2)' }}>
                 {destEntries.map(([seller, id]) => (
                   <span key={seller} className="log-chip-success" style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 4,
-                    padding: '2px 8px',
-                    borderRadius: 4,
-                    fontSize: 'var(--text-xs)',
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                    padding: '2px 8px', borderRadius: 4, fontSize: 'var(--text-xs)',
                   }}>
                     <span style={{ color: 'var(--ink-faint)' }}>{seller}:</span>
                     <code style={{ fontFamily: 'var(--font-mono)', fontWeight: 500, color: 'var(--success)' }}>{id}</code>
@@ -485,20 +472,14 @@ function LogCard({ log, isRetrying, onRetryClick, onRetrySubmit }: {
               </div>
             )}
 
-            {/* Error details */}
             {errorEntries.length > 0 && (
               <div className="log-error-block" style={{
-                marginTop: 'var(--space-2)',
-                padding: 'var(--space-2) var(--space-3)',
-                borderRadius: 6,
+                marginTop: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 6,
               }}>
                 {errorEntries.map(([seller, err]) => (
                   <div key={seller} style={{
-                    fontSize: 'var(--text-xs)',
-                    color: 'var(--danger)',
-                    display: 'flex',
-                    gap: 'var(--space-1)',
-                    lineHeight: 'var(--leading-normal)',
+                    fontSize: 'var(--text-xs)', color: 'var(--danger)',
+                    display: 'flex', gap: 'var(--space-1)', lineHeight: 'var(--leading-normal)',
                   }}>
                     <span style={{ fontWeight: 600, flexShrink: 0 }}>{seller}:</span>
                     <span>{err}</span>
@@ -507,23 +488,15 @@ function LogCard({ log, isRetrying, onRetryClick, onRetrySubmit }: {
               </div>
             )}
 
-            {/* Retry button for dimension errors */}
             {canRetry && (
-              <button
-                onClick={onRetryClick}
-                style={{
-                  marginTop: 'var(--space-2)',
-                  padding: '4px 12px',
-                  borderRadius: 5,
-                  fontSize: 'var(--text-xs)',
-                  fontWeight: 600,
-                  background: isRetrying ? 'var(--ink)' : 'var(--attention-bg)',
-                  color: isRetrying ? 'var(--paper)' : 'var(--attention)',
-                  border: `1px solid ${isRetrying ? 'var(--ink)' : 'rgba(217, 119, 6, 0.2)'}`,
-                  cursor: 'pointer',
-                  transition: 'all 0.15s',
-                }}
-              >
+              <button onClick={onRetryClick} style={{
+                marginTop: 'var(--space-2)', padding: '4px 12px', borderRadius: 5,
+                fontSize: 'var(--text-xs)', fontWeight: 600,
+                background: isRetrying ? 'var(--ink)' : 'var(--attention-bg)',
+                color: isRetrying ? 'var(--paper)' : 'var(--attention)',
+                border: `1px solid ${isRetrying ? 'var(--ink)' : 'rgba(217, 119, 6, 0.2)'}`,
+                cursor: 'pointer', transition: 'all 0.15s',
+              }}>
                 {isRetrying ? 'Cancelar' : 'Informar dimensoes'}
               </button>
             )}
@@ -531,13 +504,10 @@ function LogCard({ log, isRetrying, onRetryClick, onRetrySubmit }: {
         </div>
       </div>
 
-      {/* Dimension retry form */}
       {isRetrying && (
         <div className="animate-in" style={{
-          background: 'var(--attention-bg)',
-          border: '1px solid rgba(217, 119, 6, 0.12)',
-          borderRadius: 10,
-          padding: 'var(--space-3) var(--space-4)',
+          background: 'var(--attention-bg)', border: '1px solid rgba(217, 119, 6, 0.12)',
+          borderRadius: 10, padding: 'var(--space-3) var(--space-4)',
         }}>
           <DimensionForm
             itemIds={[log.source_item_id]}
@@ -559,38 +529,20 @@ export function Card({ title, action, collapsible, open, onToggle, children }: {
   children: React.ReactNode;
 }) {
   return (
-    <div className="card" style={{
-      background: 'var(--surface)',
-      borderRadius: 8,
-      padding: 'var(--space-5)',
-    }}>
+    <div className="card" style={{ background: 'var(--surface)', borderRadius: 8, padding: 'var(--space-5)' }}>
       <div style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         marginBottom: (collapsible && !open) ? 0 : 'var(--space-3)',
       }}>
         {collapsible ? (
-          <h3
-            className="collapsible-trigger"
-            onClick={onToggle}
-            style={{
-              fontSize: 'var(--text-sm)',
-              fontWeight: 600,
-              color: 'var(--ink)',
-              letterSpacing: 'var(--tracking-tight)',
-            }}
-          >
+          <h3 className="collapsible-trigger" onClick={onToggle} style={{
+            fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--ink)', letterSpacing: 'var(--tracking-tight)',
+          }}>
             <span className={`collapsible-arrow${open ? ' open' : ''}`}>{'\u25B6'}</span>
             {title}
           </h3>
         ) : (
-          <h3 style={{
-            fontSize: 'var(--text-sm)',
-            fontWeight: 600,
-            color: 'var(--ink)',
-            letterSpacing: 'var(--tracking-tight)',
-          }}>{title}</h3>
+          <h3 style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--ink)', letterSpacing: 'var(--tracking-tight)' }}>{title}</h3>
         )}
         {action}
       </div>
@@ -614,16 +566,9 @@ function StatusBadge({ status }: { status: string }) {
   const isInProgress = status === 'in_progress';
   return (
     <span style={{
-      color: c[status] || 'var(--ink-faint)',
-      fontWeight: 600,
-      fontSize: 'var(--text-xs)',
-      textTransform: 'uppercase',
-      background: bg[status] || 'transparent',
-      padding: '2px 8px',
-      borderRadius: 4,
-      display: 'inline-flex',
-      alignItems: 'center',
-      gap: 6,
+      color: c[status] || 'var(--ink-faint)', fontWeight: 600, fontSize: 'var(--text-xs)',
+      textTransform: 'uppercase', background: bg[status] || 'transparent',
+      padding: '2px 8px', borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 6,
       animation: isInProgress ? 'pulse-badge 1.5s ease-in-out infinite' : undefined,
     }}>
       {isInProgress && <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'currentColor', animation: 'pulse-dot 1.5s ease-in-out infinite' }} />}
@@ -631,4 +576,3 @@ function StatusBadge({ status }: { status: string }) {
     </span>
   );
 }
-

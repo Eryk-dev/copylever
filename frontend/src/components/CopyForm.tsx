@@ -1,34 +1,77 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
-import { API_BASE, type Seller } from '../lib/api';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { API_BASE, type Seller, type ShopeeSeller } from '../lib/api';
 
-function normalizeItemId(raw: string): string {
-  const t = raw.trim();
-  if (!t) return '';
-  const m = t.match(/MLB[-]?(\d+)/i);
-  if (m) return `MLB${m[1]}`;
-  if (/^\d+$/.test(t)) return `MLB${t}`;
-  return t;
-}
+export type Platform = 'ml' | 'shopee';
 
 export interface CopyGroup {
+  platform: Platform;
   source: string;
   itemIds: string[];
 }
 
+interface ResolvedSource {
+  slug: string;
+  platform: Platform;
+}
+
 interface Props {
-  sourceSellers: Seller[];
-  destSellers: Seller[];
+  mlSourceSellers: Seller[];
+  mlDestSellers: Seller[];
+  shopeeSourceSellers: ShopeeSeller[];
+  shopeeDestSellers: ShopeeSeller[];
   headers: () => Record<string, string>;
   onCopy: (groups: CopyGroup[], destinations: string[]) => Promise<void>;
-  onPreview: (items: Array<[string, string]>) => Promise<void>;
-  onResolvedChange?: (items: Array<[string, string]>) => void;
+  onPreview: (items: Array<[string, string, Platform]>) => void;
+  onResolvedChange?: (items: Array<[string, string, Platform]>) => void;
   copying: boolean;
 }
 
-export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, onPreview, onResolvedChange, copying }: Props) {
+/** Classify raw input → display form + platform candidates for resolve */
+function classifyInput(raw: string): {
+  display: string;
+  hint: Platform | null;
+  mlId: string | null;
+  shopeeId: string | null;
+} {
+  const t = raw.trim();
+  if (!t) return { display: '', hint: null, mlId: null, shopeeId: null };
+
+  // Explicit ML (MLB prefix or ML URL)
+  const mlMatch = t.match(/MLB[-]?(\d+)/i);
+  if (mlMatch) {
+    const id = `MLB${mlMatch[1]}`;
+    return { display: id, hint: 'ml', mlId: id, shopeeId: null };
+  }
+  if (/mercadoli/i.test(t)) {
+    const numMatch = t.match(/(\d+)/);
+    if (numMatch) {
+      const id = `MLB${numMatch[1]}`;
+      return { display: id, hint: 'ml', mlId: id, shopeeId: null };
+    }
+  }
+
+  // Explicit Shopee URL
+  if (/shopee/i.test(t)) {
+    const urlMatch = t.match(/(?:product\/\d+\/|i\.\d+\.)(\d+)/i);
+    if (urlMatch) return { display: urlMatch[1], hint: 'shopee', mlId: null, shopeeId: urlMatch[1] };
+    const lastNum = t.match(/(\d+)\s*$/);
+    if (lastNum) return { display: lastNum[1], hint: 'shopee', mlId: null, shopeeId: lastNum[1] };
+  }
+
+  // Pure number → ambiguous (could be ML or Shopee)
+  if (/^\d+$/.test(t)) {
+    return { display: t, hint: null, mlId: `MLB${t}`, shopeeId: t };
+  }
+
+  return { display: t, hint: null, mlId: null, shopeeId: null };
+}
+
+export default function CopyForm({
+  mlSourceSellers, mlDestSellers, shopeeSourceSellers, shopeeDestSellers,
+  headers, onCopy, onPreview, onResolvedChange, copying,
+}: Props) {
   const [itemIdsText, setItemIdsText] = useState('');
-  // {item_id: seller_slug}
-  const [resolvedSources, setResolvedSources] = useState<Record<string, string>>({});
+  const [resolvedSources, setResolvedSources] = useState<Record<string, ResolvedSource>>({});
   const [unresolvedIds, setUnresolvedIds] = useState<string[]>([]);
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState('');
@@ -38,17 +81,48 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
   const lastResolvedKey = useRef('');
   const pendingResolve = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
+  const idHints = useRef<Record<string, { hint: Platform | null; mlId: string | null; shopeeId: string | null }>>({});
 
-  const itemIds = itemIdsText.split(/[\n,]+/).map(normalizeItemId).filter(id => id.length > 0);
+  const hasML = mlSourceSellers.length > 0;
+  const hasShopee = shopeeSourceSellers.length > 0;
 
-  // Derive source slugs from resolved items
-  const sourceSlugs = [...new Set(Object.values(resolvedSources))];
-  const validDests = destSellers.filter(s => s.token_valid && !sourceSlugs.includes(s.slug));
+  const displayIds = itemIdsText.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
 
-  // Group resolved items by source
-  const sourceGroups: Record<string, string[]> = {};
-  for (const [itemId, slug] of Object.entries(resolvedSources)) {
-    (sourceGroups[slug] ||= []).push(itemId);
+  // Which platforms are present in resolved items
+  const resolvedPlatforms = useMemo(() => {
+    const p = new Set<Platform>();
+    for (const r of Object.values(resolvedSources)) p.add(r.platform);
+    return p;
+  }, [resolvedSources]);
+
+  const isMixed = resolvedPlatforms.size > 1;
+
+  // Source slugs per platform
+  const mlSourceSlugs = [...new Set(Object.values(resolvedSources).filter(r => r.platform === 'ml').map(r => r.slug))];
+  const shopeeSourceSlugs = [...new Set(Object.values(resolvedSources).filter(r => r.platform === 'shopee').map(r => r.slug))];
+
+  // Valid destinations filtered by platform + exclude sources
+  const validMlDests = mlDestSellers.filter(s => s.token_valid && !mlSourceSlugs.includes(s.slug));
+  const validShopeeDests = shopeeDestSellers.filter(s => s.token_valid && !shopeeSourceSlugs.includes(s.slug));
+
+  // Destination options to show (only platforms present in resolved items)
+  const destOptions = useMemo(() => {
+    const opts: Array<{ slug: string; name: string; platform: Platform }> = [];
+    if (resolvedPlatforms.has('ml')) {
+      for (const s of validMlDests) opts.push({ slug: s.slug, name: s.name || s.slug, platform: 'ml' });
+    }
+    if (resolvedPlatforms.has('shopee')) {
+      for (const s of validShopeeDests) opts.push({ slug: s.slug, name: s.name || s.slug, platform: 'shopee' });
+    }
+    return opts;
+  }, [resolvedPlatforms, validMlDests, validShopeeDests]);
+
+  // Group resolved items by platform:source
+  const sourceGroups: Record<string, { platform: Platform; items: string[] }> = {};
+  for (const [displayId, { slug, platform }] of Object.entries(resolvedSources)) {
+    const key = `${platform}:${slug}`;
+    if (!sourceGroups[key]) sourceGroups[key] = { platform, items: [] };
+    sourceGroups[key].items.push(displayId);
   }
 
   const resolveAll = useCallback(async (ids: string[]) => {
@@ -65,38 +139,89 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
     setDestinations([]);
     setConfirming(false);
     try {
-      const res = await fetch(`${API_BASE}/api/copy/resolve-sellers`, {
-        method: 'POST',
-        headers: headers(),
-        body: JSON.stringify({ item_ids: ids }),
-        signal: controller.signal,
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: 'Erro ao detectar sellers' }));
-        setResolveError(err.detail);
-        return;
-      }
-      const data: {
-        results: { item_id: string; seller_slug: string }[];
-        errors: { item_id: string; error: string }[];
-      } = await res.json();
+      const hints = idHints.current;
+      const mlCandidates: Array<{ displayId: string; apiId: string }> = [];
+      const shopeeCandidates: Array<{ displayId: string; apiId: string }> = [];
 
-      const sources: Record<string, string> = {};
-      const deniedSlugs: string[] = [];
-      for (const r of data.results) {
-        const hasPermission = sourceSellers.some(s => s.slug === r.seller_slug);
-        if (hasPermission) {
-          sources[r.item_id] = r.seller_slug;
-        } else if (!deniedSlugs.includes(r.seller_slug)) {
-          deniedSlugs.push(r.seller_slug);
+      for (const displayId of ids) {
+        const info = hints[displayId];
+        if (!info) continue;
+        if (info.mlId && (info.hint === 'ml' || info.hint === null) && hasML) {
+          mlCandidates.push({ displayId, apiId: info.mlId });
+        }
+        if (info.shopeeId && (info.hint === 'shopee' || info.hint === null) && hasShopee) {
+          shopeeCandidates.push({ displayId, apiId: info.shopeeId });
         }
       }
-      setResolvedSources(sources);
+
+      const results: Record<string, ResolvedSource> = {};
+      const unresolved = new Set(ids);
+      const deniedSlugs: string[] = [];
+      const promises: Promise<void>[] = [];
+
+      if (mlCandidates.length > 0) {
+        promises.push((async () => {
+          try {
+            const res = await fetch(`${API_BASE}/api/copy/resolve-sellers`, {
+              method: 'POST',
+              headers: headers(),
+              body: JSON.stringify({ item_ids: mlCandidates.map(c => c.apiId) }),
+              signal: controller.signal,
+            });
+            if (!res.ok) return;
+            const data: { results: { item_id: string; seller_slug: string }[]; errors: { item_id: string }[] } = await res.json();
+            for (const r of data.results) {
+              const candidate = mlCandidates.find(c => c.apiId === r.item_id);
+              if (!candidate) continue;
+              const hasPerm = mlSourceSellers.some(s => s.slug === r.seller_slug);
+              if (hasPerm) {
+                results[candidate.displayId] = { slug: r.seller_slug, platform: 'ml' };
+                unresolved.delete(candidate.displayId);
+              } else if (!deniedSlugs.includes(r.seller_slug)) {
+                deniedSlugs.push(r.seller_slug);
+              }
+            }
+          } catch (e) {
+            if (e instanceof DOMException && e.name === 'AbortError') throw e;
+          }
+        })());
+      }
+
+      if (shopeeCandidates.length > 0) {
+        promises.push((async () => {
+          try {
+            const res = await fetch(`${API_BASE}/api/shopee/copy/resolve-sellers`, {
+              method: 'POST',
+              headers: headers(),
+              body: JSON.stringify({ item_ids: shopeeCandidates.map(c => c.apiId) }),
+              signal: controller.signal,
+            });
+            if (!res.ok) return;
+            const data: { results: { item_id: string; shop_slug: string }[]; errors: { item_id: string }[] } = await res.json();
+            for (const r of data.results) {
+              const candidate = shopeeCandidates.find(c => c.apiId === r.item_id);
+              if (!candidate || results[candidate.displayId]) continue; // Don't overwrite ML
+              const hasPerm = shopeeSourceSellers.some(s => s.slug === r.shop_slug);
+              if (hasPerm) {
+                results[candidate.displayId] = { slug: r.shop_slug, platform: 'shopee' };
+                unresolved.delete(candidate.displayId);
+              } else if (!deniedSlugs.includes(r.shop_slug)) {
+                deniedSlugs.push(r.shop_slug);
+              }
+            }
+          } catch (e) {
+            if (e instanceof DOMException && e.name === 'AbortError') throw e;
+          }
+        })());
+      }
+
+      await Promise.all(promises);
+      setResolvedSources(results);
       lastResolvedKey.current = key;
-      setUnresolvedIds(data.errors.map(e => e.item_id));
+      setUnresolvedIds([...unresolved]);
 
       if (deniedSlugs.length > 0) {
-        setResolveError(`Sem permissão de cópia a partir do(s) seller(s): ${deniedSlugs.join(', ')}`);
+        setResolveError(`Sem permissão de cópia a partir de: ${deniedSlugs.join(', ')}`);
       }
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') return;
@@ -104,19 +229,36 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
     } finally {
       if (!controller.signal.aborted) setResolving(false);
     }
-  }, [headers, sourceSellers]);
+  }, [headers, mlSourceSellers, shopeeSourceSellers, hasML, hasShopee]);
 
   const normalizeAndResolve = useCallback(() => {
-    const normalized = itemIdsText.split(/[\n,]+/).map(normalizeItemId).filter(Boolean);
-    const unique = [...new Set(normalized)];
-    const removedCount = normalized.length - unique.length;
+    const lines = itemIdsText.split(/[\n,]+/);
+    const classified: Array<ReturnType<typeof classifyInput>> = [];
+    for (const line of lines) {
+      const result = classifyInput(line);
+      if (result.display) classified.push(result);
+    }
+
+    const seen = new Set<string>();
+    const unique: typeof classified = [];
+    for (const c of classified) {
+      if (!seen.has(c.display)) { seen.add(c.display); unique.push(c); }
+    }
+
+    const removedCount = classified.length - unique.length;
     setDedupMsg(removedCount > 0 ? `${removedCount} duplicata(s) removida(s)` : '');
-    const text = unique.join('\n');
+
+    const hints: typeof idHints.current = {};
+    for (const c of unique) hints[c.display] = { hint: c.hint, mlId: c.mlId, shopeeId: c.shopeeId };
+    idHints.current = hints;
+
+    const text = unique.map(c => c.display).join('\n');
     if (text !== itemIdsText.trim()) setItemIdsText(text);
-    if (unique.length > 0) resolveAll(unique);
+
+    const displayIds = unique.map(c => c.display);
+    if (displayIds.length > 0) resolveAll(displayIds);
   }, [itemIdsText, resolveAll]);
 
-  // Auto-resolve after paste
   useEffect(() => {
     if (pendingResolve.current && itemIdsText.trim()) {
       pendingResolve.current = false;
@@ -124,7 +266,6 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
     }
   }, [itemIdsText, normalizeAndResolve]);
 
-  // Clear state when IDs are cleared
   useEffect(() => {
     if (!itemIdsText.trim()) {
       setResolvedSources({});
@@ -132,28 +273,48 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
       setResolveError('');
       lastResolvedKey.current = '';
       setDestinations([]);
+      idHints.current = {};
     }
   }, [itemIdsText]);
 
-  // Notify parent when resolved items change
   useEffect(() => {
-    const entries = Object.entries(resolvedSources) as Array<[string, string]>;
+    const entries = Object.entries(resolvedSources).map(
+      ([id, { slug, platform }]) => [id, slug, platform] as [string, string, Platform]
+    );
     onResolvedChange?.(entries);
   }, [resolvedSources, onResolvedChange]);
 
   const resolvedCount = Object.keys(resolvedSources).length;
-  const canCopy = resolvedCount > 0 && destinations.length > 0 && !copying;
-  const totalOps = resolvedCount * destinations.length;
+
+  // Total ops considering cross-platform filtering
+  const totalOps = useMemo(() => {
+    let ops = 0;
+    const mlDests = destinations.filter(d => mlDestSellers.some(s => s.slug === d));
+    const shopeeDests = destinations.filter(d => shopeeDestSellers.some(s => s.slug === d));
+    for (const { platform } of Object.values(resolvedSources)) {
+      if (platform === 'ml') ops += mlDests.length;
+      else ops += shopeeDests.length;
+    }
+    return ops;
+  }, [resolvedSources, destinations, mlDestSellers, shopeeDestSellers]);
+
+  const canCopy = resolvedCount > 0 && destinations.length > 0 && !copying && totalOps > 0;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canCopy) return;
-    if (!confirming) {
-      setConfirming(true);
-      return;
-    }
+    if (!confirming) { setConfirming(true); return; }
     setConfirming(false);
-    const groups: CopyGroup[] = Object.entries(sourceGroups).map(([source, ids]) => ({ source, itemIds: ids }));
+
+    const groups: CopyGroup[] = [];
+    for (const [key, group] of Object.entries(sourceGroups)) {
+      const [platform, source] = key.split(':') as [Platform, string];
+      const apiIds = group.items.map(displayId => {
+        if (platform === 'ml') return displayId.startsWith('MLB') ? displayId : `MLB${displayId}`;
+        return displayId;
+      });
+      groups.push({ platform, source, itemIds: apiIds });
+    }
     await onCopy(groups, destinations);
   };
 
@@ -163,19 +324,21 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
   };
 
   const selectAllDests = () => {
-    const allSlugs = validDests.map(s => s.slug);
+    const allSlugs = destOptions.map(d => d.slug);
     const allSelected = allSlugs.every(s => destinations.includes(s));
     setDestinations(allSelected ? [] : allSlugs);
     setConfirming(false);
   };
 
-  const allSellers = [...sourceSellers, ...destSellers];
-  const sellerName = (slug: string) => allSellers.find(s => s.slug === slug)?.name || slug;
+  const sellerName = (slug: string) =>
+    mlSourceSellers.find(s => s.slug === slug)?.name
+    || mlDestSellers.find(s => s.slug === slug)?.name
+    || shopeeSourceSellers.find(s => s.slug === slug)?.name
+    || shopeeDestSellers.find(s => s.slug === slug)?.name
+    || slug;
 
   const step1Done = resolvedCount > 0;
   const step2Done = destinations.length > 0;
-
-  const resolvedEntries = Object.entries(resolvedSources) as Array<[string, string]>;
 
   return (
     <form onSubmit={handleSubmit} className="card" style={{
@@ -190,7 +353,7 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
         Copiar Anúncios
       </h3>
 
-      {/* Step 1: Item IDs + auto-detect sources */}
+      {/* Step 1: Item IDs */}
       <Field label="IDs dos Anúncios" step={1} done={step1Done}>
         <textarea
           value={itemIdsText}
@@ -204,20 +367,16 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
             const end = ta.selectionEnd;
             const before = itemIdsText.slice(0, start);
             const after = itemIdsText.slice(end);
-            // Add newline before if cursor is right after text (no newline)
             const needsBefore = before.length > 0 && !before.endsWith('\n');
             const newText = before + (needsBefore ? '\n' : '') + pasted + '\n' + after;
             setItemIdsText(newText);
             setConfirming(false);
             pendingResolve.current = true;
-            // Move cursor to after the pasted content + newline
             const cursorPos = before.length + (needsBefore ? 1 : 0) + pasted.length + 1;
-            requestAnimationFrame(() => {
-              ta.selectionStart = ta.selectionEnd = cursorPos;
-            });
+            requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = cursorPos; });
           }}
           onBlur={normalizeAndResolve}
-          placeholder={"Cole os IDs dos anúncios (um por linha)\n1234567890\nMLB9876543210"}
+          placeholder={"Cole os IDs dos anúncios (um por linha)\nMLB1234567890\n9876543210\nhttps://shopee.com.br/product/123/456"}
           rows={4}
           className="input-base"
           style={{
@@ -234,53 +393,42 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
           }}
         />
         {dedupMsg && (
-          <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-2)' }}>
-            {dedupMsg}
-          </p>
+          <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-2)' }}>{dedupMsg}</p>
         )}
         {resolving && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginTop: 'var(--space-2)', color: 'var(--ink-faint)', fontSize: 'var(--text-xs)' }}>
             <span className="spinner spinner-sm" />
-            Detectando seller(s) de origem...
+            Detectando conta(s) de origem...
           </div>
         )}
         {resolveError && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginTop: 'var(--space-2)' }}>
-            <p style={{ color: 'var(--danger)', fontSize: 'var(--text-xs)', fontWeight: 500, margin: 0 }}>
-              {resolveError}
-            </p>
-            <button
-              type="button"
-              className="btn-ghost"
-              onClick={() => { lastResolvedKey.current = ''; normalizeAndResolve(); }}
-              style={{ fontSize: 'var(--text-xs)', padding: '2px 8px', whiteSpace: 'nowrap' }}
-            >
-              Tentar novamente
-            </button>
+            <p style={{ color: 'var(--danger)', fontSize: 'var(--text-xs)', fontWeight: 500, margin: 0 }}>{resolveError}</p>
+            <button type="button" className="btn-ghost" onClick={() => { lastResolvedKey.current = ''; normalizeAndResolve(); }}
+              style={{ fontSize: 'var(--text-xs)', padding: '2px 8px', whiteSpace: 'nowrap' }}>Tentar novamente</button>
           </div>
         )}
         {resolvedCount > 0 && (
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 'var(--space-2)',
-            marginTop: 'var(--space-2)',
-            fontSize: 'var(--text-xs)',
-            color: 'var(--ink-faint)',
-            flexWrap: 'wrap',
-          }}>
-            {sourceSlugs.length === 1 ? 'Origem:' : 'Origens:'}
-            {sourceSlugs.map(slug => (
-              <span key={slug} style={{
-                padding: '2px 8px',
-                background: 'var(--ink)',
-                color: 'var(--paper)',
-                borderRadius: 4,
-                fontWeight: 600,
-              }}>
-                {sellerName(slug)} ({sourceGroups[slug].length})
-              </span>
-            ))}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginTop: 'var(--space-2)', fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', flexWrap: 'wrap' }}>
+            {Object.entries(sourceGroups).map(([key, group]) => {
+              const [, slug] = key.split(':');
+              const isShopee = group.platform === 'shopee';
+              return (
+                <span key={key} style={{
+                  padding: '2px 8px',
+                  background: isShopee ? '#EE4D2D' : 'var(--ink)',
+                  color: 'var(--paper)',
+                  borderRadius: 4,
+                  fontWeight: 600,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                }}>
+                  {isMixed && <PlatformIndicator platform={group.platform} />}
+                  {sellerName(slug)} ({group.items.length})
+                </span>
+              );
+            })}
             <span>{resolvedCount} anúncio(s)</span>
           </div>
         )}
@@ -291,57 +439,69 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
         )}
       </Field>
 
+      {/* Mixed-platform warning */}
+      {isMixed && (
+        <div style={{
+          background: 'var(--attention-bg)',
+          border: '1px solid rgba(217, 119, 6, 0.2)',
+          borderRadius: 6,
+          padding: 'var(--space-3) var(--space-4)',
+          fontSize: 'var(--text-xs)',
+          color: 'var(--attention)',
+          fontWeight: 500,
+          lineHeight: 'var(--leading-normal)',
+        }}>
+          Anúncios de marketplaces diferentes detectados. Os do Mercado Livre serão copiados apenas para contas ML e os da Shopee apenas para contas Shopee.
+        </div>
+      )}
+
       {/* Step 2: Destinations */}
-      <Field
-        label="Sellers de Destino"
-        step={2}
-        done={step2Done}
-        action={validDests.length > 0 && resolvedCount > 0 ? (
-          <button
-            type="button"
-            onClick={selectAllDests}
-            disabled={resolving}
-            style={{ background: 'none', color: 'var(--positive)', fontSize: 'var(--text-xs)', fontWeight: 500, padding: 0, opacity: resolving ? 0.5 : 1 }}
-          >
-            {validDests.every(s => destinations.includes(s.slug)) ? 'Desmarcar todos' : 'Selecionar todos'}
+      <Field label="Contas de Destino" step={2} done={step2Done}
+        action={destOptions.length > 0 && resolvedCount > 0 ? (
+          <button type="button" onClick={selectAllDests} disabled={resolving}
+            style={{ background: 'none', color: 'var(--positive)', fontSize: 'var(--text-xs)', fontWeight: 500, padding: 0, opacity: resolving ? 0.5 : 1 }}>
+            {destOptions.every(d => destinations.includes(d.slug)) ? 'Desmarcar todos' : 'Selecionar todos'}
           </button>
         ) : undefined}
       >
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
           {resolvedCount > 0 ? (
-            validDests.length > 0 ? (
-              validDests.map(seller => {
-                const on = destinations.includes(seller.slug);
+            destOptions.length > 0 ? (
+              destOptions.map(dest => {
+                const on = destinations.includes(dest.slug);
+                const isShopee = dest.platform === 'shopee';
                 return (
-                  <button key={seller.slug} type="button" onClick={() => toggleDest(seller.slug)} disabled={resolving} className="chip-toggle" style={{
-                    padding: '6px 12px',
-                    fontSize: 'var(--text-xs)',
-                    fontWeight: on ? 600 : 400,
-                    background: on ? 'var(--ink)' : 'var(--paper)',
-                    color: on ? 'var(--paper)' : 'var(--ink-muted)',
-                    border: `1px solid ${on ? 'var(--ink)' : 'var(--line)'}`,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    ...(resolving ? { opacity: 0.5, pointerEvents: 'none' as const } : {}),
-                  }}>
+                  <button key={`${dest.platform}-${dest.slug}`} type="button" onClick={() => toggleDest(dest.slug)} disabled={resolving}
+                    className="chip-toggle" style={{
+                      padding: '6px 12px',
+                      fontSize: 'var(--text-xs)',
+                      fontWeight: on ? 600 : 400,
+                      background: on ? (isShopee ? '#EE4D2D' : 'var(--ink)') : 'var(--paper)',
+                      color: on ? 'var(--paper)' : 'var(--ink-muted)',
+                      border: `1px solid ${on ? (isShopee ? '#EE4D2D' : 'var(--ink)') : 'var(--line)'}`,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      ...(resolving ? { opacity: 0.5, pointerEvents: 'none' as const } : {}),
+                    }}>
                     {on && <span style={{ fontSize: 10 }}>{'\u2713'}</span>}
-                    {seller.name || seller.slug}
+                    {isMixed && <PlatformIndicator platform={dest.platform} />}
+                    {dest.name}
                   </button>
                 );
               })
             ) : (
-              <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)' }}>Nenhum outro seller disponível</p>
+              <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)' }}>Nenhuma conta de destino disponível</p>
             )
           ) : (
             <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)' }}>
-              {itemIds.length > 0 ? 'Aguardando detecção dos sellers de origem...' : 'Cole os IDs acima para detectar os sellers de origem'}
+              {displayIds.length > 0 ? 'Aguardando detecção das contas de origem...' : 'Cole os IDs acima para detectar as contas de origem'}
             </p>
           )}
         </div>
         {destinations.length > 0 && resolvedCount > 0 && (
           <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-2)' }}>
-            {resolvedCount} anúncio(s) x {destinations.length} destino(s) = <b style={{ color: 'var(--ink)' }}>{totalOps} cópia(s)</b>
+            {resolvedCount} anúncio(s) &rarr; <b style={{ color: 'var(--ink)' }}>{totalOps} cópia(s)</b>
           </p>
         )}
       </Field>
@@ -352,21 +512,10 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
           <span style={{ fontSize: 'var(--text-sm)', color: 'var(--ink)', flex: 1 }}>
             Confirma copiar <b>{totalOps}</b> anúncio(s)?
           </span>
-          <button
-            type="button"
-            onClick={() => setConfirming(false)}
-            className="btn-ghost"
-            style={{ padding: '6px 12px', fontSize: 'var(--text-xs)' }}
-          >
-            Cancelar
-          </button>
-          <button
-            type="submit"
-            className="btn-primary"
-            style={{ padding: '6px 16px', fontSize: 'var(--text-xs)' }}
-          >
-            Confirmar
-          </button>
+          <button type="button" onClick={() => setConfirming(false)} className="btn-ghost"
+            style={{ padding: '6px 12px', fontSize: 'var(--text-xs)' }}>Cancelar</button>
+          <button type="submit" className="btn-primary"
+            style={{ padding: '6px 16px', fontSize: 'var(--text-xs)' }}>Confirmar</button>
         </div>
       )}
 
@@ -385,8 +534,13 @@ export default function CopyForm({ sourceSellers, destSellers, headers, onCopy, 
           {copying ? 'Copiando...' : confirming ? 'Confirmar' : `Copiar${totalOps > 0 ? ` (${totalOps})` : ''}`}
         </button>
 
-        {resolvedEntries.length > 0 && (
-          <button type="button" onClick={() => onPreview(resolvedEntries)} className="btn-ghost" style={{
+        {resolvedCount > 0 && (
+          <button type="button" onClick={() => {
+            const entries = Object.entries(resolvedSources).map(
+              ([id, { slug, platform }]) => [id, slug, platform] as [string, string, Platform]
+            );
+            onPreview(entries);
+          }} className="btn-ghost" style={{
             padding: 'var(--space-3) var(--space-4)',
             fontSize: 'var(--text-xs)',
           }}>
@@ -420,14 +574,9 @@ function Field({ label, step, done, action, children }: {
         }}>
           {step !== undefined && (
             <span style={{
-              width: 18,
-              height: 18,
-              borderRadius: '50%',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 10,
-              fontWeight: 700,
+              width: 18, height: 18, borderRadius: '50%',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 10, fontWeight: 700,
               background: done ? 'var(--ink)' : 'var(--line)',
               color: done ? 'var(--paper)' : 'var(--ink-faint)',
               transition: 'background 0.2s, color 0.2s',
@@ -442,5 +591,24 @@ function Field({ label, step, done, action, children }: {
       </div>
       {children}
     </div>
+  );
+}
+
+/** Small platform indicator for mixed-mode chips */
+function PlatformIndicator({ platform }: { platform: Platform }) {
+  const isML = platform === 'ml';
+  return (
+    <span style={{
+      fontSize: 8,
+      fontWeight: 800,
+      lineHeight: 1,
+      padding: '1px 3px',
+      borderRadius: 2,
+      background: isML ? 'rgba(255,230,0,0.25)' : 'rgba(255,255,255,0.25)',
+      color: isML ? '#FFE600' : '#fff',
+      flexShrink: 0,
+    }}>
+      {isML ? 'ML' : 'S'}
+    </span>
   );
 }

@@ -8,13 +8,12 @@ import CopyPage from './pages/CopyPage';
 import Admin from './pages/Admin';
 import UsersPage from './pages/UsersPage';
 import CompatPage from './pages/CompatPage';
-import ShopeeCopyPage from './pages/ShopeeCopyPage';
 import SuperAdminPage from './pages/SuperAdminPage';
 import BillingPage from './pages/BillingPage';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 
-type View = 'copy' | 'shopee' | 'admin' | 'compat' | 'super';
+type View = 'copy' | 'admin' | 'compat' | 'super';
 type AdminSubView = 'sellers' | 'users' | 'billing';
 type AuthView = 'landing' | 'login' | 'signup' | 'forgot' | 'reset';
 
@@ -133,7 +132,6 @@ export default function App() {
     if (u.role === 'admin' ||
         (u.permissions.some(p => p.can_copy_from) && u.permissions.some(p => p.can_copy_to))) {
       tabs.push('copy');
-      tabs.push('shopee');
     }
 
     // Show Compat tab if admin or can_run_compat
@@ -542,11 +540,6 @@ export default function App() {
                 Cópia
               </ViewTab>
             )}
-            {visibleTabs.includes('shopee') && (
-              <ViewTab active={activeView === 'shopee'} onClick={() => setView('shopee')}>
-                Shopee
-              </ViewTab>
-            )}
             {visibleTabs.includes('compat') && (
               <ViewTab active={activeView === 'compat'} onClick={() => setView('compat')}>
                 Compatibilidade
@@ -677,10 +670,7 @@ export default function App() {
       {/* Content */}
       <div className="animate-in">
         {activeView === 'copy' && (
-          <CopyPage sellers={auth.sellers} headers={auth.headers} user={auth.user} />
-        )}
-        {activeView === 'shopee' && (
-          <ShopeeCopyPage shopeeSellers={auth.shopeeSellers} headers={auth.headers} user={auth.user} />
+          <CopyPage sellers={auth.sellers} shopeeSellers={auth.shopeeSellers} headers={auth.headers} user={auth.user} />
         )}
         {activeView === 'admin' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
