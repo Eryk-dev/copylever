@@ -3,6 +3,7 @@ OAuth2 flow for Shopee Open Platform + shop management.
 Uses shopee_sellers table (separate from ML copy_sellers).
 """
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -84,7 +85,10 @@ async def callback(code: str, shop_id: int, state: str = ""):
         logger.warning(f"Failed to fetch Shopee shop info: {e}")
         shop_name = f"shop_{shop_id}"
 
-    slug = shop_name.lower().replace(" ", "-")[:50]
+    # Sanitize slug: only [a-z0-9-], fallback to shop-{shop_id}
+    slug = re.sub(r"[^a-z0-9-]", "", shop_name.lower().replace(" ", "-"))[:50]
+    if not slug:
+        slug = f"shop-{shop_id}"
 
     try:
         db = get_db()
@@ -115,6 +119,17 @@ async def callback(code: str, shop_id: int, state: str = ""):
             }).eq("id", existing["id"]).execute()
             logger.info(f"Shopee OAuth: updated tokens for shop {shop_id} (org={org_id})")
             return _success_page(shop_name, already_exists=True)
+
+        # Deduplicate slug within org
+        existing_slugs = db.table("shopee_sellers").select("slug").eq(
+            "org_id", org_id
+        ).like("slug", f"{slug}%").execute()
+        taken = {r["slug"] for r in (existing_slugs.data or [])}
+        if slug in taken:
+            suffix = 2
+            while f"{slug}-{suffix}" in taken:
+                suffix += 1
+            slug = f"{slug}-{suffix}"
 
         # Create new
         db.table("shopee_sellers").insert({
