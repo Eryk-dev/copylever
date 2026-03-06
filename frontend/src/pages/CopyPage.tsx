@@ -4,6 +4,8 @@ import type { AuthUser } from '../hooks/useAuth';
 import CopyForm, { type CopyGroup } from '../components/CopyForm';
 import CopyProgress from '../components/CopyProgress';
 import DimensionForm, { type Dimensions } from '../components/DimensionForm';
+import StatusSummary from '../components/StatusSummary';
+import { useToast } from '../components/Toast';
 
 const LOGS_PAGE_SIZE = 50;
 
@@ -24,6 +26,7 @@ function isDimensionError(log: CopyLog): boolean {
 }
 
 export default function CopyPage({ sellers, headers, user }: Props) {
+  const { toast } = useToast();
   const [results, setResults] = useState<(CopyResponse & { source?: string }) | null>(null);
   const [sourceMap, setSourceMap] = useState<Record<string, string>>({});
   const [copying, setCopying] = useState(false);
@@ -77,7 +80,7 @@ export default function CopyPage({ sellers, headers, user }: Props) {
     setCopying(true);
     setResults(null);
     // Refresh logs after a short delay to pick up in_progress rows created by the backend
-    setTimeout(loadLogs, 1000);
+    setTimeout(() => { void loadLogs(); }, 1000);
 
     const allResults: CopyResponse['results'] = [];
     let totalSuccess = 0;
@@ -175,15 +178,16 @@ export default function CopyPage({ sellers, headers, user }: Props) {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: 'Erro desconhecido' }));
-        alert(`Erro: ${err.detail}`);
+        toast(err.detail, 'error');
         return;
       }
       setRetryLogId(null);
-      loadLogs();
+      toast('Cópia reenviada com as dimensões informadas.', 'success');
+      void loadLogs();
     } catch (e) {
-      alert(`Erro: ${e}`);
+      toast(String(e), 'error');
     }
-  }, [headers, loadLogs]);
+  }, [headers, loadLogs, toast]);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hasInProgress = logs.some(l => l.status === 'in_progress');
@@ -197,7 +201,11 @@ export default function CopyPage({ sellers, headers, user }: Props) {
     };
   }, [hasInProgress, loadLogs]);
 
-  if (!logsLoaded) loadLogs();
+  useEffect(() => {
+    if (!logsLoaded) {
+      void loadLogs();
+    }
+  }, [logsLoaded, loadLogs]);
 
   const isAdmin = user?.role === 'admin';
   const sourceSellers = useMemo(() => {
@@ -237,10 +245,27 @@ export default function CopyPage({ sellers, headers, user }: Props) {
 
   const filterTabs = [
     { key: '', label: 'Todos' },
+    { key: 'in_progress', label: 'Em andamento' },
     { key: 'success', label: 'Sucesso' },
+    { key: 'partial', label: 'Parcial' },
     { key: 'error', label: 'Erros' },
-    { key: 'needs_dimensions', label: 'Sem Dimensões' },
+    { key: 'needs_dimensions', label: 'Aguardando dimensões' },
   ];
+
+  const historySummary = useMemo(() => {
+    const counts = logs.reduce<Record<string, number>>((acc, log) => {
+      acc[log.status] = (acc[log.status] || 0) + 1;
+      return acc;
+    }, {});
+
+    return [
+      { label: 'Em andamento', value: counts.in_progress || 0, tone: 'info' as const },
+      { label: 'Sucesso', value: counts.success || 0, tone: 'success' as const },
+      { label: 'Parcial', value: counts.partial || 0, tone: 'warning' as const },
+      { label: 'Erro', value: counts.error || 0, tone: 'danger' as const },
+      { label: 'Dimensões', value: counts.needs_dimensions || 0, tone: 'warning' as const },
+    ];
+  }, [logs]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
@@ -319,6 +344,8 @@ export default function CopyPage({ sellers, headers, user }: Props) {
       >
         {logsOpen && (
           <>
+            {logsLoaded && logs.length > 0 && <StatusSummary items={historySummary} />}
+
             {/* Status filter tabs */}
             <div style={{
               display: 'flex',
@@ -518,15 +545,16 @@ export function Card({ title, action, collapsible, open, onToggle, children }: {
 }
 
 const statusLabels: Record<string, string> = {
-  needs_dimensions: 'Sem Dimensões',
+  needs_dimensions: 'Aguardando dimensões',
   in_progress: 'Copiando...',
-  success: 'success',
-  error: 'error',
-  partial: 'partial',
+  pending: 'Pendente',
+  success: 'Sucesso',
+  error: 'Erro',
+  partial: 'Parcial',
 };
 
 function StatusBadge({ status }: { status: string }) {
-  const c: Record<string, string> = { success: 'var(--success)', error: 'var(--danger)', partial: 'var(--warning)', pending: 'var(--ink-faint)', in_progress: 'var(--info, #3b82f6)', needs_dimensions: 'var(--warning)' };
+  const c: Record<string, string> = { success: 'var(--success)', error: 'var(--danger)', partial: 'var(--warning)', pending: 'var(--ink-faint)', in_progress: 'var(--info)', needs_dimensions: 'var(--warning)' };
   const bg: Record<string, string> = { success: 'rgba(16, 185, 129, 0.08)', error: 'rgba(239, 68, 68, 0.08)', partial: 'rgba(245, 158, 11, 0.08)', in_progress: 'rgba(59, 130, 246, 0.08)', needs_dimensions: 'rgba(245, 158, 11, 0.08)' };
   const isInProgress = status === 'in_progress';
   return (

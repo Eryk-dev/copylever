@@ -1,5 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { API_BASE, type Seller, type CompatPreview, type CompatSearchResult, type CompatCopyResult } from '../lib/api';
+import StatusSummary from '../components/StatusSummary';
+import { useToast } from '../components/Toast';
 import { Card } from './CopyPage';
 
 interface Props {
@@ -35,6 +37,7 @@ function parseSkus(input: string): string[] {
 }
 
 export default function CompatPage({ sellers, headers }: Props) {
+  const { toast } = useToast();
   const [sourceInput, setSourceInput] = useState('');
   const [preview, setPreview] = useState<CompatPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -58,7 +61,10 @@ export default function CompatPage({ sellers, headers }: Props) {
   const [copiedSku, setCopiedSku] = useState<string | null>(null);
 
   const COMPAT_PAGE_SIZE = 50;
-  const firstSellerSlug = sellers[0]?.slug || '';
+
+  const sellerName = useCallback((slug: string) => {
+    return sellers.find(seller => seller.slug === slug)?.name || slug;
+  }, [sellers]);
 
   const loadLogs = useCallback(async () => {
     const params = new URLSearchParams({ limit: String(COMPAT_PAGE_SIZE), offset: '0' });
@@ -111,13 +117,36 @@ export default function CompatPage({ sellers, headers }: Props) {
 
   const handlePreview = useCallback(async (raw: string) => {
     const itemId = parseItemId(raw);
-    if (!itemId || !firstSellerSlug) return;
+    if (!itemId) return;
     setPreviewLoading(true);
     setPreviewError('');
     setPreview(null);
     try {
+      const resolveRes = await fetch(`${API_BASE}/api/copy/resolve-sellers`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ item_ids: [itemId] }),
+      });
+
+      if (!resolveRes.ok) {
+        const err = await resolveRes.json().catch(() => ({ detail: 'Não foi possível localizar o seller do item' }));
+        setPreviewError(err.detail);
+        return;
+      }
+
+      const resolved: {
+        results: { item_id: string; seller_slug: string }[];
+        errors: { item_id: string; error: string }[];
+      } = await resolveRes.json();
+
+      const resolvedSeller = resolved.results[0]?.seller_slug;
+      if (!resolvedSeller) {
+        setPreviewError(resolved.errors[0]?.error || 'Item não encontrado nas contas conectadas');
+        return;
+      }
+
       const res = await fetch(
-        `${API_BASE}/api/compat/preview/${itemId}?seller=${encodeURIComponent(firstSellerSlug)}`,
+        `${API_BASE}/api/compat/preview/${itemId}?seller=${encodeURIComponent(resolvedSeller)}`,
         { headers: headers(), cache: 'no-store' },
       );
       if (!res.ok) {
@@ -131,7 +160,7 @@ export default function CompatPage({ sellers, headers }: Props) {
     } finally {
       setPreviewLoading(false);
     }
-  }, [headers, firstSellerSlug]);
+  }, [headers]);
 
   const parsedSkuCount = parseSkus(skuInput).length;
 
@@ -189,12 +218,12 @@ export default function CompatPage({ sellers, headers }: Props) {
       setSearchedSkus([]);
       setSkuInput('');
       // Refresh logs after a short delay to pick up in_progress rows created by the backend
-      setTimeout(loadLogs, 1000);
+      setTimeout(() => { void loadLogs(); }, 1000);
     } catch (e) {
       setCopyError(String(e));
     } finally {
       setCopying(false);
-      loadLogs();
+      void loadLogs();
     }
   }, [preview, searchResults, searchedSkus, headers, loadLogs]);
 
@@ -206,6 +235,24 @@ export default function CompatPage({ sellers, headers }: Props) {
     (resultsBySku[r.sku] ||= []).push(r);
   }
   const skusNotFound = searchedSkus.filter(s => !resultsBySku[s]?.length);
+
+  const historySummary = [
+    { label: 'Em andamento', value: logs.filter(log => log.status === 'in_progress').length, tone: 'info' as const },
+    { label: 'Sucesso', value: logs.filter(log => (log.status || 'success') === 'success').length, tone: 'success' as const },
+    { label: 'Parcial', value: logs.filter(log => log.status === 'partial').length, tone: 'warning' as const },
+    { label: 'Erro', value: logs.filter(log => log.status === 'error').length, tone: 'danger' as const },
+  ];
+
+  const handleCopySku = useCallback(async (sku: string) => {
+    try {
+      await navigator.clipboard.writeText(sku);
+      setCopiedSku(sku);
+      toast(`SKU ${sku} copiado.`, 'success');
+      setTimeout(() => setCopiedSku(null), 2000);
+    } catch {
+      toast('Não foi possível copiar o SKU.', 'error');
+    }
+  }, [toast]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
@@ -283,6 +330,9 @@ export default function CompatPage({ sellers, headers }: Props) {
                   ? `${preview.compat_count} compatibilidade${preview.compat_count !== 1 ? 's' : ''}`
                   : 'Sem compatibilidades'}
               </p>
+              <p style={{ marginTop: 'var(--space-2)', fontSize: 'var(--text-xs)', color: 'var(--ink-faint)' }}>
+                Seller detectado: <span style={{ color: 'var(--ink)', fontWeight: 600 }}>{sellerName(preview.seller)}</span>
+              </p>
             </div>
           </div>
           {/* SKUs */}
@@ -291,11 +341,7 @@ export default function CompatPage({ sellers, headers }: Props) {
             {preview.skus && preview.skus.length > 0 ? preview.skus.map(sku => (
               <button
                 key={sku}
-                onClick={() => {
-                  navigator.clipboard.writeText(sku);
-                  setCopiedSku(sku);
-                  setTimeout(() => setCopiedSku(null), 2000);
-                }}
+                onClick={() => void handleCopySku(sku)}
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
@@ -546,6 +592,8 @@ export default function CompatPage({ sellers, headers }: Props) {
       >
         {logsOpen && (
           <>
+            {logsLoaded && logs.length > 0 && <StatusSummary items={historySummary} />}
+
             {/* Status filter tabs */}
             <div style={{
               display: 'flex',
@@ -555,6 +603,7 @@ export default function CompatPage({ sellers, headers }: Props) {
             }}>
               {[
                 { key: '', label: 'Todos' },
+                { key: 'in_progress', label: 'Em andamento' },
                 { key: 'success', label: 'Sucesso' },
                 { key: 'error', label: 'Erros' },
                 { key: 'partial', label: 'Parcial' },

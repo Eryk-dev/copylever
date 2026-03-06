@@ -35,10 +35,13 @@ export default function App() {
   const [billingMessage, setBillingMessage] = useState<string | null>(null);
   const [paywallLoading, setPaywallLoading] = useState(false);
   const [connectingMl, setConnectingMl] = useState(false);
+  const [quickStartDismissed, setQuickStartDismissed] = useState(true);
   const [trialCopiesUsed, setTrialCopiesUsed] = useState(0);
   const [trialCopiesLimit, setTrialCopiesLimit] = useState(20);
   const [trialActive, setTrialActive] = useState(false);
   const [trialExhausted, setTrialExhausted] = useState(false);
+
+  const quickStartStorageKey = auth.user ? `copy-anuncios:quickstart-dismissed:${auth.user.org_id}` : null;
 
   // Reset to landing page on logout
   useEffect(() => {
@@ -67,6 +70,14 @@ export default function App() {
       })
       .catch(() => setBillingAvailable(false));
   }, [auth.isAuthenticated]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!quickStartStorageKey) {
+      setQuickStartDismissed(true);
+      return;
+    }
+    setQuickStartDismissed(localStorage.getItem(quickStartStorageKey) === '1');
+  }, [quickStartStorageKey]);
 
   // Auto-detect payment after Stripe return
   useEffect(() => {
@@ -145,6 +156,14 @@ export default function App() {
   const activeView = visibleTabs.includes(view)
     ? view
     : visibleTabs[0] ?? 'copy';
+
+  const showQuickStart = Boolean(
+    auth.user &&
+    auth.user.role === 'admin' &&
+    !auth.user.is_super_admin &&
+    !quickStartDismissed &&
+    auth.sellers.length > 0
+  );
 
   // Wait for auth to resolve — show themed blank screen to avoid flash
   if (auth.initializing) return <div style={{ minHeight: '100vh', background: 'var(--paper)' }} />;
@@ -251,7 +270,7 @@ export default function App() {
               color: 'var(--ink-muted)',
               fontSize: 'var(--text-sm)',
             }}>
-              Voce usou suas {trialCopiesLimit} copias gratuitas. Assine para continuar copiando.
+              Você usou suas {trialCopiesLimit} cópias gratuitas. Assine para continuar copiando.
             </p>
           </div>
 
@@ -472,7 +491,7 @@ export default function App() {
   }
 
   return (
-    <div style={{
+    <div className="app-shell" style={{
       width: '100%',
       maxWidth: 960,
       margin: '0 auto',
@@ -489,14 +508,15 @@ export default function App() {
         }
       `}</style>
       {/* Header */}
-      <header style={{
+      <header className="app-header" style={{
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: 'var(--space-4)',
+        flexWrap: 'wrap',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-4)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+        <div className="app-header-brand" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-4)', flexWrap: 'wrap', minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', minWidth: 0 }}>
             <img src="/logo-lever.svg" alt="Copy Anúncios" className="lp-logo-img" style={{ height: 28, display: 'block' }} />
             <h1 style={{
               fontSize: 'var(--text-lg)',
@@ -507,12 +527,13 @@ export default function App() {
               Copy Anúncios
             </h1>
           </div>
-          <nav style={{
+          <nav className="app-header-nav" style={{
             display: 'flex',
             gap: 2,
             background: 'var(--surface)',
             borderRadius: 8,
             padding: 2,
+            flexWrap: 'wrap',
           }}>
             {visibleTabs.includes('copy') && (
               <ViewTab active={activeView === 'copy'} onClick={() => setView('copy')}>
@@ -537,7 +558,7 @@ export default function App() {
           </nav>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+        <div className="app-header-user" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           {auth.user && (
             <span style={{
               fontSize: 'var(--text-xs)',
@@ -570,13 +591,13 @@ export default function App() {
           color: 'var(--ink)',
         }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-2)' }}>
-            <span style={{ fontWeight: 600 }}>
-              Periodo de teste gratuito
-            </span>
-            <span style={{ color: 'var(--ink-muted)', fontSize: 'var(--text-xs)' }}>
-              {trialCopiesUsed}/{trialCopiesLimit} copias usadas
-            </span>
-          </div>
+              <span style={{ fontWeight: 600 }}>
+              Período de teste gratuito
+              </span>
+              <span style={{ color: 'var(--ink-muted)', fontSize: 'var(--text-xs)' }}>
+              {trialCopiesUsed}/{trialCopiesLimit} cópias usadas
+              </span>
+            </div>
           <div style={{
             height: 6,
             background: 'var(--line)',
@@ -627,6 +648,23 @@ export default function App() {
             Ver assinatura
           </button>
         </div>
+      )}
+
+      {showQuickStart && (
+        <QuickStartGuide
+          canOpenCompat={visibleTabs.includes('compat')}
+          onDismiss={() => {
+            if (!quickStartStorageKey) return;
+            localStorage.setItem(quickStartStorageKey, '1');
+            setQuickStartDismissed(true);
+          }}
+          onOpenCompat={() => setView('compat')}
+          onOpenCopy={() => setView('copy')}
+          onOpenSellers={() => {
+            setView('admin');
+            setAdminSubView('sellers');
+          }}
+        />
       )}
 
       {/* Content */}
@@ -701,5 +739,146 @@ function ViewTab({
     >
       {children}
     </button>
+  );
+}
+
+function QuickStartGuide({
+  canOpenCompat,
+  onDismiss,
+  onOpenCompat,
+  onOpenCopy,
+  onOpenSellers,
+}: {
+  canOpenCompat: boolean;
+  onDismiss: () => void;
+  onOpenCompat: () => void;
+  onOpenCopy: () => void;
+  onOpenSellers: () => void;
+}) {
+  return (
+    <div className="card" style={{
+      background: 'linear-gradient(180deg, rgba(35, 216, 211, 0.08), transparent 100%), var(--surface)',
+      borderRadius: 12,
+      padding: 'var(--space-5)',
+      border: '1px solid var(--line)',
+    }}>
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'flex-start',
+        gap: 'var(--space-3)',
+        marginBottom: 'var(--space-4)',
+        flexWrap: 'wrap',
+      }}>
+        <div>
+          <p style={{
+            fontSize: 'var(--text-xs)',
+            textTransform: 'uppercase',
+            letterSpacing: '0.08em',
+            color: 'var(--positive)',
+            fontWeight: 700,
+            marginBottom: 'var(--space-2)',
+          }}>
+            Primeiro uso
+          </p>
+          <h2 style={{
+            fontSize: 'var(--text-lg)',
+            fontWeight: 700,
+            letterSpacing: 'var(--tracking-tight)',
+            color: 'var(--ink)',
+            marginBottom: 'var(--space-1)',
+          }}>
+            Guia rápido para começar sem fricção
+          </h2>
+          <p style={{ color: 'var(--ink-muted)', fontSize: 'var(--text-sm)', maxWidth: 560 }}>
+            Seu workspace já está pronto para operar. Siga estes três passos para validar sellers, conferir anúncios e fazer a primeira execução com mais segurança.
+          </p>
+        </div>
+
+        <button className="btn-ghost" onClick={onDismiss} style={{ padding: '6px 12px', fontSize: 'var(--text-xs)' }}>
+          Entendi
+        </button>
+      </div>
+
+      <div className="quickstart-grid">
+        <QuickStartStep
+          step="1"
+          title="Revise sellers conectados"
+          description="Abra Admin > Sellers para conectar novas contas do Mercado Livre ou revisar tokens antes de operar em produção."
+          actionLabel="Abrir sellers"
+          onAction={onOpenSellers}
+        />
+        <QuickStartStep
+          step="2"
+          title="Cole IDs e confira o preview"
+          description="Na aba Cópia, cole os IDs dos anúncios, valide a origem detectada e revise o preview antes de enviar o lote."
+          actionLabel="Abrir cópia"
+          onAction={onOpenCopy}
+        />
+        <QuickStartStep
+          step="3"
+          title={canOpenCompat ? 'Execute copy ou compatibilidade' : 'Dispare sua primeira cópia'}
+          description={canOpenCompat
+            ? 'Use a aba Compatibilidade para replicar SKUs em lote ou finalize a cópia completa com histórico em tempo real.'
+            : 'Selecione origem, destinos e acompanhe o histórico em tempo real para validar a primeira execução.'}
+          actionLabel={canOpenCompat ? 'Abrir compatibilidade' : 'Voltar para cópia'}
+          onAction={canOpenCompat ? onOpenCompat : onOpenCopy}
+        />
+      </div>
+    </div>
+  );
+}
+
+function QuickStartStep({
+  step,
+  title,
+  description,
+  actionLabel,
+  onAction,
+}: {
+  step: string;
+  title: string;
+  description: string;
+  actionLabel: string;
+  onAction: () => void;
+}) {
+  return (
+    <div style={{
+      background: 'var(--paper)',
+      border: '1px solid var(--line)',
+      borderRadius: 10,
+      padding: 'var(--space-4)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 'var(--space-3)',
+      minWidth: 0,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+        <span style={{
+          width: 24,
+          height: 24,
+          borderRadius: '50%',
+          background: 'var(--ink)',
+          color: 'var(--paper)',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 'var(--text-xs)',
+          fontWeight: 700,
+          flexShrink: 0,
+        }}>
+          {step}
+        </span>
+        <h3 style={{ fontSize: 'var(--text-sm)', fontWeight: 700, color: 'var(--ink)' }}>{title}</h3>
+      </div>
+
+      <p style={{ fontSize: 'var(--text-sm)', color: 'var(--ink-muted)', lineHeight: 1.6 }}>
+        {description}
+      </p>
+
+      <button className="btn-ghost" onClick={onAction} style={{ alignSelf: 'flex-start', padding: '6px 12px', fontSize: 'var(--text-xs)' }}>
+        {actionLabel}
+      </button>
+    </div>
   );
 }

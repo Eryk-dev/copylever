@@ -68,6 +68,7 @@ export interface CompatPreview {
   has_compatibilities: boolean;
   compat_count: number;
   skus: string[];
+  seller: string;
 }
 
 export interface CompatSearchResult {

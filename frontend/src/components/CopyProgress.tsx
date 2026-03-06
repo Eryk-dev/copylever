@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { API_BASE, type CopyResponse, type CopyResult } from '../lib/api';
 import DimensionForm, { type Dimensions } from './DimensionForm';
+import { useToast } from './Toast';
 
 interface Props {
   results: CopyResponse;
@@ -10,6 +11,8 @@ interface Props {
 }
 
 export default function CopyProgress({ results, sourceMap, headers, onDimensionRetry }: Props) {
+  const { toast } = useToast();
+
   // Group needs_dimensions results by SKU (fallback to item_id if no SKU)
   const dimGroups = new Map<string, { itemIds: string[]; results: CopyResult[] }>();
   for (const r of results.results) {
@@ -28,6 +31,7 @@ export default function CopyProgress({ results, sourceMap, headers, onDimensionR
     const fallbackSource = (results as any).source || '';
     const allRetryResults: CopyResult[] = [];
     const processedItemIds = new Set<string>();
+    const failedItems = new Set<string>();
 
     // Call with-dimensions for each unique source item in the group
     for (const r of group.results) {
@@ -43,14 +47,13 @@ export default function CopyProgress({ results, sourceMap, headers, onDimensionR
           body: JSON.stringify({ source, destinations: itemDests, item_id: r.source_item_id, dimensions: dims }),
         });
         if (!res.ok) {
-          const err = await res.json().catch(() => ({ detail: 'Erro desconhecido' }));
-          alert(`Erro em ${r.source_item_id}: ${err.detail}`);
+          failedItems.add(r.source_item_id);
           continue;
         }
         const retryData: CopyResponse = await res.json();
         allRetryResults.push(...retryData.results);
       } catch (e) {
-        alert(`Erro em ${r.source_item_id}: ${e}`);
+        failedItems.add(r.source_item_id);
       }
     }
 
@@ -67,6 +70,14 @@ export default function CopyProgress({ results, sourceMap, headers, onDimensionR
     updated.total = updated.results.length;
 
     onDimensionRetry?.(updated);
+
+    if (allRetryResults.length > 0 && failedItems.size === 0) {
+      toast('Dimensões aplicadas e cópia reprocessada.', 'success');
+    } else if (allRetryResults.length > 0) {
+      toast('Parte das cópias foi reprocessada. Revise os erros restantes.', 'error');
+    } else if (failedItems.size > 0) {
+      toast(`Não foi possível reprocessar ${failedItems.size} anúncio(s).`, 'error');
+    }
   };
 
   return (
