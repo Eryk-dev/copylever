@@ -34,6 +34,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Reutilizacao de dados do item origem entre lojas destino em copias Shopee — busca feita 1 vez por item (nao por item x destino), reduzindo chamadas de 3*N para 3 por item
 - Refatoracao DRY: logica duplicada entre `copy_items` e `copy_with_dimensions` extraida para funcao interna `_run_copy_job` — ambas funcoes publicas agora sao thin wrappers
 - Metodos `init_tier_variation` e `add_model` no cliente Shopee API — wrappers para `/api/v2/product/init_tier_variation` (definir tiers de variacao) e `/api/v2/product/add_model` (criar combinacoes SKU com preco/estoque)
+- Copia de variacoes Shopee: produtos com variacoes (cor, tamanho) agora sao copiados com todos os modelos, precos individuais, estoque por SKU e imagens de tier; se `init_tier_variation` ou `add_model` falhar, item e criado com status 'partial'; resultado inclui `models_copied` e `models_total`
 
 ### Changed
 - **Historico de copias ML redesenhado**: tabela substituida por cards com borda de status colorida, titulo do item em destaque, MLB ID em tag mono, fluxo origem/destinos, chips verdes para novos MLBs criados, bloco de erros com destaque vermelho, e form de dimensoes inline. Responsivo e com suporte completo a dark mode via classes CSS (`log-chip-success`, `log-error-block`)

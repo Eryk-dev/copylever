@@ -15,6 +15,8 @@ from app.services.shopee_api import (
     get_logistics_channels,
     upload_image,
     add_item,
+    init_tier_variation,
+    add_model,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,10 +53,15 @@ async def _fetch_source_item(shop_id: int, item_id: int, org_id: str) -> dict:
     if models_resp.get("response", {}).get("model"):
         models = models_resp["response"]["model"]
 
+    tier_variation = []
+    if models_resp.get("response", {}).get("tier_variation"):
+        tier_variation = models_resp["response"]["tier_variation"]
+
     return {
         "base_info": base_info,
         "extra_info": extra_info,
         "models": models,
+        "tier_variation": tier_variation,
     }
 
 
@@ -182,6 +189,10 @@ def _build_shopee_payload(
         "logistic_info": logistic_info,
         "condition": base.get("condition", "NEW"),
     }
+
+    # If item has variations, stock is managed per-model — exclude from add_item
+    if base.get("has_model"):
+        payload.pop("normal_stock", None)
 
     # Pre-order
     pre_order = base.get("pre_order", {})
@@ -334,6 +345,120 @@ def _minimal_payload(payload: dict) -> dict:
     }
 
 
+# ── Variation copy ─────────────────────────────────────────
+
+
+async def _copy_variations(
+    dest_shop_id: int,
+    new_item_id: int,
+    source_data: dict,
+    org_id: str,
+    user_id: str | None = None,
+) -> dict:
+    """Copy tier variations and models to a newly created item.
+
+    Returns {"models_copied": int, "models_total": int, "error": str | None}.
+    """
+    tier_variation = source_data.get("tier_variation", [])
+    models = source_data.get("models", [])
+
+    if not tier_variation or not models:
+        return {"models_copied": 0, "models_total": 0, "error": None}
+
+    models_total = len(models)
+
+    # Build tier_variation payload — upload tier images if present
+    tiers_payload: list[dict] = []
+    for tier in tier_variation:
+        tier_entry: dict[str, Any] = {"name": tier.get("name", "")}
+        options: list[dict] = []
+        for opt in tier.get("option_list", []):
+            opt_entry: dict[str, Any] = {"option": opt.get("option", "")}
+            img = opt.get("image") or {}
+            img_url = img.get("image_url")
+            if img_url:
+                img_id = await _upload_single_image(dest_shop_id, img_url, org_id)
+                if img_id:
+                    opt_entry["image"] = {"image_id": img_id}
+            options.append(opt_entry)
+        tier_entry["option_list"] = options
+        tiers_payload.append(tier_entry)
+
+    # init_tier_variation — define tier structure
+    try:
+        await init_tier_variation(dest_shop_id, new_item_id, tiers_payload, org_id)
+    except Exception as e:
+        err_msg = f"init_tier_variation failed: {e}"
+        logger.error(
+            "Variation init failed for item %d shop %d: %s",
+            new_item_id, dest_shop_id, e,
+        )
+        _log_debug(
+            action="shopee_init_tier_variation",
+            source_item_id=str(new_item_id),
+            dest_seller=str(dest_shop_id),
+            error_message=err_msg,
+            request_payload={"tier_variation": tiers_payload},
+            user_id=user_id,
+            org_id=org_id,
+        )
+        return {"models_copied": 0, "models_total": models_total, "error": err_msg}
+
+    # Build model_list from source models
+    model_list: list[dict] = []
+    for m in models:
+        # Extract price
+        price_info = m.get("price_info", [])
+        original_price = price_info[0].get("original_price", 0) if price_info else 0
+
+        # Extract stock
+        stock = 0
+        stock_v2 = m.get("stock_info_v2", {})
+        if stock_v2:
+            stock = stock_v2.get("summary_info", {}).get("total_available_stock", 0)
+        if stock <= 0:
+            for si in m.get("stock_info", []):
+                if si.get("stock_type") == 2:
+                    stock = si.get("normal_stock", 0) or si.get("current_stock", 0)
+                    break
+        if stock <= 0:
+            stock = 1  # Minimum stock
+
+        entry: dict[str, Any] = {
+            "tier_index": m.get("tier_index", []),
+            "normal_stock": stock,
+            "original_price": original_price,
+        }
+        if m.get("model_sku"):
+            entry["model_sku"] = m["model_sku"]
+        model_list.append(entry)
+
+    # add_model — create SKU combinations
+    try:
+        await add_model(dest_shop_id, new_item_id, model_list, org_id)
+        logger.info(
+            "Variations copied for item %d shop %d: %d models",
+            new_item_id, dest_shop_id, len(model_list),
+        )
+        return {"models_copied": len(model_list), "models_total": models_total, "error": None}
+    except Exception as e:
+        err_msg = f"add_model failed: {e}"
+        logger.error(
+            "Model creation failed for item %d shop %d: %s",
+            new_item_id, dest_shop_id, e,
+        )
+        _log_debug(
+            action="shopee_add_model",
+            source_item_id=str(new_item_id),
+            dest_seller=str(dest_shop_id),
+            error_message=err_msg,
+            request_payload={"model_list": model_list},
+            user_id=user_id,
+            org_id=org_id,
+        )
+        return {"models_copied": 0, "models_total": models_total, "error": err_msg}
+
+
 # ── Core copy functions ────────────────────────────────────
 
 
@@ -358,6 +483,8 @@ async def copy_single_item(
         "dest_item_id": None,
         "error": None,
         "sku": None,
+        "models_copied": 0,
+        "models_total": 0,
     }
 
     try:
@@ -464,6 +591,20 @@ async def copy_single_item(
                 )
                 if attempt == MAX_RETRY_ATTEMPTS:
                     break  # exhausted retries
+
+        # 6. Handle variations if item was created successfully
+        if not last_error and result.get("dest_item_id"):
+            has_model = source_data.get("base_info", {}).get("has_model", False)
+            if has_model:
+                var_result = await _copy_variations(
+                    dest_shop_id, int(result["dest_item_id"]),
+                    source_data, org_id, user_id,
+                )
+                result["models_copied"] = var_result["models_copied"]
+                result["models_total"] = var_result["models_total"]
+                if var_result["error"]:
+                    result["status"] = "partial"
+                    result["error"] = var_result["error"]
 
         if last_error:
             if _is_dimension_error(last_error):
