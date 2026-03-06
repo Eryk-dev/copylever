@@ -28,9 +28,7 @@ _RATE_LIMIT_BASE_WAIT = 2  # seconds
 
 
 def _get_shop_lock(shop_id: int) -> asyncio.Lock:
-    if shop_id not in _token_locks:
-        _token_locks[shop_id] = asyncio.Lock()
-    return _token_locks[shop_id]
+    return _token_locks.setdefault(shop_id, asyncio.Lock())
 
 
 def _base_url() -> str:

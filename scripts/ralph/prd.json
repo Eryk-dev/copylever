@@ -1,200 +1,372 @@
 {
-  "project": "COPY ANUNCIOS — Shopee Integration (Phase 2)",
-  "branchName": "ralph/shopee-integration",
-  "description": "Implement Shopee product copy engine, copy router, frontend tab, admin management, and permissions. Phase 1 (OAuth, API client, DB tables) is already complete.",
+  "project": "COPY ANUNCIOS — Shopee Integration Fixes",
+  "branchName": "ralph/shopee-fixes",
+  "description": "Comprehensive fix of all bugs, security gaps, DB schema issues, performance bottlenecks, missing features (variations), and dead code cleanup in the Shopee integration. Diagnosed by 5 parallel audit agents on 2026-03-06.",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Shopee copy engine — fetch source + upload images + build payload helpers",
-      "description": "As a developer, I want the core helper functions for the Shopee copy engine so that copy_single_item can orchestrate them.",
+      "title": "Fix _get_shop_lock TOCTOU race condition",
+      "description": "As a system, I want the per-shop token lock to be atomically created so that concurrent coroutines cannot create duplicate locks.",
       "acceptanceCriteria": [
-        "Create file `app/services/shopee_copier.py`",
-        "Import shopee_api functions from `app/services/shopee_api.py` (get_item, get_item_extra, get_model_list, get_categories, get_logistics_channels, upload_image, add_item)",
-        "Implement `async _fetch_source_item(shop_id: int, item_id: int, org_id: str) -> dict` that calls get_item_base_info + get_item_extra_info + get_model_list and returns merged data dict with keys: base_info, extra_info, models",
-        "Implement `async _upload_images(dest_shop_id: int, image_urls: list[str], org_id: str) -> list[str]` that uploads each image via shopee_api.upload_image and returns list of image_id strings. Max 9 images. Retry 1x on failure per image. Log warnings for failed uploads.",
-        "Implement `async _fetch_dest_logistics(dest_shop_id: int, org_id: str) -> list[dict]` that calls get_logistics_channels and returns list of enabled logistics channels",
-        "Implement `_build_shopee_payload(source_data: dict, image_ids: list[str], logistics: list[dict], dimensions: dict | None = None) -> dict` that builds the add_item payload with: item_name (max 120 chars), description (max 3000 chars), original_price, normal_stock, category_id, image.image_id_list, weight (in kg), logistic_info, condition='NEW', pre_order, item_sku. Include dimension if provided (package_height/width/length in cm). Include attribute_list from source if present.",
-        "Add module-level logger = logging.getLogger(__name__)",
+        "In `app/services/shopee_api.py`, replace the `_get_shop_lock` function body with a single line: `return _token_locks.setdefault(shop_id, asyncio.Lock())`",
+        "The function still returns an `asyncio.Lock` for the given shop_id",
+        "No other changes to the file in this story",
         "Typecheck passes"
       ],
       "priority": 1,
       "passes": true,
-      "notes": "Phase 1 already created `app/services/shopee_api.py` with all API wrappers: get_item, get_item_extra, get_model_list, get_logistics_channels, upload_image, add_item, _get_token. The shopee_api module handles HMAC signing and token management. The copier just orchestrates calls. Use the existing patterns from `app/services/item_copier.py` (the ML copy engine) for reference — it has similar _build_item_payload and fetch functions. Shopee returns base_info items inside response.item_list[0]. Shopee image URLs are in item.image.image_url_list. Weight is in kg (float). The description comes from get_item_extra_info response. Models/variations come from get_model_list response."
+      "notes": "One-line fix. Current code at lines 30-33 has if/set pattern that two coroutines can race through. dict.setdefault is atomic in CPython."
     },
     {
       "id": "US-002",
-      "title": "Shopee copy engine — copy_single_item + copy_items + logging",
-      "description": "As a developer, I want the main copy orchestration functions so that the router can call them to copy products.",
+      "title": "Abort copy when zero images uploaded",
+      "description": "As a system, I want to fail fast when no images were uploaded successfully, instead of calling add_item 3 times with an empty image list.",
       "acceptanceCriteria": [
-        "In `app/services/shopee_copier.py`: implement `async copy_single_item(source_shop_id: int, dest_shop_id: int, item_id: int, org_id: str, user_id: str = None, dimensions: dict | None = None) -> dict` that: (1) calls _fetch_source_item, (2) calls _upload_images with source image URLs, (3) calls _fetch_dest_logistics, (4) calls _build_shopee_payload, (5) calls shopee_api.add_item, (6) returns result dict with status/dest_item_id/error/sku",
-        "Implement retry logic: up to 3 attempts. Attempt 2 removes brand and non-essential attributes. Attempt 3 uses minimal payload (name, description, price, stock, category, images, weight, logistics).",
-        "On ShopeeApiError: log full error to api_debug_logs table (same pattern as ML copier: source_item_id, dest_seller, attempt_number, error_message, request_payload, response_body)",
-        "Implement `async copy_items(source_slug: str, dest_slugs: list[str], item_ids: list[int], user_id: str, org_id: str) -> dict` that: resolves shop_ids from slugs via shopee_sellers table, calls copy_single_item for each item×dest combination, logs each result to shopee_copy_logs table, returns {total, success, errors, needs_dimensions, results}",
-        "Implement `async copy_with_dimensions(source_slug: str, dest_slugs: list[str], item_id: int, dimensions: dict, user_id: str, org_id: str) -> dict` that calls copy_single_item with dimensions parameter",
-        "Add 0.7s sleep between sequential copy calls (rate limit pacing)",
+        "In `app/services/shopee_copier.py`, in `copy_single_item`, after `_upload_images()` returns, check if `image_ids` is empty",
+        "If empty, return an error result immediately with message: 'Falha no upload de todas as imagens — nao e possivel criar o anuncio'",
+        "The error is recorded in the result dict with status 'error'",
+        "No `add_item` call is made when image_ids is empty",
+        "Debug log entry is written via `_log_debug` with action 'shopee_image_upload_failed'",
         "Typecheck passes"
       ],
       "priority": 2,
-      "passes": true,
-      "notes": "Depends on US-001 helpers. The shopee_sellers table has columns: slug, shop_id, org_id. To resolve slug→shop_id: db.table('shopee_sellers').select('shop_id').eq('slug', slug).eq('org_id', org_id).single().execute(). For api_debug_logs: use same table as ML (columns: source_item_id, dest_seller, attempt_number, error_message, request_payload, response_body, resolved, created_at). For shopee_copy_logs: columns are user_id, org_id, source_seller, dest_sellers, source_item_id, status, dest_item_ids (jsonb), error_details (jsonb). Use get_db() from app.db.supabase. ShopeeApiError is imported from app.services.shopee_api. If error message contains 'dimension' or 'weight', set status to 'needs_dimensions'."
+      "passes": false,
+      "notes": "Currently at shopee_copier.py:351-352 it logs a warning but proceeds. add_item requires at least 1 image_id. The 3 retry attempts all fail with empty images — waste of API calls. Check the return dict format used by other error paths in the same function for consistency."
     },
     {
       "id": "US-003",
-      "title": "Shopee copy router — all endpoints",
-      "description": "As a user, I want API endpoints to copy Shopee products, preview items, view logs, and resolve sellers.",
+      "title": "Fix _strip_attributes to use exclusion list instead of is_mandatory",
+      "description": "As a system, I want retry attempt 2 to remove only known-problematic attributes (brand, etc.) instead of all attributes, so items keep their required category attributes.",
       "acceptanceCriteria": [
-        "Create file `app/routers/shopee_copy.py` with APIRouter(prefix='/api/shopee/copy', tags=['shopee-copy'])",
-        "POST `/` endpoint: accepts ShopeeCopyRequest(source: str, destinations: list[str], item_ids: list[str]). Validates permissions via user_permissions table (can_copy_from for source, can_copy_to for each dest — admin bypasses). Checks trial limit using same _check_trial_limit pattern from copy.py. Normalizes item_ids to int. Calls shopee_copier.copy_items(). Increments trial_copies_used for successful copies. Returns CopyResponse dict.",
-        "POST `/with-dimensions` endpoint: accepts ShopeeCopyWithDimensionsRequest(source: str, destinations: list[str], item_id: str, dimensions: {height: int, width: int, length: int, weight: int}). Calls shopee_copier.copy_with_dimensions(). Weight is received in grams, converted to kg (÷1000) before passing to copier.",
-        "GET `/preview/{item_id}` endpoint: auto-detects shop by trying each active shopee_seller in org. Returns: item_name, original_price, stock, category_id, status, image_url (first image), image_count, model_count, has_description, weight, shop_slug.",
-        "GET `/logs` endpoint: queries shopee_copy_logs filtered by org_id. Admins see all, operators see only their own (user_id filter). Supports ?limit=50&offset=0&status= params. Returns list of log dicts.",
-        "POST `/resolve-sellers` endpoint: accepts {item_ids: list[str]}. For each active shopee_seller with can_copy_from permission, tries get_item_base_info. Returns {results: [{item_id, shop_slug}], errors: [{item_id, error}]}. Uses asyncio.Semaphore(5) for parallel checks.",
-        "Register router in `app/main.py`: add `from app.routers import ... shopee_copy` and `app.include_router(shopee_copy.router)`",
-        "All endpoints use Depends(require_active_org) except logs which uses Depends(require_user)",
+        "In `app/services/shopee_copier.py`, modify `_strip_attributes` to define a set of attribute IDs to exclude (brand-related), e.g. `STRIP_ATTR_IDS = set()` — or filter by known problematic attribute names/patterns",
+        "Instead of filtering `a.get('is_mandatory')` (which is never present), filter OUT attributes whose `attribute_id` is in the exclusion set, or whose value contains brand-related data",
+        "As a simple heuristic: remove attributes where the attribute value list is empty or where the attribute appears to be brand (check common Shopee brand attribute IDs or names)",
+        "If after filtering the list is empty, delete the `attribute_list` key (preserve current fallback behavior)",
+        "Attributes NOT in the exclusion criteria are KEPT in the payload",
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": true,
-      "notes": "Mirror the pattern from `app/routers/copy.py` which has the same endpoint structure for ML. The _check_trial_limit function is in copy.py — either import it or copy the pattern (query orgs table for payment_active, trial_copies_used, trial_copies_limit). _increment_trial_copies is also in copy.py: db.table('orgs').update({'trial_copies_used': used + count}).eq('id', org_id).execute(). For permissions: query user_permissions table with .eq('user_id', user_id).eq('seller_slug', slug) and check can_copy_from/can_copy_to. Admin role (user['role'] == 'admin') bypasses permission checks. For resolve-sellers: the shopee_api.get_item function returns response with item_list — if item_list is not empty, that shop has the item. Use try/except ShopeeApiError to handle items not found."
+      "passes": false,
+      "notes": "Current code at lines 286-297 filters `a.get('is_mandatory')` but this field comes from get_attributes (category API), NOT from get_item_base_info. It's never present in the source item's attribute data, so the filter always returns empty list — removing ALL attributes. A pragmatic fix: instead of trying to detect mandatory, just remove the ones known to cause issues (brand). The Shopee brand attribute has no universal ID, so the safest approach is: keep all attributes but strip attribute_list entries with empty attribute_value_list."
     },
     {
       "id": "US-004",
-      "title": "Admin permissions — include Shopee shops",
-      "description": "As an admin, I want the permissions endpoints to list Shopee shops alongside ML sellers so I can manage operator access to both platforms.",
+      "title": "Fix updated_at on token refresh + condition from source + dead import",
+      "description": "As a system, I want shopee_sellers.updated_at to be current after token refresh, item condition to come from the source, and dead imports removed.",
       "acceptanceCriteria": [
-        "In `app/routers/admin_users.py` GET `/users/{user_id}/permissions` endpoint: query both copy_sellers (ML) AND shopee_sellers tables for the org. Merge results, adding 'platform': 'ml' for ML sellers and 'platform': 'shopee' for Shopee shops. Each entry has: seller_slug, seller_name, platform, can_copy_from, can_copy_to.",
-        "Shopee shops use their slug from shopee_sellers table as seller_slug in user_permissions (same table, no separate permissions table).",
-        "In PUT `/users/{user_id}/permissions` endpoint: accept permissions for both ML and Shopee slugs. Upsert into user_permissions table (same as before — the seller_slug field works for both).",
-        "The response from GET permissions includes a 'platform' field so the frontend can differentiate ML from Shopee.",
+        "In `app/services/shopee_api.py`, in the `_get_token` refresh path where token is updated in DB, add `updated_at` to the update dict with value `datetime.now(timezone.utc).isoformat()`",
+        "In `app/services/shopee_copier.py`, in `_build_shopee_payload`, use `base.get('condition', 'NEW')` from source data instead of hardcoded `'NEW'`",
+        "In `app/routers/auth_shopee.py`, remove the unused `from urllib.parse import urlencode` import",
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": true,
-      "notes": "In admin_users.py: the GET permissions endpoint queries user_permissions joined with copy_sellers. Add a second query to shopee_sellers for the same org. Build the merged list: for each seller in copy_sellers add platform='ml', for each in shopee_sellers add platform='shopee'. Then join with existing user_permissions to get can_copy_from/can_copy_to for each. The PUT endpoint already upserts by user_id + seller_slug — this works for Shopee slugs too since user_permissions doesn't have a platform column. The slug uniqueness across platforms is sufficient (ML slugs come from ML user nicknames, Shopee slugs from shop names — very unlikely to collide)."
+      "passes": false,
+      "notes": "Three small fixes in three files. For updated_at: the refresh path in _get_token does db.table('shopee_sellers').update({...}) — just add 'updated_at' to that dict. For condition: line ~166 or ~311 in shopee_copier.py has condition='NEW' hardcoded. For urlencode: line 7 in auth_shopee.py."
     },
     {
       "id": "US-005",
-      "title": "Super admin — Shopee stats per org",
-      "description": "As a super_admin, I want to see Shopee seller count and copy count per org in the platform management view.",
+      "title": "Wrap logistics fetch in try/except + add platform to debug logs",
+      "description": "As a system, I want logistics fetch failures to produce specific error messages, and Shopee debug logs to be distinguishable from ML debug logs.",
       "acceptanceCriteria": [
-        "In `app/routers/super_admin.py` GET `/orgs` endpoint: add two additional queries per org — shopee_seller_count from shopee_sellers (active, same org) and shopee_copy_count from shopee_copy_logs (same org, last 30 days)",
-        "Include 'shopee_seller_count' and 'shopee_copy_count' in each org dict in the response",
+        "In `app/services/shopee_copier.py` `copy_single_item`, wrap `_fetch_dest_logistics()` call in try/except with a specific error message: 'Falha ao buscar canais logisticos da loja destino'",
+        "On logistics fetch failure, return error result immediately (do not proceed to add_item)",
+        "In `_log_debug()`, add field `platform: 'shopee'` to the insert dict for `api_debug_logs`",
+        "Existing debug log entries from ML (in item_copier.py) are not affected",
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": true,
-      "notes": "In super_admin.py list_orgs: after the existing queries for user_count, seller_count, copy_count, compat_count, add: shopee_seller_count = db.table('shopee_sellers').select('id', count='exact').eq('org_id', org_id).eq('active', True).execute().count or 0, and shopee_copy_count = db.table('shopee_copy_logs').select('id', count='exact').eq('org_id', org_id).gte('created_at', thirty_days_ago).execute().count or 0. Add both to the enriched dict."
+      "passes": false,
+      "notes": "Currently _fetch_dest_logistics is called without try/except in copy_single_item. Any exception bubbles up to the generic except handler. Adding specific handling gives better error messages. For _log_debug: check the existing api_debug_logs schema — it uses JSONB columns, so adding platform is safe. The ML copier (item_copier.py) has its own _log_debug that won't be affected."
     },
     {
       "id": "US-006",
-      "title": "Frontend types + auth hook — Shopee sellers state",
-      "description": "As a developer, I want TypeScript types for Shopee data and Shopee seller state in the auth hook so that frontend pages can use them.",
+      "title": "Use refresh_token_expire_in from Shopee API response",
+      "description": "As a system, I want to compute refresh_token_expires_at from the actual API response instead of hardcoding 30 days.",
       "acceptanceCriteria": [
-        "In `frontend/src/lib/api.ts`: add ShopeeSeller interface (slug: string, name: string, shop_id: number, token_valid: boolean, token_expires_at: string | null, created_at: string)",
-        "Add ShopeeCopyResult interface (source_item_id: string, dest_seller: string, status: 'success'|'error'|'pending'|'needs_dimensions', dest_item_id: string|null, error: string|null, sku?: string|null)",
-        "Add ShopeeCopyResponse interface (total: number, success: number, errors: number, needs_dimensions?: number, results: ShopeeCopyResult[])",
-        "Add ShopeeCopyLog interface (id: number, user_email: string|null, source_seller: string, dest_sellers: string[], source_item_id: string, dest_item_ids: Record<string,string>, status: string, error_details: Record<string,string>|null, created_at: string)",
-        "Add ShopeeItemPreview interface (item_id: number, item_name: string, original_price: number, stock: number, category_id: number, status: string, image_url: string, image_count: number, model_count: number, has_description: boolean, weight: number, shop_slug: string)",
-        "Add shopee_seller_count and shopee_copy_count fields to OrgWithStats interface",
-        "In `frontend/src/hooks/useAuth.ts`: add shopeeSellers state (useState<ShopeeSeller[]>([]))",
-        "Add loadShopeeSellers callback that fetches GET /api/shopee/sellers and sets state. On 401 clear auth.",
-        "Add disconnectShopeeSeller(slug) callback that calls DELETE /api/shopee/sellers/{slug} then reloads.",
-        "Call loadShopeeSellers in the same useEffect that calls loadSellers (when token && user)",
-        "Also call loadShopeeSellers on visibility change (same pattern as ML sellers)",
-        "Clear shopeeSellers in clearAuth callback",
-        "Return shopeeSellers, loadShopeeSellers, disconnectShopeeSeller from the hook",
+        "In `app/routers/auth_shopee.py` callback: use `token_data.get('refresh_token_expire_in')` if present to compute `refresh_expires_at`; fallback to 30 days if absent",
+        "In `app/services/shopee_api.py` `_get_token` refresh path: if refresh response returns a new `refresh_token`, also update `refresh_token_expires_at` in the DB — compute from `refresh_token_expire_in` if present, fallback to 30 days from now",
+        "Log a warning if `refresh_token_expire_in` is not present in the response",
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": true,
-      "notes": "In api.ts: add the interfaces after the existing ML ones. ShopeeSeller mirrors Seller but with shop_id instead of ml_user_id. ShopeeCopyLog mirrors CopyLog. ShopeeItemPreview is Shopee-specific. In useAuth.ts: follow the exact same pattern as loadSellers/disconnectSeller but targeting /api/shopee/sellers endpoints. Import ShopeeSeller from api.ts. The hook currently returns {isAuthenticated, initializing, token, user, login, signup, logout, sellers, loadingSellers, loadSellers, disconnectSeller, headers}. Add shopeeSellers, loadShopeeSellers, disconnectShopeeSeller to the return."
+      "passes": false,
+      "notes": "auth_shopee.py line 72 hardcodes `timedelta(days=30)`. The Shopee token exchange response may include `refresh_token_expire_in` (seconds). In _get_token refresh path (shopee_api.py ~line 286+), only access_token expiry is updated — refresh_token_expires_at is never recalculated even when a new refresh_token is returned."
     },
     {
       "id": "US-007",
-      "title": "ShopeeCopyPage — full copy page for Shopee",
-      "description": "As a user, I want a dedicated page to copy Shopee products between shops, with form, progress, and logs.",
+      "title": "Sanitize Shopee shop slugs",
+      "description": "As a system, I want Shopee shop slugs to contain only safe characters [a-z0-9-] to prevent routing conflicts and injection.",
       "acceptanceCriteria": [
-        "Create `frontend/src/pages/ShopeeCopyPage.tsx` that mirrors CopyPage.tsx structure",
-        "Props: shopeeSellers: ShopeeSeller[], headers: () => Record<string,string>, user: AuthUser|null",
-        "Form section: textarea for item IDs (accepts numbers, URLs like shopee.com.br/product/X/Y extracting Y, deduplicates), dropdown/chips for destination shops (filtered by can_copy_to permissions for operators, all for admins)",
-        "Auto-resolve: on blur/paste, POST /api/shopee/copy/resolve-sellers to detect source shop per item. Show resolved source next to each item.",
-        "Copy button: POST /api/shopee/copy with source, destinations, item_ids. Show progress/results.",
-        "Results section: show status per item×dest (success with new ID, error with message, needs_dimensions with DimensionForm inline). DimensionForm reuses existing component from components/DimensionForm.tsx. On dimension submit: POST /api/shopee/copy/with-dimensions.",
-        "Logs section: collapsible, fetches GET /api/shopee/copy/logs with pagination. Filter by status dropdown. Show: date, source, dest, item_id, status, new IDs. Poll every 5s while any result is 'pending'.",
-        "Use same Card component export from CopyPage (or define locally)",
-        "Use useToast() for notifications",
-        "Item ID normalization: accept pure numbers, URLs (extract last path segment as item_id)",
+        "In `app/routers/auth_shopee.py`, after generating the slug from shop_name, apply `re.sub(r'[^a-z0-9-]', '', slug)` to strip unsafe characters",
+        "If slug is empty after sanitization, fallback to `f'shop-{shop_id}'`",
+        "If slug already exists for the same org_id (UNIQUE constraint), append `-2`, `-3`, etc.",
+        "Import `re` at top of file if not already imported",
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": true,
-      "notes": "Mirror the structure of CopyPage.tsx as closely as possible. CopyPage uses CopyForm and CopyProgress components — for Shopee, build the form and progress inline in ShopeeCopyPage (simpler than creating separate components, and avoids over-engineering since patterns differ). Key differences from ML CopyPage: (1) uses shopeeSellers instead of sellers, (2) API endpoints are /api/shopee/copy/* instead of /api/copy/*, (3) item IDs are numbers (not MLBxxxxxx), (4) resolve-sellers returns shop_slug instead of seller_slug. The DimensionForm component at frontend/src/components/DimensionForm.tsx exports { Dimensions } type and the component — reuse it. The Card component is exported from CopyPage.tsx. The useToast hook is at frontend/src/components/Toast.tsx. Shop chips should have an orange tint (#EE4D2D at 10% opacity) to differentiate from ML's default style."
+      "passes": false,
+      "notes": "Current code at line 83: `slug = shop_name.lower().replace(' ', '-')[:50]` — allows slashes, dots, unicode. The slug is used in URL paths and DB lookups. The duplicate-suffix logic should query shopee_sellers for existing slugs in the org before inserting."
     },
     {
       "id": "US-008",
-      "title": "App.tsx — add Shopee tab to navigation",
-      "description": "As a user, I want to see a 'Shopee' tab in the main navigation so I can access the Shopee copy functionality.",
+      "title": "Create migration 013 — fix Shopee schema (FKs, indexes, unique constraints)",
+      "description": "As a DBA, I want the Shopee DB schema to follow the same patterns as the ML schema for consistency and correct referential integrity.",
       "acceptanceCriteria": [
-        "In `frontend/src/App.tsx`: add 'shopee' to the View type union: type View = 'copy' | 'shopee' | 'admin' | 'compat' | 'super'",
-        "Import ShopeeCopyPage from './pages/ShopeeCopyPage'",
-        "In visibleTabs useMemo: add 'shopee' tab after 'copy'. Visibility rule: admin OR (operator with at least one permission where can_copy_from AND one where can_copy_to). Same logic as 'copy' tab — reuse the same permission check.",
-        "In the nav JSX: add Shopee ViewTab between Cópia and Compatibilidade tabs. Label: 'Shopee'.",
-        "In the content div: render ShopeeCopyPage when activeView === 'shopee'. Pass props: shopeeSellers={auth.shopeeSellers}, headers={auth.headers}, user={auth.user}",
-        "Update the empty-state screen (sellers.length === 0): change condition to check BOTH auth.sellers.length === 0 AND auth.shopeeSellers.length === 0 (show connect screen only when NO sellers of any type are connected). If only ML sellers are missing but Shopee shops exist, don't block.",
+        "Create file `app/db/migrations/013_shopee_schema_fixes.sql`",
+        "ALTER shopee_sellers FK org_id to ON DELETE CASCADE (drop and recreate FK)",
+        "ALTER shopee_copy_logs column org_id to be nullable (ALTER COLUMN org_id DROP NOT NULL)",
+        "ALTER shopee_copy_logs FK org_id to ON DELETE SET NULL (drop and recreate FK)",
+        "ALTER shopee_copy_logs FK user_id to ON DELETE SET NULL (drop and recreate FK)",
+        "DROP INDEX idx_shopee_sellers_slug_org and CREATE UNIQUE INDEX uq_shopee_sellers_slug_org ON shopee_sellers(slug, org_id)",
+        "CREATE INDEX idx_shopee_copy_logs_created_at ON shopee_copy_logs(created_at DESC)",
+        "CREATE INDEX idx_shopee_copy_logs_source_seller ON shopee_copy_logs(source_seller)",
+        "Migration file has a comment header with description and rollback instructions",
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": true,
-      "notes": "In App.tsx: the visibleTabs useMemo builds an array of View values. Add tabs.push('shopee') right after tabs.push('copy') with the same condition. The nav section renders ViewTab components for each visible tab — add one for 'shopee'. The content section has conditional rendering per activeView — add {activeView === 'shopee' && <ShopeeCopyPage .../>}. The empty-state check on line ~402 checks auth.sellers.length === 0 — update to also check auth.shopeeSellers.length === 0. The auth hook now exposes shopeeSellers from US-006."
+      "passes": false,
+      "notes": "Both tables are currently empty (0 rows confirmed). Reference ML patterns: copy_sellers.org_id uses CASCADE, copy_logs.org_id uses SET NULL, copy_logs.user_id uses SET NULL. To find existing FK constraint names, the migration should use: ALTER TABLE ... DROP CONSTRAINT IF EXISTS ... then ADD CONSTRAINT. Check migration 007_multi_tenant.sql and 008_backfill_org_data.sql for ML FK patterns. Apply via mcp__supabase__apply_migration. Supabase project ID: wrbrbhuhsaaupqsimkqz."
     },
     {
       "id": "US-009",
-      "title": "Admin page — Shopee sellers section + connect button",
-      "description": "As an admin, I want to see and manage connected Shopee shops in the Admin panel alongside ML sellers.",
+      "title": "Implement rate limiting with exponential backoff in Shopee API client",
+      "description": "As a system, I want Shopee API calls to automatically retry with backoff on error.too_fast, so bulk copy operations don't fail from rate limiting.",
       "acceptanceCriteria": [
-        "In `frontend/src/pages/Admin.tsx`: add a 'Lojas Shopee' section below the existing ML sellers section",
-        "Accept new props: shopeeSellers: ShopeeSeller[], loadShopeeSellers: () => Promise<void>, disconnectShopeeSeller: (slug: string) => Promise<void>",
-        "Show list of Shopee shops with: name (with orange Shopee badge), shop_id, token status, created date",
-        "Rename inline: same pattern as ML sellers, calling PUT /api/shopee/sellers/{slug}/name",
-        "Disconnect button with confirmation: calls disconnectShopeeSeller(slug), same pattern as ML",
-        "'Autorizar loja Shopee' button: fetches GET /api/shopee/install, redirects to data.redirect_url",
-        "Shopee badge: small orange (#EE4D2D) 'Shopee' label next to shop name",
-        "Visual separator between ML and Shopee sections",
-        "Update Props interface to include Shopee-related props",
+        "In `app/services/shopee_api.py`, implement retry logic in `_shop_get()` and `_shop_post()` that detects `error` field containing 'too_fast' in the response",
+        "Retry with exponential backoff using existing constants: `_RATE_LIMIT_RETRIES=5` and `_RATE_LIMIT_BASE_WAIT=2` — waits: 2s, 4s, 8s, 16s, 32s",
+        "Log a warning on each retry with attempt number and wait time",
+        "After exhausting retries, raise `ShopeeApiError` as normal",
+        "Also apply the same retry logic in `upload_image()`",
+        "The `_raise_for_shopee` check must happen AFTER the retry loop (only on final failure)",
         "Typecheck passes"
       ],
       "priority": 9,
-      "passes": true,
-      "notes": "In Admin.tsx: the component currently receives Props { sellers, loadSellers, disconnectSeller, headers }. Add shopeeSellers, loadShopeeSellers, disconnectShopeeSeller to Props. The ML section uses a Card component with seller list items — duplicate the pattern for Shopee. The install flow for ML: fetch /api/ml/install → redirect. For Shopee: fetch /api/shopee/install → redirect. The rename flow for ML: PUT /api/sellers/{slug}/name. For Shopee: PUT /api/shopee/sellers/{slug}/name. Also update the Admin rendering in App.tsx to pass the new props: <Admin sellers={auth.sellers} loadSellers={auth.loadSellers} disconnectSeller={auth.disconnectSeller} headers={auth.headers} shopeeSellers={auth.shopeeSellers} loadShopeeSellers={auth.loadShopeeSellers} disconnectShopeeSeller={auth.disconnectShopeeSeller} />"
+      "passes": false,
+      "notes": "Constants at lines 26-27 are already defined but never used. The pattern should be: call API -> check if response has error.too_fast -> if yes, sleep and retry -> if no, proceed to _raise_for_shopee or return. Don't retry on non-rate-limit errors. Match the pattern from ML's item_copier.py exponential backoff on 429s."
     },
     {
       "id": "US-010",
-      "title": "SuperAdminPage — Shopee columns",
-      "description": "As a super_admin, I want to see Shopee seller count and copy count per org in the platform management table.",
+      "title": "Create reusable httpx.AsyncClient for Shopee API",
+      "description": "As a system, I want to reuse HTTP connections across Shopee API calls to reduce latency from TCP handshake overhead.",
       "acceptanceCriteria": [
-        "In `frontend/src/lib/api.ts`: OrgWithStats already has shopee_seller_count and shopee_copy_count from US-006",
-        "In `frontend/src/pages/SuperAdminPage.tsx`: add 'Shopee Sellers' and 'Shopee Copies' columns to the orgs table",
-        "Display shopee_seller_count and shopee_copy_count values (default to 0 if undefined)",
-        "Position columns after existing compat_count column",
+        "In `app/services/shopee_api.py`, create a module-level lazy singleton `_http_client: httpx.AsyncClient | None = None`",
+        "Create `_get_client() -> httpx.AsyncClient` that initializes the client on first call with `limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)` and `timeout=60.0`",
+        "Replace all `async with httpx.AsyncClient(...) as client:` blocks in `_shop_get`, `_shop_post`, and `upload_image` to use `_get_client()` instead",
+        "Add `async def close_client()` function that closes the client if it exists (for graceful shutdown)",
+        "In `app/main.py`, register `close_client` as a shutdown event handler: `@app.on_event('shutdown')` or via lifespan",
         "Typecheck passes"
       ],
       "priority": 10,
-      "passes": true,
-      "notes": "In SuperAdminPage.tsx: the table renders columns for each org stat. Add two new <th> and <td> elements for shopee_seller_count and shopee_copy_count. Use org.shopee_seller_count ?? 0 and org.shopee_copy_count ?? 0 for display. Keep the same styling as existing columns."
+      "passes": false,
+      "notes": "Currently every API call creates and destroys an httpx.AsyncClient (lines 167, 194, 326, 354, 450). This means no connection pooling. A singleton client will reuse TCP connections. Check how main.py handles lifecycle events — it may use lifespan context manager. Keep timeout=60.0 for upload_image specifically (can be overridden per-call)."
     },
     {
       "id": "US-011",
-      "title": "Update CHANGELOG.md and CLAUDE.md with all Shopee Phase 2 changes",
-      "description": "As a developer, I want documentation updated to reflect all Shopee integration changes.",
+      "title": "Parallelize Shopee image uploads with semaphore",
+      "description": "As a system, I want to upload images concurrently (max 3 at a time) to reduce copy time for items with many images.",
       "acceptanceCriteria": [
-        "In CHANGELOG.md [Unreleased] section: add entries under the Shopee Integration heading for: shopee_copier.py copy engine, shopee_copy.py router (all 5 endpoints), admin permissions including Shopee shops, super admin Shopee stats, frontend ShopeeCopyPage, App.tsx Shopee tab, Admin.tsx Shopee section, SuperAdminPage Shopee columns",
-        "In CLAUDE.md: update API Routes section to include all new /api/shopee/copy/* routes (POST /, POST /with-dimensions, GET /preview/{item_id}, GET /logs, POST /resolve-sellers)",
-        "In CLAUDE.md Project Structure: confirm shopee_copier.py and shopee_copy.py are listed under services/ and routers/",
+        "In `app/services/shopee_copier.py`, modify `_upload_images()` to use `asyncio.gather()` with `asyncio.Semaphore(3)` for concurrent uploads",
+        "Each image still has 1 retry on failure (existing behavior preserved)",
+        "The ORDER of returned image_ids matches the order of input URLs (first image = cover photo)",
+        "Failed individual uploads return None and are filtered out (existing behavior)",
+        "Log line indicates how many images uploaded successfully vs total attempted",
         "Typecheck passes"
       ],
       "priority": 11,
-      "passes": true,
-      "notes": "CHANGELOG.md already has a Shopee Integration Phase 1 section under [Unreleased]. Add Phase 2 entries below it. CLAUDE.md already documents shopee_api.py, auth_shopee.py, and the Shopee API Patterns section. Add the copy router and copier to the structure and routes sections. Keep entries concise and in Portuguese."
+      "passes": false,
+      "notes": "Current code at lines 60-92 uploads sequentially in a for loop. For 9 images at ~2s each = 18s. With semaphore(3) = ~6s. Use asyncio.gather with return_exceptions=False. Create a helper `_upload_one(sem, shop_id, url, org_id)` that acquires semaphore, calls _upload_single_image, returns image_id or None. Then gather all helpers and filter None values. CRITICAL: preserve order — asyncio.gather preserves input order."
+    },
+    {
+      "id": "US-012",
+      "title": "Add CSRF protection to Shopee OAuth flow",
+      "description": "As a system, I want the OAuth state parameter to be cryptographically signed and single-use, preventing attackers from connecting shops to arbitrary orgs.",
+      "acceptanceCriteria": [
+        "In `app/routers/auth_shopee.py` install endpoint: generate a CSRF token using `hmac.new(settings.shopee_partner_key.encode(), f'{org_id}:{ts}'.encode(), 'sha256').hexdigest()[:16]`",
+        "Encode state as `org_{org_id}_{token}_{ts}` in the redirect URI",
+        "In callback: parse state to extract org_id, token, and timestamp",
+        "Validate token by recomputing HMAC and comparing",
+        "Reject if timestamp is older than 600 seconds (10 minutes)",
+        "Return HTTP 400 with clear error message on invalid/expired state",
+        "Import `hmac` and `time` at top of file",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": "Current code at lines 33-36 encodes state as `org_{org_id}` with no signing. The callback at lines 49-52 trusts it blindly. Using HMAC with the partner_key (already available) avoids needing a DB table or cache for state storage. The timestamp in the state enables expiry validation. The token is truncated to 16 chars for URL friendliness. This is stateless CSRF protection — no server-side storage needed."
+    },
+    {
+      "id": "US-013",
+      "title": "Cache logistics per destination shop in copy operations",
+      "description": "As a system, I want to fetch logistics channels once per destination shop per copy operation, not once per (item, destination) pair.",
+      "acceptanceCriteria": [
+        "In `app/services/shopee_copier.py`, in `copy_items()`, before the item loop: pre-fetch logistics for each unique dest_shop_id and store in a dict `logistics_cache: dict[int, list]`",
+        "Pass the pre-fetched logistics to `copy_single_item()` via a new optional parameter `logistics: list[dict] | None = None`",
+        "In `copy_single_item()`: if `logistics` is provided, skip `_fetch_dest_logistics()` call; otherwise fetch (backward compat)",
+        "Apply same change in `copy_with_dimensions()`",
+        "Net reduction: N items x M destinations goes from N*M logistics calls to M calls",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": "Currently _fetch_dest_logistics is called inside copy_single_item for every (item, dest) pair. For 10 items x 3 dests = 30 calls, but only 3 are unique. Pre-fetch before the loop. Use try/except on pre-fetch — if logistics fetch fails for a dest, log error and skip that dest entirely."
+    },
+    {
+      "id": "US-014",
+      "title": "Reuse source item data across destination shops",
+      "description": "As a system, I want to fetch source item data once per item and reuse it for all destination shops, instead of re-fetching for each destination.",
+      "acceptanceCriteria": [
+        "In `app/services/shopee_copier.py`, in `copy_items()`, before the dest-shop inner loop: pre-fetch source item via `_fetch_source_item()` and store result",
+        "Pass pre-fetched source data to `copy_single_item()` via a new optional parameter `source_data: dict | None = None`",
+        "In `copy_single_item()`: if `source_data` is provided, skip `_fetch_source_item()` call; otherwise fetch (backward compat)",
+        "Apply same change in `copy_with_dimensions()`",
+        "Net reduction: 1 item x N destinations goes from 3*N API calls to 3 calls",
+        "If source fetch fails, skip all destinations for that item with error logged",
+        "Typecheck passes"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": "Currently copy_single_item fetches source data (base_info + extra_info + models = 3 API calls) every time it's called. For 1 item copied to 3 destinations = 9 redundant calls. Pre-fetch in the outer loop of copy_items. The source_data dict contains keys like item_name, description, images, etc. — check _fetch_source_item return format."
+    },
+    {
+      "id": "US-015",
+      "title": "DRY refactor — unify copy_items and copy_with_dimensions",
+      "description": "As a developer, I want to eliminate the ~90% code duplication between the two copy functions by extracting shared logic.",
+      "acceptanceCriteria": [
+        "Create internal function `async _run_copy_job(source_shop_id, item_ids, dest_shop_ids, org_id, user_id, log_id, dimensions=None, logistics_cache=None, source_data_cache=None) -> list[dict]` that contains the shared copy loop logic",
+        "`copy_items()` becomes a thin wrapper that resolves slugs, creates log entry, calls `_run_copy_job`, updates log",
+        "`copy_with_dimensions()` becomes a thin wrapper that resolves slugs, creates log entry, calls `_run_copy_job` with dimensions, updates log",
+        "Trial accounting uses the same pattern in both wrappers (pre-increment + refund)",
+        "All existing behavior preserved — no functional regression",
+        "Typecheck passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": "copy_items and copy_with_dimensions are ~90% identical. The differences: copy_items handles multiple item_ids, copy_with_dimensions passes dimensions. Both do: resolve slugs -> create log -> loop items x dests -> update log. After US-013 and US-014 added the caching params, the refactor is even cleaner. Careful: the trial accounting differs — copy_items pre-increments, copy_with_dimensions doesn't. Unify to pre-increment pattern."
+    },
+    {
+      "id": "US-016",
+      "title": "Add init_tier_variation and add_model API methods",
+      "description": "As a developer, I want Shopee API wrapper functions for tier variation initialization and model creation so the copier can create products with variations.",
+      "acceptanceCriteria": [
+        "In `app/services/shopee_api.py`, add `async def init_tier_variation(shop_id: int, item_id: int, tier_variation: list[dict], org_id: str) -> dict` that POSTs to `/api/v2/product/init_tier_variation`",
+        "Add `async def add_model(shop_id: int, item_id: int, model_list: list[dict], org_id: str) -> dict` that POSTs to `/api/v2/product/add_model`",
+        "Both functions use the existing `_shop_post` helper for signing and auth",
+        "Both functions include proper docstrings describing the payload format",
+        "Typecheck passes"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": "These are the two API calls needed after add_item to set up variations. init_tier_variation defines the tier structure (e.g., Color, Size). add_model defines the specific combinations with prices and stock. Payload formats: init_tier_variation body: {item_id, tier_variation: [{name: 'Color', option_list: [{option: 'Red', image: {image_id: '...'}}]}]}. add_model body: {item_id, model_list: [{tier_index: [0, 0], normal_stock: 10, original_price: 99.9, model_sku: 'SKU-RED-S'}]}. Use _shop_post which handles HMAC signing."
+    },
+    {
+      "id": "US-017",
+      "title": "Implement variation copy flow in shopee_copier",
+      "description": "As an operator, I want products with variations (size, color) to be copied with all their models, prices, and individual stock.",
+      "acceptanceCriteria": [
+        "In `app/services/shopee_copier.py`, in `_build_shopee_payload`: if source has `has_model: True`, exclude `normal_stock` from the add_item payload",
+        "After successful `add_item` in `copy_single_item`: if source has models data (from `_fetch_source_item`), call `init_tier_variation` with tier names and options extracted from source models",
+        "After `init_tier_variation`: call `add_model` with model list containing per-model prices, stock, and SKUs",
+        "If tier variation images exist, upload them before calling init_tier_variation and include image_ids",
+        "If `init_tier_variation` or `add_model` fails, the item is still created (mark as 'partial' in result, log the variation error)",
+        "Result dict includes `models_copied: int` and `models_total: int` fields",
+        "Items without models (has_model: False) continue to work exactly as before",
+        "Typecheck passes"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": "This is the core variation feature. The source data from _fetch_source_item already includes 'models' key from get_model_list. Structure: models response has 'tier_variation' (tier definitions) and 'model' (specific combinations). Steps: (1) check has_model from base_info, (2) extract tier_variation from models data — each tier has name + option_list, (3) upload tier images if present, (4) call init_tier_variation, (5) build model_list from models data — each model has tier_index, price, stock, sku, (6) call add_model. Handle the case where models data is empty/None (fallback to simple item). Mark result as 'partial' if item created but variations failed."
+    },
+    {
+      "id": "US-018",
+      "title": "Fix Shopee retry-dimensions payload in CopyPage frontend",
+      "description": "As an operator, I want the 'Informar dimensoes' retry button to work correctly for Shopee copies, sending the required source/destinations/item_id fields.",
+      "acceptanceCriteria": [
+        "In `frontend/src/pages/CopyPage.tsx`, modify `handleLogRetry` for platform 'shopee' to send `{ source: log.source_seller, destinations: log.dest_sellers, item_id: String(log.source_item_id), dimensions: dims }` instead of `{ log_id, dimensions }`",
+        "The `onRetrySubmit` callback receives the full log object (not just logId) to access source_seller, dest_sellers, source_item_id",
+        "ML retry continues to send `{ log_id, dimensions }` unchanged",
+        "The CopyLog type in `frontend/src/lib/api.ts` includes `source_seller: string`, `dest_sellers: string[]`, `source_item_id: string | number` fields",
+        "Typecheck passes"
+      ],
+      "priority": 18,
+      "passes": false,
+      "notes": "Critical frontend bug. Line 192 sends { log_id, dimensions } for Shopee but the backend ShopeeCopyWithDimensionsRequest expects { source, destinations, item_id, dimensions }. The orphaned ShopeeCopyPage.tsx (lines 315-329) has the correct implementation — use it as reference. The log object from /api/shopee/copy/logs contains source_seller, dest_sellers, and source_item_id. The onRetrySubmit callback chain passes through LogCard — may need to pass the full log object instead of just logId."
+    },
+    {
+      "id": "US-019",
+      "title": "Show weight and description status in Shopee preview",
+      "description": "As an operator, I want to see the item weight and whether it has a description in the preview, so I know before copying if dimensions will be needed.",
+      "acceptanceCriteria": [
+        "In `frontend/src/lib/api.ts`, extend `ItemPreview` type with optional fields: `weight?: number`, `has_description?: boolean`, `stock?: number`",
+        "In `frontend/src/pages/CopyPage.tsx` `handlePreview`, when normalizing Shopee preview data, include `weight`, `has_description`, and `stock` from the Shopee response",
+        "In the preview card rendering section, show weight (in kg) when available",
+        "Show a warning indicator when `has_description` is false (Shopee requires description)",
+        "ML preview is not affected (fields are optional)",
+        "Typecheck passes"
+      ],
+      "priority": 19,
+      "passes": false,
+      "notes": "CopyPage.handlePreview (lines 154-162) normalizes Shopee data but drops weight, has_description, stock. The orphaned ShopeeCopyPage (lines 665-683) shows weight correctly as '{p.weight}kg' — use as reference. The backend /api/shopee/copy/preview/{item_id} already returns these fields."
+    },
+    {
+      "id": "US-020",
+      "title": "Fix resolve-sellers error handling for Shopee in CopyForm",
+      "description": "As an operator, I want to see error messages when Shopee seller resolution fails, instead of silent failure.",
+      "acceptanceCriteria": [
+        "In `frontend/src/components/CopyForm.tsx`, in the Shopee resolve-sellers path: if `!res.ok`, parse the error response and show it via toast",
+        "If the user has no Shopee sellers connected but pasted a Shopee URL, show specific message: 'Nenhuma loja Shopee conectada'",
+        "Loading state is properly reset on error (setResolving(false) or equivalent)",
+        "ML resolve path is not affected",
+        "Typecheck passes"
+      ],
+      "priority": 20,
+      "passes": false,
+      "notes": "CopyForm.tsx line ~198: `if (!res.ok) return;` silently ignores Shopee resolve errors. The ML path shows errors properly. Add toast(err.detail, 'error') matching the ML pattern. For the 'no Shopee sellers' case: check if shopeeSellers array is empty before even calling resolve."
+    },
+    {
+      "id": "US-021",
+      "title": "Add Shopee connect option to empty state and QuickStartGuide",
+      "description": "As an admin of a new org, I want to see the option to connect Shopee on the onboarding screen, so Shopee-only orgs have a guided path.",
+      "acceptanceCriteria": [
+        "In `frontend/src/App.tsx`, in the empty state section (where 'Conectar conta do Mercado Livre' button is shown): add a 'Conectar loja Shopee' button that calls `/api/shopee/install`",
+        "The Shopee button has consistent visual styling with the ML button (side by side or stacked)",
+        "QuickStartGuide section mentions Shopee as a connection option alongside ML",
+        "Paywall feature list (lines ~308-323) includes a Shopee-related feature mention",
+        "Typecheck passes"
+      ],
+      "priority": 21,
+      "passes": false,
+      "notes": "App.tsx lines 418-491 show the empty state with only ML connect button. Lines 748-833 show QuickStartGuide mentioning only ML. The Shopee install flow uses the same pattern as ML: fetch /api/shopee/install, get redirect_url, window.location.href = redirect_url. Look at how the ML connect button works and replicate the pattern."
+    },
+    {
+      "id": "US-022",
+      "title": "Delete ShopeeCopyPage.tsx (dead code)",
+      "description": "As a developer, I want to remove the orphaned ShopeeCopyPage that is never imported or rendered, to reduce codebase size and confusion.",
+      "acceptanceCriteria": [
+        "Delete file `frontend/src/pages/ShopeeCopyPage.tsx`",
+        "Verify no file in `frontend/src/` imports ShopeeCopyPage (grep for 'ShopeeCopyPage')",
+        "Build passes: `cd frontend && npm run build` (or typecheck equivalent)",
+        "Typecheck passes"
+      ],
+      "priority": 22,
+      "passes": false,
+      "notes": "This file is ~950 lines that are never rendered. All useful logic has been extracted to CopyPage in previous stories (US-018 for retry payload, US-019 for preview weight). App.tsx never imports ShopeeCopyPage. Safe to delete. Run grep to triple-check no references exist."
+    },
+    {
+      "id": "US-023",
+      "title": "Extract shared components — StatusBadge, isDimensionError",
+      "description": "As a developer, I want duplicated frontend components and helpers extracted to shared files for maintainability.",
+      "acceptanceCriteria": [
+        "Create `frontend/src/components/StatusBadge.tsx` with the StatusBadge component extracted from CopyPage (consolidating the identical implementations)",
+        "Create `frontend/src/lib/helpers.ts` with `isDimensionError(error: string): boolean` that includes both ML dimension keywords AND Shopee 'weight' keyword check",
+        "Update `frontend/src/pages/CopyPage.tsx` to import StatusBadge from the shared component and isDimensionError from helpers",
+        "Remove the local StatusBadge and isDimensionError definitions from CopyPage",
+        "Remove dead types from `frontend/src/lib/api.ts`: `ShopeeCopyResponse`, `ShopeeCopyResult` (never imported anywhere)",
+        "Build passes without errors",
+        "Typecheck passes"
+      ],
+      "priority": 23,
+      "passes": false,
+      "notes": "StatusBadge is duplicated in CopyPage (lines ~563-578). isDimensionError is in CopyPage (lines ~19-27) missing the 'weight' check that the orphaned ShopeeCopyPage had. ShopeeCopyResponse/ShopeeCopyResult in api.ts (lines 117-132) are defined but never imported. After US-022 deletes ShopeeCopyPage, only CopyPage remains as the consumer."
     }
   ]
 }
