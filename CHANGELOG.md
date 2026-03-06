@@ -25,6 +25,10 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Security
 - Protecao CSRF no fluxo OAuth Shopee — parametro `state` agora assinado com HMAC-SHA256 (usando `partner_key`) e inclui timestamp; callback valida assinatura e rejeita estados expirados (>10 minutos)
+- Corrigido vazamento de token data na resposta HTTP do OAuth callback — agora logado server-side e retorna mensagem generica ao client
+- Corrigido XSS na pagina de sucesso OAuth Shopee — `shop_name` agora sanitizado com `html.escape()` antes de inserir no HTML
+- Upload de imagens Shopee agora aborta se a imagem de capa (indice 0) falhar, evitando que outra imagem assuma a posicao de capa
+- `_minimal_payload` do retry 3 agora usa `condition` do payload original em vez de hardcoded `NEW`
 
 ### Fixed (Frontend)
 - Botao "Informar dimensoes" para copias Shopee agora envia payload correto (`source`, `destinations`, `item_id`, `dimensions`) em vez de `log_id` — antes a requisicao sempre falhava pois o backend esperava campos diferentes
