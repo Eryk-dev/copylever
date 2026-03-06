@@ -267,6 +267,7 @@ def _log_debug(
             "api_method": api_method,
             "api_url": api_url,
             "response_status": response_status,
+            "platform": "shopee",
         }
         if user_id:
             row["user_id"] = user_id
@@ -369,7 +370,24 @@ async def copy_single_item(
             return result
 
         # 3. Fetch dest logistics
-        logistics = await _fetch_dest_logistics(dest_shop_id, org_id)
+        try:
+            logistics = await _fetch_dest_logistics(dest_shop_id, org_id)
+        except Exception as e:
+            err_msg = "Falha ao buscar canais logisticos da loja destino"
+            logger.error(
+                "Logistics fetch failed for shop %d: %s", dest_shop_id, e,
+            )
+            _log_debug(
+                action="shopee_logistics_fetch_failed",
+                source_item_id=str(item_id),
+                dest_seller=str(dest_shop_id),
+                error_message=f"{err_msg}: {e}",
+                user_id=user_id,
+                org_id=org_id,
+            )
+            result["status"] = "error"
+            result["error"] = err_msg
+            return result
 
         # 4. Build payload
         payload = _build_shopee_payload(source_data, image_ids, logistics, dimensions)

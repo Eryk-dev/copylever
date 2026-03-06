@@ -16,6 +16,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Token refresh Shopee agora atualiza `updated_at` na tabela `shopee_sellers`
 - Condicao do item Shopee (`condition`) agora vem do item origem em vez de hardcoded `NEW`
 - Removido import nao utilizado `urlencode` de `auth_shopee.py`
+- Busca de canais logisticos Shopee agora tem try/except especifico com mensagem clara em vez de cair no handler generico
+- Debug logs Shopee agora incluem campo `platform: 'shopee'` para distinguir de logs ML
 
 ### Changed
 - **Historico de copias ML redesenhado**: tabela substituida por cards com borda de status colorida, titulo do item em destaque, MLB ID em tag mono, fluxo origem/destinos, chips verdes para novos MLBs criados, bloco de erros com destaque vermelho, e form de dimensoes inline. Responsivo e com suporte completo a dark mode via classes CSS (`log-chip-success`, `log-error-block`)
