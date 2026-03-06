@@ -58,17 +58,34 @@ async def _fetch_source_item(shop_id: int, item_id: int, org_id: str) -> dict:
     }
 
 
+_UPLOAD_CONCURRENCY = 3
+
+
 async def _upload_images(
     dest_shop_id: int, image_urls: list[str], org_id: str
 ) -> list[str]:
-    """Upload images to dest shop. Max 9 images. Retry 1x per image on failure."""
-    urls = image_urls[:MAX_IMAGES]
-    image_ids: list[str] = []
+    """Upload images to dest shop concurrently (max 3 at a time).
 
-    for url in urls:
-        image_id = await _upload_single_image(dest_shop_id, url, org_id)
-        if image_id:
-            image_ids.append(image_id)
+    Max 9 images. Retry 1x per image on failure.
+    Order of returned image_ids matches input URL order (first = cover).
+    """
+    urls = image_urls[:MAX_IMAGES]
+    if not urls:
+        return []
+
+    sem = asyncio.Semaphore(_UPLOAD_CONCURRENCY)
+
+    async def _guarded_upload(url: str) -> str | None:
+        async with sem:
+            return await _upload_single_image(dest_shop_id, url, org_id)
+
+    results = await asyncio.gather(*[_guarded_upload(u) for u in urls])
+    image_ids = [img_id for img_id in results if img_id is not None]
+
+    logger.info(
+        "Image upload complete: %d/%d successful for shop %d",
+        len(image_ids), len(urls), dest_shop_id,
+    )
 
     return image_ids
 
