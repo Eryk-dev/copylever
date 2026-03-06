@@ -285,3 +285,16 @@ Started: Fri Mar  6 01:48:38 -03 2026
   - The file was purely orphaned — all useful patterns (retry payload format, preview weight display) had already been extracted to CopyPage.tsx in US-018 and US-019
   - US-023 depends on this being deleted first, as it removes dead types (`ShopeeCopyResponse`, `ShopeeCopyResult`) that were only used by this page
 ---
+
+## 2026-03-06 - US-023
+- Extracted `StatusBadge` component to `frontend/src/components/StatusBadge.tsx` (including `statusLabels` map)
+- Extracted `isDimensionError` to `frontend/src/lib/helpers.ts` with added 'weight' keyword check for Shopee dimension errors
+- Updated `CopyPage.tsx` to import from shared files, removed local definitions (~26 lines removed)
+- Removed dead types `ShopeeCopyResponse` and `ShopeeCopyResult` from `frontend/src/lib/api.ts` (16 lines removed)
+- Files changed: `frontend/src/components/StatusBadge.tsx` (new), `frontend/src/lib/helpers.ts` (new), `frontend/src/pages/CopyPage.tsx`, `frontend/src/lib/api.ts`, `CHANGELOG.md`
+- **Learnings for future iterations:**
+  - `StatusBadge` is now a shared component at `frontend/src/components/StatusBadge.tsx` — import from there, not define locally
+  - `isDimensionError` is at `frontend/src/lib/helpers.ts` — add new dimension-related keywords there
+  - The `Card` component is still exported from `CopyPage.tsx` (line ~532) — could be extracted in future cleanup
+  - `ShopeeCopyLog` and `ShopeeItemPreview` types in api.ts are NOT dead — they're used by backend response typing even if not directly imported in components
+---

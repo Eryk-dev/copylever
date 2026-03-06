@@ -1,0 +1,197 @@
+# Ralph Progress Log
+Started: Fri Mar  6 00:04:59 -03 2026
+---
+
+## Codebase Patterns
+- Use `python3` not `python` — only python3 is available on this machine
+- Shopee API responses wrap data in `response` key: e.g. `resp["response"]["item_list"][0]`
+- Shopee image upload returns `resp["response"]["image_info"]["image_id"]`
+- Shopee logistics channels are in `resp["response"]["logistics_channel_list"]`
+- Module imports work: `from app.services.shopee_api import ...` — project root is in Python path
+- mypy errors in shopee_api.py are pre-existing (param type mismatches) — ignore when checking new files
+- Use `--ignore-missing-imports` with mypy for this project
+- Shopee new item_id after add_item is at `resp["response"]["item_id"]`
+- `api_debug_logs` table is shared between ML and Shopee — use `action` field to differentiate
+- `shopee_copy_logs.source_item_id` is bigint — pass int, not string
+- Supabase `.single()` raises on not-found — no need for manual empty check
+- `asyncio.gather(return_exceptions=True)` returns `BaseException` — use `isinstance(r, BaseException)` for mypy
+- Shopee item IDs are pure integers (not MLB-prefixed) — normalize via `int()`
+- Trial limit (check + increment) shares the same org counter for ML and Shopee
+- `user_permissions` has no `platform` column — slug uniqueness across ML/Shopee is sufficient, `platform` is computed in GET response
+
+## 2026-03-06 - US-001
+- Implemented `app/services/shopee_copier.py` with helper functions:
+  - `_fetch_source_item()` — fetches base_info + extra_info + models from Shopee API
+  - `_upload_images()` — uploads up to 9 images with 1 retry per image
+  - `_upload_single_image()` — single image upload helper
+  - `_fetch_dest_logistics()` — fetches enabled logistics channels for dest shop
+  - `_build_shopee_payload()` — builds add_item payload with all required fields
+- Files changed: `app/services/shopee_copier.py` (new)
+- **Learnings for future iterations:**
+  - Shopee base_info items are inside `response.item_list[0]`, not directly in response
+  - Weight is in kg (float), default to 0.5 if missing
+  - Description is required by Shopee — falls back to item_name if empty
+  - Stock info uses `stock_info_v2.summary_info.total_available_stock` in newer API
+  - `get_model_list` can fail for items without variations — wrap in try/except
+  - Shopee `condition` is string "NEW" not ML-style "new"
+- `_resolve_shop_id()` uses `.single()` — throws if not found, no need for manual check
+- Shopee `add_item` response: new item_id at `response.item_id`
+- Shopee copy logs table: `shopee_copy_logs` with `source_item_id` as bigint (not text)
+---
+
+## 2026-03-06 - US-002
+- Implemented copy orchestration functions in `app/services/shopee_copier.py`:
+  - `copy_single_item()` — orchestrates fetch→upload→logistics→build→create with 3 retry attempts
+  - `copy_items()` — copies multiple items×dests, logs to shopee_copy_logs, returns summary
+  - `copy_with_dimensions()` — copies single item with user-provided dimensions
+  - `_resolve_shop_id()` — resolves slug to shop_id via shopee_sellers table
+  - `_log_debug()` — logs failed API calls to api_debug_logs (same pattern as ML)
+  - `_is_dimension_error()` — detects dimension/weight errors for needs_dimensions status
+  - `_strip_attributes()` — retry 2 strips non-essential attributes
+  - `_minimal_payload()` — retry 3 uses bare minimum fields
+- Retry logic: attempt 1 full payload, attempt 2 strips attributes, attempt 3 minimal payload
+- 0.7s sleep between sequential copy calls for rate limiting
+- Files changed: `app/services/shopee_copier.py`
+- **Learnings for future iterations:**
+  - Shopee new item_id is in `response.item_id` (not nested in item_list)
+  - Same `api_debug_logs` table is shared between ML and Shopee debug logs
+  - `shopee_copy_logs.source_item_id` is bigint — pass int directly, not string
+  - `_resolve_shop_id` uses Supabase `.single()` which raises on not-found — wraps naturally
+  - Shopee error format: `error_code: message` pattern, check `error_code` field
+---
+
+## 2026-03-06 - US-003
+- Implemented `app/routers/shopee_copy.py` with all 5 endpoints:
+  - `POST /api/shopee/copy` — bulk copy with permission checks, trial limits, item ID normalization
+  - `POST /api/shopee/copy/with-dimensions` — copy with dimensions (grams→kg conversion for weight)
+  - `GET /api/shopee/copy/preview/{item_id}` — auto-detect shop, return preview data
+  - `GET /api/shopee/copy/logs` — org-scoped logs (admin=all, operator=own)
+  - `POST /api/shopee/copy/resolve-sellers` — parallel resolve with asyncio.Semaphore(5)
+- Registered router in `app/main.py`
+- Files changed: `app/routers/shopee_copy.py` (new), `app/main.py`
+- **Learnings for future iterations:**
+  - Shopee item IDs are pure integers (not MLB-prefixed like ML) — normalize with int()
+  - Shopee URLs can have format `shopee.com.br/product/X/Y` or `i.shopid.itemid`
+  - `asyncio.gather(return_exceptions=True)` returns `BaseException` not `Exception` — use `isinstance(r, BaseException)` for type narrowing
+  - Trial limit pattern (check + increment) is duplicated from copy.py — both ML and Shopee share the same org trial counter
+  - Preview endpoint iterates all org's shopee_sellers to auto-detect item owner (no resolve step needed)
+  - Logs endpoint uses `require_user` (not `require_active_org`) per AC — allows viewing logs even if org is inactive
+---
+
+## 2026-03-06 - US-005
+- Added `shopee_seller_count` and `shopee_copy_count` to `GET /api/super/orgs` response
+- Queries `shopee_sellers` (active, per org) and `shopee_copy_logs` (last 30 days, per org)
+- Files changed: `app/routers/super_admin.py`
+- **Learnings for future iterations:**
+  - The `count="exact"` pattern has pre-existing mypy type errors across the file — not a new issue
+  - Adding new stats follows the exact same pattern: `.select("id", count="exact").eq("org_id", org_id)...execute().count or 0`
+---
+
+## 2026-03-06 - US-004
+- Modified GET `/users/{user_id}/permissions` in `app/routers/admin_users.py` to include Shopee shops
+  - Added second query to `shopee_sellers` table for the org
+  - Each entry now includes `platform` field: `"ml"` for ML sellers, `"shopee"` for Shopee shops
+  - Merged both into a single response list with permission defaults from `user_permissions`
+- PUT endpoint unchanged — `user_permissions` table upserts by `user_id + seller_slug`, works for both platforms
+- Files changed: `app/routers/admin_users.py`
+- **Learnings for future iterations:**
+  - `user_permissions` table has no `platform` column — slug uniqueness across platforms is sufficient
+  - PUT permissions upsert works for both ML and Shopee slugs with no changes needed
+  - The `platform` field is only in the GET response (computed, not stored)
+---
+
+## 2026-03-06 - US-006
+- Added Shopee TypeScript types to `frontend/src/lib/api.ts`:
+  - ShopeeSeller, ShopeeCopyResult, ShopeeCopyResponse, ShopeeCopyLog, ShopeeItemPreview interfaces
+  - Added shopee_seller_count and shopee_copy_count to OrgWithStats
+- Updated `frontend/src/hooks/useAuth.ts`:
+  - Added shopeeSellers state (useState<ShopeeSeller[]>([]))
+  - Added loadShopeeSellers callback (GET /api/shopee/sellers, 401 clears auth)
+  - Added disconnectShopeeSeller callback (DELETE /api/shopee/sellers/{slug}, reloads)
+  - Calls loadShopeeSellers alongside loadSellers in auto-load useEffect
+  - Calls loadShopeeSellers on visibility change (same pattern as ML)
+  - Clears shopeeSellers in clearAuth
+  - Returns shopeeSellers, loadShopeeSellers, disconnectShopeeSeller
+- Files changed: `frontend/src/lib/api.ts`, `frontend/src/hooks/useAuth.ts`
+- **Learnings for future iterations:**
+  - Shopee types mirror ML types closely — ShopeeSeller has shop_id instead of ml_user_id
+  - useAuth hook follows a consistent pattern: state + loader + disconnector per platform
+  - TypeScript typecheck passes cleanly with `npx tsc --noEmit` in frontend dir
+  - The hook return object is consumed by App.tsx — next stories (US-007, US-008, US-009) will use these new fields
+---
+
+## 2026-03-06 - US-007
+- Created `frontend/src/pages/ShopeeCopyPage.tsx` — full copy page for Shopee products
+  - Form: textarea for item IDs (accepts numbers, Shopee URLs), auto-resolve source shops via POST /api/shopee/copy/resolve-sellers
+  - Destination shop chips with orange Shopee tint (#EE4D2D)
+  - Copy button with confirmation step, calls POST /api/shopee/copy
+  - Preview section: fetches GET /api/shopee/copy/preview/{item_id}, shows image/name/price/weight
+  - Results section: summary stats, DimensionForm for needs_dimensions items, expandable error details
+  - Logs section: collapsible, paginated, status filter tabs, polls every 5s while pending/in_progress
+  - Dimension retry from both results and log rows via POST /api/shopee/copy/with-dimensions
+- Files changed: `frontend/src/pages/ShopeeCopyPage.tsx` (new)
+- **Learnings for future iterations:**
+  - Shopee item IDs are pure numbers — URL extraction uses regex for `shopee.com.br/product/X/Y` and `i.SHOP_ID.ITEM_ID` patterns
+  - resolve-sellers returns `shop_slug` (not `seller_slug` like ML) — use correct field name in response parsing
+  - Card component is exported from CopyPage.tsx — import `{ Card }` from there
+  - Shopee chips use orange (#EE4D2D) to visually differentiate from ML's default ink color
+  - Field and StatusBadge are defined locally in the page (not shared components) following CopyPage pattern
+  - `previewOpen` state was unused after refactoring preview logic — destructure as `[, setPreviewOpen]` to avoid TS error
+---
+
+## 2026-03-06 - US-008
+- Added Shopee tab to main navigation in `frontend/src/App.tsx`:
+  - Added `'shopee'` to `View` type union
+  - Imported `ShopeeCopyPage` component
+  - Added `tabs.push('shopee')` alongside `'copy'` in `visibleTabs` (same permission check)
+  - Added Shopee `ViewTab` between Cópia and Compatibilidade in nav
+  - Rendered `ShopeeCopyPage` when `activeView === 'shopee'` with shopeeSellers, headers, user props
+  - Updated empty-state condition: now checks both `auth.sellers.length === 0 AND auth.shopeeSellers.length === 0`
+- Files changed: `frontend/src/App.tsx`
+- **Learnings for future iterations:**
+  - Shopee tab reuses the same copy permission check as ML tab (admin OR has can_copy_from + can_copy_to)
+  - Empty-state screen should only show when NO sellers of ANY type are connected (both ML and Shopee)
+  - ShopeeCopyPage accepts `shopeeSellers` prop (not `sellers`) — different prop name from CopyPage
+  - Admin component will need Shopee props in US-009 (shopeeSellers, loadShopeeSellers, disconnectShopeeSeller)
+---
+
+## 2026-03-06 - US-009
+- Added Shopee sellers section to `frontend/src/pages/Admin.tsx`:
+  - Updated Props interface with shopeeSellers, loadShopeeSellers, disconnectShopeeSeller
+  - Added separate state for Shopee rename/disconnect/install (shopeeEditingSlug, shopeeDisconnecting, etc.)
+  - Added handleShopeeRename (PUT /api/shopee/sellers/{slug}/name)
+  - Added handleShopeeInstall (GET /api/shopee/install → redirect)
+  - Added handleShopeeRefresh and handleShopeeDisconnect
+  - "Conectar loja Shopee" card with orange-styled button (#EE4D2D)
+  - "Lojas Shopee" card with shop list: orange Shopee badge, name, slug, rename, shop_id, connect date, disconnect
+  - Visual separator (hr line) between ML and Shopee sections
+- Updated `frontend/src/App.tsx` to pass Shopee props to Admin component
+- Files changed: `frontend/src/pages/Admin.tsx`, `frontend/src/App.tsx`
+- **Learnings for future iterations:**
+  - Admin uses separate state variables for ML vs Shopee editing/disconnecting (shopeeEditingSlug vs editingSlug) to avoid conflicts
+  - Shopee install endpoint is GET /api/shopee/install (same pattern as ML's GET /api/ml/install)
+  - Shopee rename endpoint is PUT /api/shopee/sellers/{slug}/name (vs ML's PUT /api/sellers/{slug}/name)
+  - Orange badge uses `rgba(238, 77, 45, 0.1)` background with `#EE4D2D` text color
+  - ShopeeSeller has `shop_id` and `created_at` fields useful for display in admin list
+---
+
+## 2026-03-06 - US-010
+- Added 'Shopee Sellers' and 'Shopee Cópias (30d)' columns to SuperAdminPage orgs table
+- Columns display `org.shopee_seller_count ?? 0` and `org.shopee_copy_count ?? 0`
+- Positioned after existing 'Compats (30d)' column, before 'Criado em'
+- Files changed: `frontend/src/pages/SuperAdminPage.tsx`
+- **Learnings for future iterations:**
+  - OrgWithStats already had shopee_seller_count and shopee_copy_count from US-006 — just needed to render them
+  - Use `?? 0` for optional numeric fields in case backend returns undefined/null
+  - Table columns use `.map(h => ...)` pattern — just add to the header array and add `<td>` in same order
+---
+
+## 2026-03-06 - US-011
+- Updated CHANGELOG.md: added "Shopee Integration (Phase 2 — Copy Engine + Frontend)" section with 10 entries covering backend (copier, router, permissions, super admin) and frontend (types, hook, page, tab, admin, super admin)
+- Updated CLAUDE.md: added 5 Shopee Copy routes to API Routes section, added shopee_copier.py and shopee_copy.py to Project Structure, updated migrations count (001-011), updated page listings (ShopeeCopyPage), updated tab description (Copy, Shopee, Compat, Admin)
+- Files changed: `CHANGELOG.md`, `CLAUDE.md`
+- **Learnings for future iterations:**
+  - CLAUDE.md already had Phase 1 Shopee sections (OAuth, API Patterns, env vars, DB schema) from prior work — only needed to add Phase 2 items
+  - Pre-existing mypy errors in shopee_api.py are expected (param type mismatches) — not a blocker for typecheck
+  - This was the final story — all 11 user stories now pass
+---
