@@ -1,6 +1,6 @@
-# Copy Anuncios ML
+# Copy Anuncios
 
-Plataforma multi-tenant (SaaS) para copiar anúncios e compatibilidades veiculares entre contas do Mercado Livre.
+Plataforma multi-tenant (SaaS) para copiar anuncios entre contas do Mercado Livre e Shopee.
 
 ## Documentação Completa da API
 
@@ -24,25 +24,29 @@ app/
 ├── config.py            # Pydantic Settings (env vars)
 ├── db/
 │   ├── supabase.py      # Supabase client singleton (get_db())
-│   └── migrations/      # SQL migrations (001-009)
+│   └── migrations/      # SQL migrations (001-011)
 ├── routers/
 │   ├── auth.py          # Login/signup/logout/me/admin-promote + require_user/require_admin/require_super_admin/require_active_org deps
 │   ├── auth_ml.py       # OAuth2 ML (install → callback → token exchange)
+│   ├── auth_shopee.py   # OAuth2 Shopee (install → callback → token exchange)
 │   ├── billing.py       # Stripe checkout, portal, webhook, status
 │   ├── copy.py          # POST /api/copy, /api/copy/with-dimensions, GET /api/copy/logs
+│   ├── shopee_copy.py   # POST /api/shopee/copy, /with-dimensions, GET /logs, /preview, /resolve-sellers
 │   ├── compat.py        # POST /api/compat/copy, /search-sku, GET /api/compat/logs
-│   ├── admin_users.py   # CRUD users + permissions (admin only)
-│   └── super_admin.py   # Platform-wide org management (super_admin only)
+│   ├── admin_users.py   # CRUD users + permissions (admin only, includes ML + Shopee)
+│   └── super_admin.py   # Platform-wide org management (super_admin only, includes Shopee stats)
 └── services/
     ├── ml_api.py         # MercadoLivre API client (token mgmt, error handling)
-    ├── item_copier.py    # Core copy logic (~850 lines, retry, payload transform)
+    ├── shopee_api.py     # Shopee API client (HMAC signing, token mgmt)
+    ├── item_copier.py    # Core ML copy logic (~850 lines, retry, payload transform)
+    ├── shopee_copier.py  # Shopee copy engine (fetch, upload images, build payload, retry)
     ├── compat_copier.py  # Compatibility copy orchestration (background tasks)
     └── email.py          # SMTP email service (password reset emails)
 
 frontend/
 ├── src/
-│   ├── App.tsx           # Router + layout (tabs: Copy, Compat, Admin)
-│   ├── pages/            # CopyPage, CompatPage, Admin, UsersPage, Login
+│   ├── App.tsx           # Router + layout (tabs: Copy, Shopee, Compat, Admin)
+│   ├── pages/            # CopyPage, ShopeeCopyPage, CompatPage, Admin, UsersPage, Login
 │   ├── components/       # Reusable UI components
 │   ├── hooks/useAuth.ts  # Auth state + methods (token in localStorage)
 │   └── lib/api.ts        # API types + constants
@@ -86,6 +90,10 @@ SMTP_PORT              # SMTP server port (default: 587)
 SMTP_USER              # SMTP username
 SMTP_PASSWORD          # SMTP password
 SMTP_FROM              # From address for emails (falls back to SMTP_USER)
+SHOPEE_PARTNER_ID      # Shopee Open Platform partner ID (integer)
+SHOPEE_PARTNER_KEY     # Shopee Open Platform partner key (HMAC secret)
+SHOPEE_REDIRECT_URI    # Shopee OAuth callback (https://copy.levermoney.com.br/api/shopee/callback)
+SHOPEE_SANDBOX         # Use Shopee sandbox environment (true/false, default: false)
 ```
 
 ## Database Schema (Supabase)
@@ -101,15 +109,19 @@ SMTP_FROM              # From address for emails (falls back to SMTP_USER)
 - `user_permissions` — user_id + seller_slug → can_copy_from, can_copy_to
 - `auth_logs` — user_id, username, org_id, action (login|logout|login_failed|signup|admin_promote)
 
-**Operations:**
+**Operations (ML):**
 - `copy_sellers` — slug, ml_user_id, ml_access_token, ml_refresh_token, ml_token_expires_at, org_id (FK→orgs), active
 - `copy_logs` — user_id, org_id, source_seller, dest_sellers[], source_item_id, status
 - `compat_logs` — user_id, org_id, source_item_id, skus[], targets (JSONB), success/error counts, status
 
+**Operations (Shopee):**
+- `shopee_sellers` — slug, shop_id, access_token, refresh_token, token_expires_at, refresh_token_expires_at, org_id (FK→orgs), active
+- `shopee_copy_logs` — user_id, org_id, source_seller, dest_sellers[], source_item_id (bigint), status, dest_item_ids, error_details
+
 **Debug:**
 - `api_debug_logs` — full request/response for failed ML API calls (payload JSONB, resolved flag)
 
-Migrations: `app/db/migrations/001_compat_logs.sql` through `008_backfill_org_data.sql`
+Migrations: `app/db/migrations/001_compat_logs.sql` through `011_shopee_sellers.sql`
 
 ## Authentication & Authorization
 
@@ -133,6 +145,12 @@ Migrations: `app/db/migrations/001_compat_logs.sql` through `008_backfill_org_da
 - GET `/api/ml/callback` → exchange code for token → store in `copy_sellers`
 - Token auto-refresh on expiry via `_get_token()` in ml_api.py
 
+**Shopee OAuth2:**
+- GET `/api/shopee/install` → redirect to Shopee auth (HMAC-signed URL)
+- GET `/api/shopee/callback` → exchange code for tokens → store in `shopee_sellers`
+- Token auto-refresh on expiry via `_get_token()` in shopee_api.py (4h access, 30d refresh)
+- All requests signed with HMAC-SHA256: `hmac(partner_key, partner_id + path + ts [+ access_token + shop_id])`
+
 ## API Routes
 
 ```
@@ -147,11 +165,28 @@ POST   /api/auth/admin-promote      # First admin setup (master password)
 GET    /api/ml/install              # OAuth2 redirect to ML
 GET    /api/ml/callback             # OAuth2 callback
 
-# Sellers
+# ML Sellers
 GET    /api/sellers                 # List connected ML sellers (org-scoped)
-DELETE /api/sellers/{slug}          # Disconnect seller
+PUT    /api/sellers/{slug}/name     # Rename ML seller
+DELETE /api/sellers/{slug}          # Disconnect ML seller
 
-# Copy
+# Shopee OAuth
+GET    /api/shopee/install          # OAuth2 redirect to Shopee
+GET    /api/shopee/callback         # OAuth2 callback (code + shop_id)
+
+# Shopee Sellers
+GET    /api/shopee/sellers          # List connected Shopee shops (org-scoped)
+PUT    /api/shopee/sellers/{slug}/name  # Rename Shopee shop
+DELETE /api/shopee/sellers/{slug}   # Disconnect Shopee shop
+
+# Shopee Copy
+POST   /api/shopee/copy             # Bulk copy Shopee products
+POST   /api/shopee/copy/with-dimensions  # Copy with custom dimensions
+GET    /api/shopee/copy/preview/{item_id}  # Preview Shopee item (auto-detect shop)
+GET    /api/shopee/copy/logs        # Shopee copy history (org-scoped)
+POST   /api/shopee/copy/resolve-sellers  # Resolve which shop owns each item
+
+# Copy (ML)
 POST   /api/copy                   # Bulk copy listings
 POST   /api/copy/with-dimensions   # Copy with custom dimensions
 GET    /api/copy/preview/{item_id} # Preview item before copy
@@ -213,6 +248,23 @@ GET    /api/debug/env               # Check env vars (super_admin only, values m
    - `/user-products/{id}/compatibilities` (brand accounts, fallback on 400/403)
 
 5. **Rate limiting:** Exponential backoff on 429 (3s base, doubles, max 5 retries). 1-second pacing between compat calls.
+
+## Shopee API Patterns
+
+**Base URLs:** Production `https://partner.shopeemobile.com`, Sandbox `https://partner.test-stable.shopeemobile.com`
+
+**Authentication:** HMAC-SHA256 signing on every request. Shop-level APIs include access_token + shop_id in signature.
+
+**Token management:** Per-shop tokens in `shopee_sellers` table. Access tokens expire in 4h, refresh tokens in 30 days.
+
+**Key differences from ML:**
+1. **HMAC signing** — every request needs `sign` param: `hmac_sha256(partner_key, partner_id + path + timestamp [+ access_token + shop_id])`
+2. **Images** — must be pre-uploaded via `/api/v2/media_space/upload_image` before product creation (ML accepts URLs)
+3. **Description** — required field on product creation (ML sets separately after creation)
+4. **Weight** — required in grams (ML handles via attributes/shipping)
+5. **Logistics** — per-shop channels, must fetch via `/api/v2/logistics/get_channel_list`
+6. **Error format** — HTTP 200 with `"error"` field (not HTTP 4xx like ML)
+7. **No vehicle compatibility API** — Shopee has no equivalent
 
 ## Error Handling Patterns
 

@@ -30,6 +30,18 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Endpoints: `GET /api/shopee/install`, `GET /api/shopee/callback`, `GET /api/shopee/sellers`, `PUT /api/shopee/sellers/{slug}/name`, `DELETE /api/shopee/sellers/{slug}`
 - Debug env endpoint agora mostra status das vars Shopee
 
+#### Shopee Integration (Phase 2 — Copy Engine + Frontend)
+- `app/services/shopee_copier.py`: motor de copia Shopee com fetch source, upload de imagens, build payload, retry (3 tentativas), logging de debug
+- `app/routers/shopee_copy.py`: router completo com 5 endpoints — `POST /api/shopee/copy` (copia bulk), `POST /api/shopee/copy/with-dimensions` (copia com dimensoes), `GET /api/shopee/copy/preview/{item_id}` (preview com auto-detect de shop), `GET /api/shopee/copy/logs` (historico org-scoped), `POST /api/shopee/copy/resolve-sellers` (resolve shop por item)
+- Permissoes admin agora incluem lojas Shopee: GET permissions retorna campo `platform` (ml/shopee)
+- Super admin: `GET /api/super/orgs` inclui `shopee_seller_count` e `shopee_copy_count` por org
+- Frontend: tipos TypeScript para Shopee (ShopeeSeller, ShopeeCopyResult, ShopeeCopyLog, ShopeeItemPreview)
+- Frontend: `useAuth` hook com estado de shopeeSellers, loadShopeeSellers, disconnectShopeeSeller
+- Frontend: `ShopeeCopyPage.tsx` — pagina completa de copia Shopee (formulario, preview, resultados, logs, dimensoes)
+- Frontend: tab "Shopee" na navegacao principal (App.tsx)
+- Frontend: secao "Lojas Shopee" no painel Admin com badge laranja, connect/rename/disconnect
+- Frontend: colunas Shopee Sellers e Shopee Copies na tabela SuperAdminPage
+
 ### Changed
 - Billing status endpoint retorna campos adicionais de trial
 - `require_active_org` usa logica de trial em vez de bloquear imediatamente sem pagamento
