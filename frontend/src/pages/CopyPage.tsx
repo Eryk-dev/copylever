@@ -4,7 +4,6 @@ import type { AuthUser } from '../hooks/useAuth';
 import CopyForm, { type CopyGroup } from '../components/CopyForm';
 import CopyProgress from '../components/CopyProgress';
 import DimensionForm, { type Dimensions } from '../components/DimensionForm';
-import StatusSummary from '../components/StatusSummary';
 import { useToast } from '../components/Toast';
 
 const LOGS_PAGE_SIZE = 50;
@@ -229,21 +228,6 @@ export default function CopyPage({ sellers, headers, user }: Props) {
     { key: 'needs_dimensions', label: 'Aguardando dimensões' },
   ];
 
-  const historySummary = useMemo(() => {
-    const counts = logs.reduce<Record<string, number>>((acc, log) => {
-      acc[log.status] = (acc[log.status] || 0) + 1;
-      return acc;
-    }, {});
-
-    return [
-      { label: 'Em andamento', value: counts.in_progress || 0, tone: 'info' as const },
-      { label: 'Sucesso', value: counts.success || 0, tone: 'success' as const },
-      { label: 'Parcial', value: counts.partial || 0, tone: 'warning' as const },
-      { label: 'Erro', value: counts.error || 0, tone: 'danger' as const },
-      { label: 'Dimensões', value: counts.needs_dimensions || 0, tone: 'warning' as const },
-    ];
-  }, [logs]);
-
   const hasAnySellers = sourceSellers.length > 0 && destSellers.length > 0;
 
   if (!hasAnySellers) {
@@ -344,8 +328,6 @@ export default function CopyPage({ sellers, headers, user }: Props) {
       >
         {logsOpen && (
           <>
-            {logsLoaded && logs.length > 0 && <StatusSummary items={historySummary} />}
-
             {/* Status filter tabs */}
             <div style={{
               display: 'flex',

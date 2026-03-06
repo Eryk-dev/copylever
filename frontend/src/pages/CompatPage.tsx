@@ -1,6 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { API_BASE, type Seller, type CompatPreview, type CompatSearchResult, type CompatCopyResult } from '../lib/api';
-import StatusSummary from '../components/StatusSummary';
 import { useToast } from '../components/Toast';
 import { Card } from './CopyPage';
 
@@ -235,13 +234,6 @@ export default function CompatPage({ sellers, headers }: Props) {
     (resultsBySku[r.sku] ||= []).push(r);
   }
   const skusNotFound = searchedSkus.filter(s => !resultsBySku[s]?.length);
-
-  const historySummary = [
-    { label: 'Em andamento', value: logs.filter(log => log.status === 'in_progress').length, tone: 'info' as const },
-    { label: 'Sucesso', value: logs.filter(log => (log.status || 'success') === 'success').length, tone: 'success' as const },
-    { label: 'Parcial', value: logs.filter(log => log.status === 'partial').length, tone: 'warning' as const },
-    { label: 'Erro', value: logs.filter(log => log.status === 'error').length, tone: 'danger' as const },
-  ];
 
   const handleCopySku = useCallback(async (sku: string) => {
     try {
@@ -592,8 +584,6 @@ export default function CompatPage({ sellers, headers }: Props) {
       >
         {logsOpen && (
           <>
-            {logsLoaded && logs.length > 0 && <StatusSummary items={historySummary} />}
-
             {/* Status filter tabs */}
             <div style={{
               display: 'flex',

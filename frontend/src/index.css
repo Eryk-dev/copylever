@@ -364,37 +364,6 @@ a:hover {
   }
 }
 
-.status-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
-}
-
-.status-summary-card {
-  min-width: 108px;
-  padding: var(--space-2) var(--space-3);
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.status-summary-label {
-  font-size: var(--text-xs);
-  color: var(--ink-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-weight: 600;
-}
-
-.status-summary-value {
-  font-size: var(--text-lg);
-  line-height: 1.1;
-  font-variant-numeric: tabular-nums;
-}
-
 .quickstart-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -433,11 +402,6 @@ a:hover {
 
   .toast {
     white-space: normal;
-  }
-
-  .status-summary-card {
-    flex: 1 1 calc(50% - var(--space-2));
-    min-width: 0;
   }
 
   .confirm-bar {
