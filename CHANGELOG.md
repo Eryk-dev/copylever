@@ -23,6 +23,9 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Slug de lojas Shopee agora sanitizado para conter apenas `[a-z0-9-]`, com fallback para `shop-{shop_id}` e sufixo numerico (`-2`, `-3`, ...) em caso de duplicata na mesma org
 - Schema Shopee corrigido: FK `shopee_sellers.org_id` agora ON DELETE CASCADE, FKs `shopee_copy_logs.org_id` e `user_id` agora ON DELETE SET NULL, `org_id` nullable em `shopee_copy_logs`, indice `slug+org_id` agora UNIQUE, adicionados indices em `created_at` e `source_seller`
 
+### Added
+- Rate limiting com backoff exponencial no cliente Shopee API — `_shop_get`, `_shop_post` e `upload_image` agora detectam erro `too_fast` e fazem retry automatico (ate 5 tentativas: 2s, 4s, 8s, 16s, 32s)
+
 ### Changed
 - **Historico de copias ML redesenhado**: tabela substituida por cards com borda de status colorida, titulo do item em destaque, MLB ID em tag mono, fluxo origem/destinos, chips verdes para novos MLBs criados, bloco de erros com destaque vermelho, e form de dimensoes inline. Responsivo e com suporte completo a dark mode via classes CSS (`log-chip-success`, `log-error-block`)
 

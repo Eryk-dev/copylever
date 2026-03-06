@@ -128,6 +128,17 @@ def _raise_for_shopee(resp: httpx.Response) -> None:
         )
 
 
+def _is_rate_limited(resp: httpx.Response) -> bool:
+    """Check if Shopee response indicates rate limiting (error containing 'too_fast')."""
+    try:
+        body = resp.json()
+        if isinstance(body, dict):
+            return "too_fast" in str(body.get("error", ""))
+    except ValueError:
+        pass
+    return False
+
+
 # ── Auth ────────────────────────────────────────────────────
 
 
@@ -318,24 +329,37 @@ async def _shop_get(
     shop_id: int,
     extra_params: dict | None = None,
 ) -> dict:
-    """Signed GET request to a shop-level Shopee API."""
-    ts = int(time.time())
-    sign = _sign(path, ts, access_token, shop_id)
+    """Signed GET request to a shop-level Shopee API. Retries on rate limiting."""
     base = _base_url()
-    params = {
-        "partner_id": settings.shopee_partner_id,
-        "timestamp": ts,
-        "sign": sign,
-        "access_token": access_token,
-        "shop_id": shop_id,
-    }
-    if extra_params:
-        params.update(extra_params)
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(f"{base}{path}", params=params)
+    for attempt in range(_RATE_LIMIT_RETRIES + 1):
+        ts = int(time.time())
+        sign = _sign(path, ts, access_token, shop_id)
+        params = {
+            "partner_id": settings.shopee_partner_id,
+            "timestamp": ts,
+            "sign": sign,
+            "access_token": access_token,
+            "shop_id": shop_id,
+        }
+        if extra_params:
+            params.update(extra_params)
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(f"{base}{path}", params=params)
+
+        if _is_rate_limited(resp) and attempt < _RATE_LIMIT_RETRIES:
+            wait = _RATE_LIMIT_BASE_WAIT * (2 ** attempt)
+            logger.warning("Shopee rate limit on GET %s (attempt %d/%d) — waiting %ds", path, attempt + 1, _RATE_LIMIT_RETRIES, wait)
+            await asyncio.sleep(wait)
+            continue
+
         _raise_for_shopee(resp)
         return resp.json()
+
+    # Exhausted retries — let _raise_for_shopee handle the final response
+    _raise_for_shopee(resp)  # type: ignore[possibly-undefined]
+    return resp.json()  # type: ignore[possibly-undefined]
 
 
 async def _shop_post(
@@ -346,24 +370,36 @@ async def _shop_post(
     extra_params: dict | None = None,
     timeout: float = 30.0,
 ) -> dict:
-    """Signed POST request to a shop-level Shopee API."""
-    ts = int(time.time())
-    sign = _sign(path, ts, access_token, shop_id)
+    """Signed POST request to a shop-level Shopee API. Retries on rate limiting."""
     base = _base_url()
-    params = {
-        "partner_id": settings.shopee_partner_id,
-        "timestamp": ts,
-        "sign": sign,
-        "access_token": access_token,
-        "shop_id": shop_id,
-    }
-    if extra_params:
-        params.update(extra_params)
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(f"{base}{path}", params=params, json=body)
+    for attempt in range(_RATE_LIMIT_RETRIES + 1):
+        ts = int(time.time())
+        sign = _sign(path, ts, access_token, shop_id)
+        params = {
+            "partner_id": settings.shopee_partner_id,
+            "timestamp": ts,
+            "sign": sign,
+            "access_token": access_token,
+            "shop_id": shop_id,
+        }
+        if extra_params:
+            params.update(extra_params)
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(f"{base}{path}", params=params, json=body)
+
+        if _is_rate_limited(resp) and attempt < _RATE_LIMIT_RETRIES:
+            wait = _RATE_LIMIT_BASE_WAIT * (2 ** attempt)
+            logger.warning("Shopee rate limit on POST %s (attempt %d/%d) — waiting %ds", path, attempt + 1, _RATE_LIMIT_RETRIES, wait)
+            await asyncio.sleep(wait)
+            continue
+
         _raise_for_shopee(resp)
         return resp.json()
+
+    _raise_for_shopee(resp)  # type: ignore[possibly-undefined]
+    return resp.json()  # type: ignore[possibly-undefined]
 
 
 # ── Shop-level API wrappers ─────────────────────────────────
@@ -442,28 +478,41 @@ async def upload_image(shop_id: int, image_url: str, org_id: str) -> dict:
     """POST /api/v2/media_space/upload_image — upload image by URL.
 
     Returns {"image_info": {"image_id": "..."}} on success.
+    Retries on rate limiting with exponential backoff.
     """
     token = await _get_token(shop_id, org_id)
     path = "/api/v2/media_space/upload_image"
-    ts = int(time.time())
-    sign = _sign(path, ts, token, shop_id)
     base = _base_url()
-    params = {
-        "partner_id": settings.shopee_partner_id,
-        "timestamp": ts,
-        "sign": sign,
-        "access_token": token,
-        "shop_id": shop_id,
-    }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(
-            f"{base}{path}",
-            params=params,
-            data={"url": image_url},
-        )
+    for attempt in range(_RATE_LIMIT_RETRIES + 1):
+        ts = int(time.time())
+        sign = _sign(path, ts, token, shop_id)
+        params = {
+            "partner_id": settings.shopee_partner_id,
+            "timestamp": ts,
+            "sign": sign,
+            "access_token": token,
+            "shop_id": shop_id,
+        }
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{base}{path}",
+                params=params,
+                data={"url": image_url},
+            )
+
+        if _is_rate_limited(resp) and attempt < _RATE_LIMIT_RETRIES:
+            wait = _RATE_LIMIT_BASE_WAIT * (2 ** attempt)
+            logger.warning("Shopee rate limit on upload_image (attempt %d/%d) — waiting %ds", attempt + 1, _RATE_LIMIT_RETRIES, wait)
+            await asyncio.sleep(wait)
+            continue
+
         _raise_for_shopee(resp)
         return resp.json()
+
+    _raise_for_shopee(resp)  # type: ignore[possibly-undefined]
+    return resp.json()  # type: ignore[possibly-undefined]
 
 
 async def add_item(shop_id: int, payload: dict, org_id: str) -> dict:
