@@ -4,7 +4,7 @@ Shopee copy endpoints — POST /api/shopee/copy, GET /api/shopee/copy/logs, etc.
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.db.supabase import get_db
@@ -55,6 +55,42 @@ def _increment_trial_copies(org_id: str, count: int):
     if org:
         new_val = (org.get("trial_copies_used", 0) or 0) + count
         db.table("orgs").update({"trial_copies_used": new_val}).eq("id", org_id).execute()
+
+
+def _refund_trial_copies(org_id: str, count: int):
+    if count <= 0:
+        return
+    db = get_db()
+    org = db.table("orgs").select("trial_copies_used").eq("id", org_id).single().execute().data
+    if org:
+        new_val = max(0, (org.get("trial_copies_used", 0) or 0) - count)
+        db.table("orgs").update({"trial_copies_used": new_val}).eq("id", org_id).execute()
+
+
+async def _bg_shopee_copy_items(
+    source: str,
+    destinations: list[str],
+    item_ids: list[int],
+    user_id: str,
+    org_id: str,
+    trial_reserved: int,
+) -> None:
+    """Background task wrapper for Shopee copy_items with trial refund."""
+    try:
+        result = await copy_items(
+            source_slug=source,
+            dest_slugs=destinations,
+            item_ids=item_ids,
+            user_id=user_id,
+            org_id=org_id,
+        )
+        if trial_reserved > 0:
+            success_count = result.get("success", 0)
+            _refund_trial_copies(org_id, trial_reserved - success_count)
+    except Exception as e:
+        logger.error("Background Shopee copy batch failed: %s", e, exc_info=True)
+        if trial_reserved > 0:
+            _refund_trial_copies(org_id, trial_reserved)
 
 
 # ── Permission helpers ────────────────────────────────────
@@ -130,8 +166,8 @@ def _normalize_shopee_item_id(raw: str) -> int | None:
 
 
 @router.post("")
-async def shopee_copy(req: ShopeeCopyRequest, user: dict = Depends(require_active_org)):
-    """Copy Shopee listings from source shop to destination shop(s)."""
+async def shopee_copy(req: ShopeeCopyRequest, bg: BackgroundTasks, user: dict = Depends(require_active_org)):
+    """Copy Shopee listings from source shop to destination shop(s). Returns immediately."""
     if not req.source:
         raise HTTPException(status_code=400, detail="source is required")
     if not req.destinations:
@@ -166,21 +202,26 @@ async def shopee_copy(req: ShopeeCopyRequest, user: dict = Depends(require_activ
     if trial_info and not trial_info["allowed"]:
         raise HTTPException(status_code=402, detail=trial_info["message"])
 
-    results = await copy_items(
-        source_slug=req.source,
-        dest_slugs=req.destinations,
+    # Reserve trial copies upfront
+    trial_reserved = len(clean_ids) if trial_info else 0
+    if trial_reserved > 0:
+        _increment_trial_copies(org_id, trial_reserved)
+
+    bg.add_task(
+        _bg_shopee_copy_items,
+        source=req.source,
+        destinations=req.destinations,
         item_ids=clean_ids,
         user_id=user["id"],
         org_id=org_id,
+        trial_reserved=trial_reserved,
     )
 
-    success_count = results.get("success", 0)
-
-    # Increment trial counter
-    if trial_info and success_count > 0:
-        _increment_trial_copies(org_id, success_count)
-
-    return results
+    return {
+        "status": "queued",
+        "total": len(clean_ids),
+        "message": f"{len(clean_ids)} item(s) enfileirado(s). Acompanhe o progresso no historico.",
+    }
 
 
 @router.post("/with-dimensions")

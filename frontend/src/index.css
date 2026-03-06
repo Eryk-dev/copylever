@@ -346,6 +346,26 @@ a:hover {
   transform: rotate(90deg);
 }
 
+/* Log card chips */
+.log-chip-success {
+  background: rgba(16, 185, 129, 0.06);
+  border: 1px solid rgba(16, 185, 129, 0.12);
+}
+.log-error-block {
+  background: rgba(239, 68, 68, 0.04);
+  border: 1px solid rgba(239, 68, 68, 0.08);
+}
+@media (prefers-color-scheme: dark) {
+  .log-chip-success {
+    background: rgba(16, 185, 129, 0.1);
+    border-color: rgba(16, 185, 129, 0.2);
+  }
+  .log-error-block {
+    background: rgba(239, 68, 68, 0.08);
+    border-color: rgba(239, 68, 68, 0.15);
+  }
+}
+
 /* Confirmation overlay */
 .confirm-bar {
   display: flex;

@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { API_BASE, type ShopeeSeller, type ShopeeCopyResponse, type ShopeeCopyLog, type ShopeeItemPreview } from '../lib/api';
+import { API_BASE, type ShopeeSeller, type CopyQueuedResponse, type ShopeeCopyLog, type ShopeeItemPreview } from '../lib/api';
 import type { AuthUser } from '../hooks/useAuth';
 import DimensionForm, { type Dimensions } from '../components/DimensionForm';
 import { Card } from './CopyPage';
@@ -54,9 +54,7 @@ export default function ShopeeCopyPage({ shopeeSellers, headers, user }: Props) 
   const pendingResolve = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Results state
-  const [results, setResults] = useState<(ShopeeCopyResponse & { source?: string }) | null>(null);
-  const [sourceMap, setSourceMap] = useState<Record<string, string>>({});
+  // Copy state
   const [copying, setCopying] = useState(false);
 
   // Preview state
@@ -279,22 +277,11 @@ export default function ShopeeCopyPage({ shopeeSellers, headers, user }: Props) 
   // --- Copy ---
   const handleCopy = useCallback(async () => {
     setCopying(true);
-    setResults(null);
-    setTimeout(() => { void loadLogs(); }, 1000);
-
-    const allResults: ShopeeCopyResponse['results'] = [];
-    let totalSuccess = 0;
-    let totalErrors = 0;
-    let totalDims = 0;
-
-    const newSourceMap: Record<string, string> = {};
-    for (const [id, slug] of Object.entries(resolvedSources)) {
-      newSourceMap[id] = slug;
-    }
-    setSourceMap(newSourceMap);
 
     // Group by source and send one request per source
     const groups = Object.entries(sourceGroups).map(([source, ids]) => ({ source, itemIds: ids }));
+
+    let totalQueued = 0;
 
     for (const group of groups) {
       try {
@@ -305,66 +292,22 @@ export default function ShopeeCopyPage({ shopeeSellers, headers, user }: Props) 
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: 'Erro desconhecido' }));
-          allResults.push(...group.itemIds.map(id => ({ source_item_id: id, dest_seller: '', status: 'error' as const, dest_item_id: null, error: err.detail })));
-          totalErrors += group.itemIds.length;
+          toast(err.detail, 'error');
           continue;
         }
-        const data: ShopeeCopyResponse = await res.json();
-        allResults.push(...data.results);
-        totalSuccess += data.success;
-        totalErrors += data.errors;
-        totalDims += data.needs_dimensions ?? 0;
+        const data: CopyQueuedResponse = await res.json();
+        totalQueued += data.total;
       } catch (e) {
-        allResults.push(...group.itemIds.map(id => ({ source_item_id: id, dest_seller: '', status: 'error' as const, dest_item_id: null, error: String(e) })));
-        totalErrors += group.itemIds.length;
+        toast(String(e), 'error');
       }
     }
 
-    setResults({
-      total: allResults.length,
-      success: totalSuccess,
-      errors: totalErrors,
-      needs_dimensions: totalDims,
-      results: allResults,
-      source: groups[0]?.source,
-    });
+    if (totalQueued > 0) {
+      toast(`${totalQueued} item(s) enfileirado(s). Acompanhe no historico abaixo.`, 'success');
+    }
     setCopying(false);
-    loadLogs();
-  }, [headers, loadLogs, destinations, resolvedSources, sourceGroups]);
-
-  // --- Dimension retry (from results) ---
-  const handleDimensionRetry = useCallback(async (itemId: string, dims: Dimensions) => {
-    const source = sourceMap[itemId] || results?.source || '';
-    try {
-      const res = await fetch(`${API_BASE}/api/shopee/copy/with-dimensions`, {
-        method: 'POST',
-        headers: headers(),
-        body: JSON.stringify({ source, destinations, item_id: itemId, dimensions: dims }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: 'Erro desconhecido' }));
-        toast(err.detail, 'error');
-        return;
-      }
-      const retryData: ShopeeCopyResponse = await res.json();
-      if (results) {
-        const updated = { ...results };
-        updated.results = results.results.map(r => {
-          if (r.source_item_id !== itemId || r.status !== 'needs_dimensions') return r;
-          const retried = retryData.results.find(rr => rr.source_item_id === r.source_item_id && rr.dest_seller === r.dest_seller);
-          return retried || r;
-        });
-        updated.success = updated.results.filter(r => r.status === 'success').length;
-        updated.errors = updated.results.filter(r => r.status === 'error').length;
-        updated.needs_dimensions = updated.results.filter(r => r.status === 'needs_dimensions').length;
-        setResults({ ...updated, source: results.source });
-      }
-      toast('Dimensoes aplicadas e copia reprocessada.', 'success');
-      void loadLogs();
-    } catch (e) {
-      toast(String(e), 'error');
-    }
-  }, [headers, sourceMap, results, destinations, toast, loadLogs]);
+    void loadLogs();
+  }, [headers, loadLogs, destinations, resolvedSources, sourceGroups, toast]);
 
   // --- Log retry ---
   const handleLogRetry = useCallback(async (_logId: number, log: ShopeeCopyLog, dims: Dimensions) => {
@@ -453,17 +396,6 @@ export default function ShopeeCopyPage({ shopeeSellers, headers, user }: Props) 
     { key: 'error', label: 'Erros' },
     { key: 'needs_dimensions', label: 'Aguardando dimensoes' },
   ];
-
-  // Dimension groups from results
-  const dimItems = results?.results.filter(r => r.status === 'needs_dimensions') ?? [];
-  const dimGroupMap = new Map<string, { itemIds: string[]; dests: string[] }>();
-  for (const r of dimItems) {
-    const key = r.sku || r.source_item_id;
-    const g = dimGroupMap.get(key) || { itemIds: [], dests: [] };
-    if (!g.itemIds.includes(r.source_item_id)) g.itemIds.push(r.source_item_id);
-    if (!g.dests.includes(r.dest_seller)) g.dests.push(r.dest_seller);
-    dimGroupMap.set(key, g);
-  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
@@ -751,46 +683,6 @@ export default function ShopeeCopyPage({ shopeeSellers, headers, user }: Props) 
         </Card>
       )}
 
-      {/* Results */}
-      {results && (
-        <Card title="Resultado da Copia">
-          {/* Summary */}
-          <div style={{
-            display: 'flex',
-            gap: 'var(--space-4)',
-            marginBottom: 'var(--space-4)',
-            padding: 'var(--space-3) var(--space-4)',
-            background: 'var(--paper)',
-            borderRadius: 6,
-            border: '1px solid var(--line)',
-          }}>
-            <Stat label="Total" value={results.total} color="var(--ink)" />
-            <Stat label="Sucesso" value={results.success} color="var(--success)" />
-            <Stat label="Erros" value={results.errors} color="var(--danger)" />
-          </div>
-
-          {/* Dimension forms */}
-          {[...dimGroupMap.entries()].map(([groupKey, group]) => (
-            <DimensionForm
-              key={groupKey}
-              itemIds={group.itemIds}
-              destinations={group.dests}
-              onSubmit={(dims) => handleDimensionRetry(group.itemIds[0], dims)}
-            />
-          ))}
-
-          {/* Individual results */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
-            {results.results.map((r, i) => {
-              const dotColor = r.status === 'success' ? 'var(--success)' : r.status === 'needs_dimensions' ? 'var(--warning)' : 'var(--danger)';
-              return (
-                <ResultRow key={i} r={r} dotColor={dotColor} />
-              );
-            })}
-          </div>
-        </Card>
-      )}
-
       {/* Logs */}
       <Card
         title={`Historico (${logs.length}${hasMoreLogs ? '+' : ''})`}
@@ -937,84 +829,6 @@ function Field({ label, step, done, action, children }: {
   );
 }
 
-function ResultRow({ r, dotColor }: { r: ShopeeCopyResponse['results'][number]; dotColor: string }) {
-  const [expanded, setExpanded] = useState(false);
-  const hasError = r.status === 'error' && r.error;
-  const isDim = r.status === 'needs_dimensions';
-
-  return (
-    <div style={{ borderRadius: 6, border: '1px solid var(--line)', overflow: 'hidden' }}>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--space-2)',
-          padding: 'var(--space-2) var(--space-3)',
-          background: 'var(--paper)',
-          fontSize: 'var(--text-sm)',
-          cursor: hasError ? 'pointer' : 'default',
-        }}
-        onClick={() => hasError && setExpanded(!expanded)}
-      >
-        <span style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor, flexShrink: 0 }} />
-        <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink-muted)', fontSize: 'var(--text-xs)' }}>
-          {r.source_item_id}
-        </span>
-        <span style={{ color: 'var(--ink-faint)' }}>&rarr;</span>
-        <span style={{ color: 'var(--ink)' }}>{r.dest_seller}</span>
-
-        {r.status === 'success' && r.dest_item_id && (
-          <>
-            <span style={{ color: 'var(--ink-faint)' }}>=</span>
-            <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--success)', fontSize: 'var(--text-xs)' }}>
-              {r.dest_item_id}
-            </span>
-          </>
-        )}
-
-        {isDim && (
-          <span style={{ marginLeft: 'auto', fontSize: 'var(--text-xs)', color: 'var(--warning)', fontWeight: 500 }}>
-            sem dimensoes
-          </span>
-        )}
-
-        {hasError && (
-          <span style={{
-            color: 'var(--danger)',
-            fontSize: 'var(--text-xs)',
-            marginLeft: 'auto',
-            maxWidth: expanded ? 'none' : 200,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: expanded ? 'normal' : 'nowrap',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '4px',
-          }}>
-            <span className={`collapsible-arrow${expanded ? ' open' : ''}`}>{'\u25B6'}</span>
-            {!expanded && r.error}
-          </span>
-        )}
-      </div>
-
-      {expanded && hasError && (
-        <div style={{
-          padding: 'var(--space-2) var(--space-3)',
-          background: 'rgba(239, 68, 68, 0.04)',
-          borderTop: '1px solid var(--line)',
-          fontSize: 'var(--text-xs)',
-          color: 'var(--danger)',
-          fontFamily: 'var(--font-mono)',
-          wordBreak: 'break-word',
-          lineHeight: 'var(--leading-normal)',
-        }}>
-          {r.error}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function LogRow({ log, isRetrying, onRetryClick, onRetrySubmit }: {
   log: ShopeeCopyLog;
   isRetrying: boolean;
@@ -1029,7 +843,21 @@ function LogRow({ log, isRetrying, onRetryClick, onRetrySubmit }: {
         <td style={{ ...td, whiteSpace: 'nowrap' }}>{new Date(log.created_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</td>
         <td style={td}>{log.source_seller}</td>
         <td style={td}>{log.dest_sellers?.join(', ')}</td>
-        <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}>{log.source_item_id}</td>
+        <td style={td}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+            {log.source_item_thumbnail && (
+              <img src={log.source_item_thumbnail} alt="" style={{ width: 32, height: 32, borderRadius: 4, objectFit: 'cover', background: 'var(--paper)', flexShrink: 0 }} />
+            )}
+            <div style={{ minWidth: 0 }}>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', display: 'block' }}>{log.source_item_id}</span>
+              {log.source_item_title && (
+                <span style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 200 }}>
+                  {log.source_item_title}
+                </span>
+              )}
+            </div>
+          </div>
+        </td>
         <td style={td}><StatusBadge status={log.status} /></td>
         <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}>
           {log.dest_item_ids ? Object.entries(log.dest_item_ids).map(([s, id]) => <div key={s}>{s}: {id}</div>) : '-'}
@@ -1099,17 +927,6 @@ function StatusBadge({ status }: { status: string }) {
       {isInProgress && <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'currentColor', animation: 'pulse-dot 1.5s ease-in-out infinite' }} />}
       {statusLabels[status] || status}
     </span>
-  );
-}
-
-function Stat({ label, value, color }: { label: string; value: number; color: string }) {
-  return (
-    <div style={{ textAlign: 'center' }}>
-      <div style={{ fontSize: 'var(--text-xl)', fontWeight: 700, color, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
-      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500 }}>
-        {label}
-      </div>
-    </div>
   );
 }
 

@@ -10,6 +10,21 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 ## [Unreleased]
 
 ### Changed
+- **Historico de copias ML redesenhado**: tabela substituida por cards com borda de status colorida, titulo do item em destaque, MLB ID em tag mono, fluxo origem/destinos, chips verdes para novos MLBs criados, bloco de erros com destaque vermelho, e form de dimensoes inline. Responsivo e com suporte completo a dark mode via classes CSS (`log-chip-success`, `log-error-block`)
+
+### Fixed
+- Erros de dimensão (`seller_package_dimensions`) agora fazem bail-out imediato no retry loop em vez de tentar 2 vezes inutilmente antes de detectar; debug log já é salvo como `resolved=true`
+- Auto-fix para atributo MODEL faltando: quando ML rejeita por `missing_required`, o retry agora extrai MODEL do título/family_name do item fonte e adiciona ao payload automaticamente
+
+### Changed
+- **Copia ML e Shopee agora rodam em background** — endpoint retorna imediatamente com `{"status":"queued"}`, frontend acompanha progresso via polling de logs (mesmo padrao da copia de compatibilidades)
+- Trial copies: reserva upfront antes de enfileirar, devolve falhas apos conclusao do background task
+- Logs de copia (ML e Shopee) agora mostram nome e thumbnail do item origem para facilitar identificacao (especialmente no retry de dimensoes)
+- Startup cleanup: ao reiniciar o servidor, logs `in_progress` orfaos sao marcados como `error`
+- Frontend: CopyPage e ShopeeCopyPage usam toast de confirmacao + polling em vez de aguardar resposta sincrona
+- Migration `012_copy_logs_item_meta.sql`: colunas `source_item_title` e `source_item_thumbnail` em `copy_logs` e `shopee_copy_logs`
+- Copia ML agora roda em paralelo (semaphore=3, ~80% do rate limit ML) via `asyncio.gather` em vez de sequencial
+- Todas as chamadas ML API (`get_item`, `create_item`, `update_item`, etc.) agora tem retry automatico em 429 (rate limit) com exponential backoff (base 3s, max 5 tentativas)
 - Preview da compatibilidade agora carrega automaticamente ao digitar o ID (debounce de 600ms), sem precisar clicar fora
 - Preview de cópia: preço exibe "R$" em vez do código "BRL", cor verde dinheiro (`--success`)
 - Formulário de cópia: ao colar um MLB, adiciona quebra de linha automaticamente para o próximo ID

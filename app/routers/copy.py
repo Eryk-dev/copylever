@@ -5,7 +5,7 @@ import asyncio
 import logging
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.db.supabase import get_db
@@ -59,6 +59,43 @@ def _increment_trial_copies(org_id: str, count: int):
     if org:
         new_val = (org.get("trial_copies_used", 0) or 0) + count
         db.table("orgs").update({"trial_copies_used": new_val}).eq("id", org_id).execute()
+
+
+def _refund_trial_copies(org_id: str, count: int):
+    """Decrement trial_copies_used after failures are known."""
+    if count <= 0:
+        return
+    db = get_db()
+    org = db.table("orgs").select("trial_copies_used").eq("id", org_id).single().execute().data
+    if org:
+        new_val = max(0, (org.get("trial_copies_used", 0) or 0) - count)
+        db.table("orgs").update({"trial_copies_used": new_val}).eq("id", org_id).execute()
+
+
+async def _bg_copy_items(
+    source: str,
+    destinations: list[str],
+    item_ids: list[str],
+    user_id: str,
+    org_id: str,
+    trial_reserved: int,
+) -> None:
+    """Background task wrapper for copy_items with trial refund."""
+    try:
+        results = await copy_items(
+            source_seller=source,
+            dest_sellers=destinations,
+            item_ids=item_ids,
+            user_id=user_id,
+            org_id=org_id,
+        )
+        if trial_reserved > 0:
+            success_count = sum(1 for r in results if r["status"] == "success")
+            _refund_trial_copies(org_id, trial_reserved - success_count)
+    except Exception as e:
+        logger.error("Background copy batch failed: %s", e, exc_info=True)
+        if trial_reserved > 0:
+            _refund_trial_copies(org_id, trial_reserved)
 
 
 async def _resolve_item_seller(item_id: str, org_id: str, skip_seller: str | None = None) -> tuple[str | None, dict | None]:
@@ -126,8 +163,8 @@ class CopyWithDimensionsRequest(BaseModel):
 
 
 @router.post("")
-async def copy_anuncios(req: CopyRequest, user: dict = Depends(require_active_org)):
-    """Copy listings from source seller to destination seller(s)."""
+async def copy_anuncios(req: CopyRequest, bg: BackgroundTasks, user: dict = Depends(require_active_org)):
+    """Copy listings from source seller to destination seller(s). Returns immediately."""
     if not req.source:
         raise HTTPException(status_code=400, detail="source is required")
     if not req.destinations:
@@ -164,28 +201,25 @@ async def copy_anuncios(req: CopyRequest, user: dict = Depends(require_active_or
     if trial_info and not trial_info["allowed"]:
         raise HTTPException(status_code=402, detail=trial_info["message"])
 
-    results = await copy_items(
-        source_seller=req.source,
-        dest_sellers=req.destinations,
+    # Reserve trial copies upfront (refund failures after background task completes)
+    trial_reserved = len(clean_ids) if trial_info else 0
+    if trial_reserved > 0:
+        _increment_trial_copies(org_id, trial_reserved)
+
+    bg.add_task(
+        _bg_copy_items,
+        source=req.source,
+        destinations=req.destinations,
         item_ids=clean_ids,
         user_id=user["id"],
         org_id=org_id,
+        trial_reserved=trial_reserved,
     )
 
-    success_count = sum(1 for r in results if r["status"] == "success")
-    error_count = sum(1 for r in results if r["status"] == "error")
-    dim_count = sum(1 for r in results if r["status"] == "needs_dimensions")
-
-    # Increment trial counter for successful copies
-    if trial_info and success_count > 0:
-        _increment_trial_copies(org_id, success_count)
-
     return {
-        "total": len(results),
-        "success": success_count,
-        "errors": error_count,
-        "needs_dimensions": dim_count,
-        "results": results,
+        "status": "queued",
+        "total": len(clean_ids),
+        "message": f"{len(clean_ids)} item(s) enfileirado(s). Acompanhe o progresso no historico.",
     }
 
 

@@ -829,15 +829,58 @@ patterns:
       - "Reject auth if initial exchange has no refresh_token (fail fast)"
       - "Token auto-refresh on expiry via _get_token() in ml_api.py"
 
+  - id: ERR-036
+    date: "2026-03-06"
+    category: attributes
+    title: "Missing MODEL attribute auto-fill from title"
+    symptom: |
+      Copy to presentes-criativos-uniquebox fails for multiple categories:
+      "The attributes [MODEL] are required for category MLBxxxxxx".
+      Source items genuinely lack MODEL attribute.
+    ml_error_code: item.attributes.missing_required
+    root_cause: |
+      Source items don't have MODEL attribute. Destination categories require it.
+      The _extract_ml_error_fields function didn't detect this error type because
+      the ML code is "missing_required" not "required_fields", so the marker-based
+      detection failed. No auto-fix was attempted.
+    fix: |
+      - Added _extract_missing_required_attributes() to detect "missing_required"
+        and "missing_catalog_required" error codes and extract attribute IDs
+      - In _adjust_payload_for_ml_error: auto-fill missing attributes from source
+        item data, with MODEL fallback to title/family_name (truncated to 60 chars)
+    file: app/services/item_copier.py
+    lesson: |
+      Required attributes that are missing from source can often be derived from
+      other item fields. MODEL = title/family_name is a safe default for most
+      categories. The _extract_ml_error_fields marker system doesn't cover all
+      ML error codes — dedicated handlers are needed for specific patterns.
+
+  - id: ERR-035
+    date: "2026-03-06"
+    category: item_copy
+    title: "Dimension errors waste 2 retry attempts before detection"
+    symptom: |
+      When item has no shipping dimensions, the retry loop tries normal + safe_mode
+      before re-raising. The outer handler catches _is_dimension_error but debug logs
+      are never marked resolved, polluting the unresolved logs.
+    ml_error_code: item.attribute.missing.seller.package.dimensions
+    root_cause: |
+      _is_dimension_error detection only existed in the outer except block (after retry loop).
+      The retry loop had no early exit for dimension errors, so it wasted 2 attempts
+      (normal + safe_mode) on an unfixable error. Debug logs were never marked resolved.
+    fix: |
+      - Added early _is_dimension_error check inside the retry loop (before adjustments)
+      - On detection: log to api_debug_logs with resolved=True and raise immediately
+      - Skips useless safe_mode retry for dimension errors
+    file: app/services/item_copier.py
+    lesson: |
+      Errors that are fundamentally unfixable by payload changes (missing dimensions,
+      missing required source attributes) should bail out of the retry loop immediately.
+      Don't waste retry attempts on errors that need user intervention.
+
 # ── Currently unresolved errors ────────────────────────────────────────────
 unresolved:
-  - type: "dimension_errors"
-    description: "8 items blocked by missing seller_package dimensions"
-    action: "User must provide dimensions via /api/copy/with-dimensions"
-    auto_fixable: false
-
-  - type: "user_product_compat_no_source"
-    description: "~12 compat copies failed: 'User Product but no source compat products were provided'"
-    action: "These occurred before ERR-022 fix (commit 8299406f) — should not recur"
-    auto_fixable: true
-    fixed_by: ERR-022
+  # All historical errors cleaned up on 2026-03-06.
+  # Dimension errors are by-design (user must provide dimensions).
+  # Family_name cascade was fixed by ERR-032.
+  []

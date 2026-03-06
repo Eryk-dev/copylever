@@ -1,8 +1,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { API_BASE, type Seller, type CopyResponse, type CopyLog, type ItemPreview } from '../lib/api';
+import { API_BASE, type Seller, type CopyQueuedResponse, type CopyLog, type ItemPreview } from '../lib/api';
 import type { AuthUser } from '../hooks/useAuth';
 import CopyForm, { type CopyGroup } from '../components/CopyForm';
-import CopyProgress from '../components/CopyProgress';
 import DimensionForm, { type Dimensions } from '../components/DimensionForm';
 import { useToast } from '../components/Toast';
 
@@ -26,8 +25,6 @@ function isDimensionError(log: CopyLog): boolean {
 
 export default function CopyPage({ sellers, headers, user }: Props) {
   const { toast } = useToast();
-  const [results, setResults] = useState<(CopyResponse & { source?: string }) | null>(null);
-  const [sourceMap, setSourceMap] = useState<Record<string, string>>({});
   const [copying, setCopying] = useState(false);
   const [logs, setLogs] = useState<CopyLog[]>([]);
   const [logsLoaded, setLogsLoaded] = useState(false);
@@ -77,23 +74,8 @@ export default function CopyPage({ sellers, headers, user }: Props) {
 
   const handleCopy = useCallback(async (groups: CopyGroup[], destinations: string[]) => {
     setCopying(true);
-    setResults(null);
-    // Refresh logs after a short delay to pick up in_progress rows created by the backend
-    setTimeout(() => { void loadLogs(); }, 1000);
 
-    const allResults: CopyResponse['results'] = [];
-    let totalSuccess = 0;
-    let totalErrors = 0;
-    let totalDims = 0;
-
-    // Build sourceMap: item_id → seller_slug
-    const newSourceMap: Record<string, string> = {};
-    for (const group of groups) {
-      for (const id of group.itemIds) {
-        newSourceMap[id] = group.source;
-      }
-    }
-    setSourceMap(newSourceMap);
+    let totalQueued = 0;
 
     for (const group of groups) {
       try {
@@ -104,32 +86,22 @@ export default function CopyPage({ sellers, headers, user }: Props) {
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: 'Erro desconhecido' }));
-          allResults.push(...group.itemIds.map(id => ({ source_item_id: id, dest_seller: '', status: 'error' as const, dest_item_id: null, error: err.detail })));
-          totalErrors += group.itemIds.length;
+          toast(err.detail, 'error');
           continue;
         }
-        const data: CopyResponse = await res.json();
-        allResults.push(...data.results);
-        totalSuccess += data.success;
-        totalErrors += data.errors;
-        totalDims += data.needs_dimensions ?? 0;
+        const data: CopyQueuedResponse = await res.json();
+        totalQueued += data.total;
       } catch (e) {
-        allResults.push(...group.itemIds.map(id => ({ source_item_id: id, dest_seller: '', status: 'error' as const, dest_item_id: null, error: String(e) })));
-        totalErrors += group.itemIds.length;
+        toast(String(e), 'error');
       }
     }
 
-    setResults({
-      total: allResults.length,
-      success: totalSuccess,
-      errors: totalErrors,
-      needs_dimensions: totalDims,
-      results: allResults,
-      source: groups[0]?.source,
-    });
+    if (totalQueued > 0) {
+      toast(`${totalQueued} item(s) enfileirado(s). Acompanhe no historico abaixo.`, 'success');
+    }
     setCopying(false);
-    loadLogs();
-  }, [headers, loadLogs]);
+    void loadLogs();
+  }, [headers, loadLogs, toast]);
 
   const handlePreview = useCallback(async (items: Array<[string, string]>) => {
     if (!items.length) return;
@@ -310,15 +282,6 @@ export default function CopyPage({ sellers, headers, user }: Props) {
           </div>
         </Card>
       )}
-      {results && (
-        <CopyProgress
-          results={results}
-          sourceMap={sourceMap}
-          headers={headers}
-          onDimensionRetry={(updated) => setResults({ ...updated, source: results.source })}
-        />
-      )}
-
       {/* Logs */}
       <Card
         title={`Histórico (${logs.length}${hasMoreLogs ? '+' : ''})`}
@@ -361,37 +324,16 @@ export default function CopyPage({ sellers, headers, user }: Props) {
                 Nenhum registro{statusFilter ? ` com status "${statusFilter}"` : ''}.
               </p>
             ) : (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-sm)' }}>
-                  <thead>
-                    <tr>
-                      {['Data', 'Origem', 'Destino(s)', 'Item', 'Status', 'Novos IDs', ''].map(h => (
-                        <th key={h} style={{
-                          textAlign: 'left',
-                          padding: 'var(--space-2) var(--space-3)',
-                          color: 'var(--ink-faint)',
-                          fontWeight: 500,
-                          fontSize: 'var(--text-xs)',
-                          textTransform: 'uppercase',
-                          letterSpacing: '0.05em',
-                          borderBottom: '1px solid var(--line)',
-                          whiteSpace: 'nowrap',
-                        }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {logs.map(log => (
-                      <LogRow
-                        key={log.id}
-                        log={log}
-                        isRetrying={retryLogId === log.id}
-                        onRetryClick={() => setRetryLogId(retryLogId === log.id ? null : log.id)}
-                        onRetrySubmit={(dims) => handleLogRetry(log.id, dims)}
-                      />
-                    ))}
-                  </tbody>
-                </table>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+                {logs.map(log => (
+                  <LogCard
+                    key={log.id}
+                    log={log}
+                    isRetrying={retryLogId === log.id}
+                    onRetryClick={() => setRetryLogId(retryLogId === log.id ? null : log.id)}
+                    onRetrySubmit={(dims) => handleLogRetry(log.id, dims)}
+                  />
+                ))}
               </div>
             )}
 
@@ -423,55 +365,186 @@ export default function CopyPage({ sellers, headers, user }: Props) {
   );
 }
 
-function LogRow({ log, isRetrying, onRetryClick, onRetrySubmit }: {
+function LogCard({ log, isRetrying, onRetryClick, onRetrySubmit }: {
   log: CopyLog;
   isRetrying: boolean;
   onRetryClick: () => void;
   onRetrySubmit: (dims: Dimensions) => void;
 }) {
   const canRetry = isDimensionError(log);
+  const destEntries = log.dest_item_ids ? Object.entries(log.dest_item_ids) : [];
+  const errorEntries = log.error_details ? Object.entries(log.error_details) : [];
+
+  const accentMap: Record<string, string> = {
+    success: 'var(--success)', error: 'var(--danger)', partial: 'var(--warning)',
+    pending: 'var(--ink-faint)', in_progress: 'var(--info)', needs_dimensions: 'var(--warning)',
+  };
 
   return (
     <>
-      <tr style={{ borderBottom: '1px solid var(--line)' }}>
-        <td style={{ ...td, whiteSpace: 'nowrap' }}>{new Date(log.created_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</td>
-        <td style={td}>{log.source_seller}</td>
-        <td style={td}>{log.dest_sellers?.join(', ')}</td>
-        <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}>{log.source_item_id}</td>
-        <td style={td}><StatusBadge status={log.status} /></td>
-        <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}>
-          {log.dest_item_ids ? Object.entries(log.dest_item_ids).map(([s, id]) => <div key={s}>{s}: {id}</div>) : '-'}
-        </td>
-        <td style={{ ...td, whiteSpace: 'nowrap' }}>
-          {canRetry && (
-            <button
-              onClick={onRetryClick}
+      <div className="animate-in" style={{
+        background: 'var(--paper)',
+        borderRadius: 10,
+        border: '1px solid var(--line)',
+        borderLeftWidth: 3,
+        borderLeftColor: accentMap[log.status] || 'var(--line)',
+        padding: 'var(--space-3) var(--space-4)',
+      }}>
+        <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+          {/* Thumbnail */}
+          {log.source_item_thumbnail ? (
+            <img
+              src={log.source_item_thumbnail}
+              alt=""
               style={{
-                padding: '3px 10px',
-                borderRadius: 4,
-                fontSize: 'var(--text-xs)',
-                fontWeight: 600,
-                background: isRetrying ? 'var(--ink)' : 'rgba(245, 158, 11, 0.1)',
-                color: isRetrying ? 'var(--paper)' : 'var(--warning)',
-                border: `1px solid ${isRetrying ? 'var(--ink)' : 'rgba(245, 158, 11, 0.3)'}`,
-                cursor: 'pointer',
+                width: 44, height: 44,
+                borderRadius: 8,
+                objectFit: 'cover',
+                background: 'var(--surface)',
+                flexShrink: 0,
+                alignSelf: 'flex-start',
               }}
-            >
-              {isRetrying ? 'Cancelar' : 'Corrigir'}
-            </button>
-          )}
-        </td>
-      </tr>
-      {isRetrying && (
-        <tr>
-          <td colSpan={7} style={{ padding: 'var(--space-2) var(--space-3)' }}>
-            <DimensionForm
-              itemIds={[log.source_item_id]}
-              destinations={log.dest_sellers || []}
-              onSubmit={onRetrySubmit}
             />
-          </td>
-        </tr>
+          ) : (
+            <div style={{
+              width: 44, height: 44,
+              borderRadius: 8,
+              background: 'var(--surface)',
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--ink-faint)',
+              fontSize: 'var(--text-xs)',
+            }}>
+              MLB
+            </div>
+          )}
+
+          {/* Content */}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {/* Line 1: Title + Status badge */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+              <span style={{
+                fontWeight: 600,
+                fontSize: 'var(--text-sm)',
+                color: 'var(--ink)',
+                flex: 1,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}>
+                {log.source_item_title || log.source_item_id}
+              </span>
+              <StatusBadge status={log.status} />
+            </div>
+
+            {/* Line 2: MLB ID + flow + timestamp */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-2)',
+              marginTop: 3,
+              fontSize: 'var(--text-xs)',
+              color: 'var(--ink-faint)',
+              flexWrap: 'wrap',
+            }}>
+              <code style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: 'var(--text-xs)',
+                background: 'var(--surface)',
+                padding: '0 5px',
+                borderRadius: 3,
+                lineHeight: '18px',
+              }}>
+                {log.source_item_id}
+              </code>
+              <span style={{ opacity: 0.4 }}>&middot;</span>
+              <span>{log.source_seller} &rarr; {log.dest_sellers?.join(', ')}</span>
+              <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                {new Date(log.created_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
+              </span>
+            </div>
+
+            {/* Destination new IDs as chips */}
+            {destEntries.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-1)', marginTop: 'var(--space-2)' }}>
+                {destEntries.map(([seller, id]) => (
+                  <span key={seller} className="log-chip-success" style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    padding: '2px 8px',
+                    borderRadius: 4,
+                    fontSize: 'var(--text-xs)',
+                  }}>
+                    <span style={{ color: 'var(--ink-faint)' }}>{seller}:</span>
+                    <code style={{ fontFamily: 'var(--font-mono)', fontWeight: 500, color: 'var(--success)' }}>{id}</code>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Error details */}
+            {errorEntries.length > 0 && (
+              <div className="log-error-block" style={{
+                marginTop: 'var(--space-2)',
+                padding: 'var(--space-2) var(--space-3)',
+                borderRadius: 6,
+              }}>
+                {errorEntries.map(([seller, err]) => (
+                  <div key={seller} style={{
+                    fontSize: 'var(--text-xs)',
+                    color: 'var(--danger)',
+                    display: 'flex',
+                    gap: 'var(--space-1)',
+                    lineHeight: 'var(--leading-normal)',
+                  }}>
+                    <span style={{ fontWeight: 600, flexShrink: 0 }}>{seller}:</span>
+                    <span>{err}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Retry button for dimension errors */}
+            {canRetry && (
+              <button
+                onClick={onRetryClick}
+                style={{
+                  marginTop: 'var(--space-2)',
+                  padding: '4px 12px',
+                  borderRadius: 5,
+                  fontSize: 'var(--text-xs)',
+                  fontWeight: 600,
+                  background: isRetrying ? 'var(--ink)' : 'var(--attention-bg)',
+                  color: isRetrying ? 'var(--paper)' : 'var(--attention)',
+                  border: `1px solid ${isRetrying ? 'var(--ink)' : 'rgba(217, 119, 6, 0.2)'}`,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s',
+                }}
+              >
+                {isRetrying ? 'Cancelar' : 'Informar dimensoes'}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Dimension retry form */}
+      {isRetrying && (
+        <div className="animate-in" style={{
+          background: 'var(--attention-bg)',
+          border: '1px solid rgba(217, 119, 6, 0.12)',
+          borderRadius: 10,
+          padding: 'var(--space-3) var(--space-4)',
+        }}>
+          <DimensionForm
+            itemIds={[log.source_item_id]}
+            destinations={log.dest_sellers || []}
+            onSubmit={onRetrySubmit}
+          />
+        </div>
       )}
     </>
   );
@@ -559,4 +632,3 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-const td: React.CSSProperties = { padding: 'var(--space-2) var(--space-3)', color: 'var(--ink)' };

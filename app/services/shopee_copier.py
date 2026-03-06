@@ -341,6 +341,9 @@ async def copy_single_item(
         logger.info("Fetching Shopee item %d from shop %d", item_id, source_shop_id)
         source_data = await _fetch_source_item(source_shop_id, item_id, org_id)
         result["sku"] = source_data.get("base_info", {}).get("item_sku") or None
+        result["_title"] = source_data.get("base_info", {}).get("item_name") or ""
+        image_url_list = source_data.get("base_info", {}).get("image", {}).get("image_url_list", [])
+        result["_thumbnail"] = image_url_list[0] if image_url_list else ""
 
         # 2. Upload images
         image_urls = source_data.get("base_info", {}).get("image", {}).get("image_url_list", [])
@@ -514,6 +517,8 @@ async def copy_items(
         dest_item_ids: dict[str, str] = {}
         item_errors: dict[str, str] = {}
         has_needs_dimensions = False
+        item_title = ""
+        item_thumbnail = ""
 
         for dest_slug, dest_shop_id in dest_shops:
             result = await copy_single_item(
@@ -523,6 +528,11 @@ async def copy_items(
             # Use slug as key in results for readability
             result["dest_seller"] = dest_slug
             all_results.append(result)
+
+            # Capture title/thumbnail from first result
+            if not item_title and result.get("_title"):
+                item_title = result["_title"]
+                item_thumbnail = result.get("_thumbnail", "")
 
             if result["status"] == "success":
                 total_success += 1
@@ -557,6 +567,8 @@ async def copy_items(
                 "status": item_status,
                 "dest_item_ids": dest_item_ids,
                 "error_details": item_errors if item_errors else None,
+                "source_item_title": item_title or None,
+                "source_item_thumbnail": item_thumbnail or None,
             }
             if log_id is not None:
                 db.table("shopee_copy_logs").update(update_data).eq("id", log_id).execute()

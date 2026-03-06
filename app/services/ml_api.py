@@ -112,6 +112,35 @@ def _raise_for_status(resp: httpx.Response, service_name: str) -> None:
         ) from exc
 
 
+# ── Generic ML request with 429 retry ────────────────────
+
+_REQUEST_RATE_RETRIES = 5
+_REQUEST_RATE_BASE_WAIT = 3  # seconds
+
+
+async def _ml_request(
+    method: str,
+    url: str,
+    token: str,
+    json: dict | None = None,
+    params: dict | None = None,
+    timeout: float = 30.0,
+) -> httpx.Response:
+    """Make an ML API request with automatic 429 retry + exponential backoff."""
+    headers = {"Authorization": f"Bearer {token}"}
+    resp: httpx.Response | None = None
+    for attempt in range(_REQUEST_RATE_RETRIES):
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.request(method, url, headers=headers, json=json, params=params)
+        if resp.status_code != 429:
+            return resp
+        retry_after = resp.headers.get("retry-after")
+        wait = int(retry_after) if retry_after and retry_after.isdigit() else _REQUEST_RATE_BASE_WAIT * (2 ** attempt)
+        logger.warning("ML rate-limited (429) on %s %s — waiting %ds (attempt %d/%d)", method, url, wait, attempt + 1, _REQUEST_RATE_RETRIES)
+        await asyncio.sleep(wait)
+    return resp  # type: ignore[return-value]
+
+
 def _get_seller_credentials(seller: dict) -> tuple[str, str]:
     from app.config import settings
     app_id = seller.get("ml_app_id") or settings.ml_app_id
@@ -286,96 +315,63 @@ async def get_seller_official_store_id(seller_slug: str, org_id: str) -> int | N
 
 
 async def get_item(seller_slug: str, item_id: str, org_id: str = "") -> dict:
-    """GET /items/{item_id} — full item data."""
+    """GET /items/{item_id} — full item data (with 429 retry)."""
     token = await _get_token(seller_slug, org_id)
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(
-            f"{ML_API}/items/{item_id}",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        _raise_for_status(resp, "Mercado Livre API")
-        return resp.json()
+    resp = await _ml_request("GET", f"{ML_API}/items/{item_id}", token)
+    _raise_for_status(resp, "Mercado Livre API")
+    return resp.json()
 
 
 async def get_item_description(seller_slug: str, item_id: str, org_id: str = "") -> dict:
-    """GET /items/{item_id}/description — item description."""
+    """GET /items/{item_id}/description — item description (with 429 retry)."""
     token = await _get_token(seller_slug, org_id)
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(
-            f"{ML_API}/items/{item_id}/description",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        if resp.status_code == 404:
-            return {}
-        _raise_for_status(resp, "Mercado Livre API")
-        return resp.json()
+    resp = await _ml_request("GET", f"{ML_API}/items/{item_id}/description", token)
+    if resp.status_code == 404:
+        return {}
+    _raise_for_status(resp, "Mercado Livre API")
+    return resp.json()
 
 
 async def get_item_compatibilities(seller_slug: str, item_id: str, org_id: str = "") -> dict | None:
-    """GET /items/{item_id}/compatibilities?extended=true — autoparts compatibilities."""
+    """GET /items/{item_id}/compatibilities?extended=true (with 429 retry)."""
     token = await _get_token(seller_slug, org_id)
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(
-            f"{ML_API}/items/{item_id}/compatibilities",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"extended": "true"},
-        )
-        if resp.status_code == 404:
-            return None
-        _raise_for_status(resp, "Mercado Livre API")
-        return resp.json()
+    resp = await _ml_request("GET", f"{ML_API}/items/{item_id}/compatibilities", token, params={"extended": "true"})
+    if resp.status_code == 404:
+        return None
+    _raise_for_status(resp, "Mercado Livre API")
+    return resp.json()
 
 
 async def create_item(seller_slug: str, payload: dict, org_id: str = "") -> dict:
-    """POST /items — create new listing."""
+    """POST /items — create new listing (with 429 retry)."""
     token = await _get_token(seller_slug, org_id)
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(
-            f"{ML_API}/items",
-            headers={"Authorization": f"Bearer {token}"},
-            json=payload,
-        )
-        _raise_for_status(resp, "Mercado Livre API")
-        return resp.json()
+    resp = await _ml_request("POST", f"{ML_API}/items", token, json=payload, timeout=60.0)
+    _raise_for_status(resp, "Mercado Livre API")
+    return resp.json()
 
 
 async def set_item_description(seller_slug: str, item_id: str, plain_text: str, org_id: str = "") -> dict:
-    """POST /items/{item_id}/description — set description."""
+    """POST /items/{item_id}/description — set description (with 429 retry)."""
     token = await _get_token(seller_slug, org_id)
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            f"{ML_API}/items/{item_id}/description",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"plain_text": plain_text},
-        )
-        _raise_for_status(resp, "Mercado Livre API")
-        return resp.json()
+    resp = await _ml_request("POST", f"{ML_API}/items/{item_id}/description", token, json={"plain_text": plain_text})
+    _raise_for_status(resp, "Mercado Livre API")
+    return resp.json()
 
 
 async def set_item_compatibilities(seller_slug: str, item_id: str, compat_data: dict, org_id: str = "") -> dict:
-    """POST /items/{item_id}/compatibilities — set compatibilities."""
+    """POST /items/{item_id}/compatibilities — set compatibilities (with 429 retry)."""
     token = await _get_token(seller_slug, org_id)
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            f"{ML_API}/items/{item_id}/compatibilities",
-            headers={"Authorization": f"Bearer {token}"},
-            json=compat_data,
-        )
-        _raise_for_status(resp, "Mercado Livre API")
-        return resp.json()
+    resp = await _ml_request("POST", f"{ML_API}/items/{item_id}/compatibilities", token, json=compat_data)
+    _raise_for_status(resp, "Mercado Livre API")
+    return resp.json()
 
 
 async def update_item(seller_slug: str, item_id: str, payload: dict, org_id: str = "") -> dict:
-    """PUT /items/{item_id} — update existing listing."""
+    """PUT /items/{item_id} — update existing listing (with 429 retry)."""
     token = await _get_token(seller_slug, org_id)
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.put(
-            f"{ML_API}/items/{item_id}",
-            headers={"Authorization": f"Bearer {token}"},
-            json=payload,
-        )
-        _raise_for_status(resp, "Mercado Livre API")
-        return resp.json()
+    resp = await _ml_request("PUT", f"{ML_API}/items/{item_id}", token, json=payload)
+    _raise_for_status(resp, "Mercado Livre API")
+    return resp.json()
 
 
 async def search_items_by_sku(seller_slug: str, sku: str, org_id: str = "") -> list[str]:

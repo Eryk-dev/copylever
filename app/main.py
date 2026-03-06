@@ -28,6 +28,23 @@ app = FastAPI(
     version="1.0.0",
 )
 
+
+@app.on_event("startup")
+async def cleanup_stale_tasks():
+    """Mark abandoned in_progress copy logs as error on server restart."""
+    try:
+        from app.db.supabase import get_db
+        db = get_db()
+        stale_error = {"_system": "Interrompido por reinicio do servidor"}
+        for table in ["copy_logs", "shopee_copy_logs"]:
+            db.table(table).update({
+                "status": "error",
+                "error_details": stale_error,
+            }).eq("status", "in_progress").execute()
+        logger.info("Cleaned up stale in_progress tasks on startup")
+    except Exception as e:
+        logger.warning("Failed to clean up stale tasks: %s", e)
+
 # CORS
 origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 app.add_middleware(

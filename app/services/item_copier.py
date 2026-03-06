@@ -1,6 +1,7 @@
 """
 Core logic for copying ML listings from one seller to another.
 """
+import asyncio
 import json
 import logging
 import re
@@ -22,6 +23,11 @@ from app.services.ml_api import (
 logger = logging.getLogger(__name__)
 
 MAX_DEBUG_PAYLOAD_SIZE = 50_000  # 50 KB max for JSON payloads in debug logs
+
+# Concurrent item copies — ~80% of ML rate limit headroom.
+# Each item = ~4-5 API calls, so 3 concurrent = ~12-15 requests in flight.
+# ML typically allows ~10k req/hour; this stays well within limits.
+ML_COPY_CONCURRENCY = 3
 
 
 def _truncate_json(data: Any, max_size: int = MAX_DEBUG_PAYLOAD_SIZE) -> Any:
@@ -123,6 +129,27 @@ DIMENSION_ERROR_KEYWORDS = {
 USER_PRODUCT_LISTING_TAG = "user_product_listing"
 BRACKET_FIELDS_RE = re.compile(r"\[([^\]]+)\]")
 MAX_FAMILY_NAME_LEN = 120
+
+
+def _extract_missing_required_attributes(exc: MlApiError) -> set[str]:
+    """Extract attribute IDs from 'attributes [X] are required for category' errors."""
+    attrs: set[str] = set()
+    payload = exc.payload if isinstance(exc.payload, dict) else {}
+    causes = payload.get("cause", [])
+    if isinstance(causes, list):
+        for cause in causes:
+            if not isinstance(cause, dict) or cause.get("type") != "error":
+                continue
+            code = str(cause.get("code", "")).lower()
+            if "missing_required" not in code and "missing_catalog_required" not in code:
+                continue
+            msg = cause.get("message", "")
+            for group in BRACKET_FIELDS_RE.findall(msg):
+                for raw in group.split(","):
+                    field = raw.strip()
+                    if field:
+                        attrs.add(field)
+    return attrs
 
 
 def _is_dimension_error(exc: MlApiError) -> bool:
@@ -492,6 +519,34 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
         adjusted["family_name"] = adjusted["family_name"][:60]
         actions.append("truncated family_name to 60 chars")
 
+    # Auto-fill missing required attributes (e.g. MODEL) from item data
+    missing_attrs = _extract_missing_required_attributes(exc)
+    if missing_attrs:
+        if "attributes" not in adjusted:
+            adjusted["attributes"] = []
+        existing_ids = {a.get("id") for a in adjusted["attributes"] if isinstance(a, dict)}
+        for attr_id in missing_attrs:
+            if attr_id in existing_ids:
+                continue
+            # Try to find value from source item attributes
+            value = None
+            for src_attr in (item.get("attributes") or []):
+                if not isinstance(src_attr, dict):
+                    continue
+                if src_attr.get("id") == attr_id:
+                    _, value = _extract_value_pair(src_attr)
+                    if not value:
+                        value = src_attr.get("value_name")
+                    break
+            # For MODEL: derive from title/family_name if not in source
+            if not value and attr_id == "MODEL":
+                value = _clean_text(item.get("family_name")) or _clean_text(item.get("title"))
+                if value and len(value) > 60:
+                    value = value[:60]
+            if value:
+                adjusted["attributes"].append({"id": attr_id, "value_name": value})
+                actions.append(f"added missing required attribute {attr_id}={value[:30]}")
+
     if "variations" not in adjusted:
         _ensure_top_level_stock(adjusted, item)
 
@@ -702,6 +757,8 @@ async def copy_single_item(
         logger.info(f"Fetching item {item_id} from {source_seller}")
         item = await get_item(source_seller, item_id, org_id=org_id)
         result["sku"] = _get_item_seller_custom_field(item) or None
+        result["_title"] = item.get("title") or ""
+        result["_thumbnail"] = item.get("secure_thumbnail") or item.get("thumbnail") or ""
 
         # 2. GET description
         description_data = await get_item_description(source_seller, item_id, org_id=org_id)
@@ -749,6 +806,29 @@ async def copy_single_item(
                 break
             except MlApiError as exc:
                 last_exc = exc
+
+                # Dimension errors can't be fixed by retries — bail out immediately
+                if _is_dimension_error(exc):
+                    _log_api_debug(
+                        action="create_item",
+                        source_seller=source_seller,
+                        dest_seller=dest_seller,
+                        source_item_id=item_id,
+                        user_id=user_id,
+                        copy_log_id=copy_log_id,
+                        api_method=exc.method,
+                        api_url=exc.url,
+                        request_payload=payload,
+                        response_status=exc.status_code,
+                        response_body=exc.payload if isinstance(exc.payload, dict) else {"raw": str(exc.payload)},
+                        error_message=exc.detail,
+                        attempt_number=attempt,
+                        adjustments=["dimension_error_detected"],
+                        resolved=True,
+                        org_id=org_id,
+                    )
+                    raise
+
                 if _is_title_invalid_error(exc):
                     force_no_title = True
                 if _is_family_name_invalid_error(exc) and not _is_family_name_length_error(exc):
@@ -973,93 +1053,131 @@ async def copy_items(
 ) -> list[dict]:
     """
     Copy multiple items to multiple destination sellers.
+    Processes up to ML_COPY_CONCURRENCY items in parallel.
     Logs each copy to copy_logs table.
     """
     db = get_db()
-    all_results = []
+    sem = asyncio.Semaphore(ML_COPY_CONCURRENCY)
 
-    for item_id in item_ids:
-        item_id = item_id.strip()
-        if not item_id:
+    async def _copy_one_item(item_id: str) -> list[dict]:
+        async with sem:
+            return await _copy_item_to_all_dests(
+                db, source_seller, dest_sellers, item_id,
+                user_email=user_email, user_id=user_id, org_id=org_id,
+            )
+
+    clean_ids = [iid.strip() for iid in item_ids if iid.strip()]
+    batch_results = await asyncio.gather(
+        *[_copy_one_item(iid) for iid in clean_ids],
+        return_exceptions=True,
+    )
+
+    all_results: list[dict] = []
+    for r in batch_results:
+        if isinstance(r, Exception):
+            logger.error("Unexpected error in copy batch: %s", r)
             continue
+        all_results.extend(r)
 
-        # Create in_progress log entry BEFORE starting the copy
-        log_id: int | None = None
-        try:
-            log_insert = {
+    return all_results
+
+
+async def _copy_item_to_all_dests(
+    db,
+    source_seller: str,
+    dest_sellers: list[str],
+    item_id: str,
+    user_email: str | None = None,
+    user_id: str | None = None,
+    org_id: str = "",
+) -> list[dict]:
+    """Copy a single item to all destinations. Creates/updates log entry."""
+    # Create in_progress log entry BEFORE starting the copy
+    log_id: int | None = None
+    try:
+        log_insert: dict[str, Any] = {
+            "user_email": user_email,
+            "source_seller": source_seller,
+            "dest_sellers": dest_sellers,
+            "source_item_id": item_id,
+            "status": "in_progress",
+        }
+        if user_id:
+            log_insert["user_id"] = user_id
+        if org_id:
+            log_insert["org_id"] = org_id
+        log_row = db.table("copy_logs").insert(log_insert).execute()
+        log_id = log_row.data[0]["id"] if log_row.data else None
+    except Exception as e:
+        logger.error(f"Failed to create in_progress log for {item_id}: {e}")
+
+    results: list[dict] = []
+    dest_item_ids: dict[str, str] = {}
+    item_errors: dict[str, str] = {}
+    has_needs_dimensions = False
+    item_title = ""
+    item_thumbnail = ""
+
+    for dest_seller in dest_sellers:
+        result = await copy_single_item(
+            source_seller, dest_seller, item_id, user_email,
+            user_id=user_id, copy_log_id=log_id, org_id=org_id,
+        )
+        results.append(result)
+
+        # Capture title/thumbnail from first result
+        if not item_title and result.get("_title"):
+            item_title = result["_title"]
+            item_thumbnail = result.get("_thumbnail", "")
+
+        if result["status"] == "success":
+            dest_item_ids[dest_seller] = result["dest_item_id"]
+        elif result["status"] == "needs_dimensions":
+            has_needs_dimensions = True
+            item_errors[dest_seller] = result["error"]
+        else:
+            item_errors[dest_seller] = result["error"]
+
+    # Determine final status
+    if dest_item_ids and not item_errors:
+        item_status = "success"
+    elif has_needs_dimensions and not dest_item_ids:
+        item_status = "needs_dimensions"
+    elif dest_item_ids and item_errors:
+        item_status = "partial"
+    else:
+        item_status = "error"
+
+    # Update the log entry with final results
+    try:
+        update_data: dict[str, Any] = {
+            "status": item_status,
+            "dest_item_ids": dest_item_ids,
+            "error_details": item_errors if item_errors else None,
+            "source_item_title": item_title or None,
+            "source_item_thumbnail": item_thumbnail or None,
+        }
+        if log_id is not None:
+            db.table("copy_logs").update(update_data).eq("id", log_id).execute()
+        else:
+            fallback: dict[str, Any] = {
                 "user_email": user_email,
                 "source_seller": source_seller,
                 "dest_sellers": dest_sellers,
                 "source_item_id": item_id,
-                "status": "in_progress",
-            }
-            if user_id:
-                log_insert["user_id"] = user_id
-            if org_id:
-                log_insert["org_id"] = org_id
-            log_row = db.table("copy_logs").insert(log_insert).execute()
-            log_id = log_row.data[0]["id"] if log_row.data else None
-        except Exception as e:
-            logger.error(f"Failed to create in_progress log for {item_id}: {e}")
-
-        dest_item_ids = {}
-        item_errors = {}
-        has_needs_dimensions = False
-
-        for dest_seller in dest_sellers:
-            result = await copy_single_item(
-                source_seller, dest_seller, item_id, user_email,
-                user_id=user_id, copy_log_id=log_id, org_id=org_id,
-            )
-            all_results.append(result)
-
-            if result["status"] == "success":
-                dest_item_ids[dest_seller] = result["dest_item_id"]
-            elif result["status"] == "needs_dimensions":
-                has_needs_dimensions = True
-                item_errors[dest_seller] = result["error"]
-            else:
-                item_errors[dest_seller] = result["error"]
-
-        # Determine final status
-        if dest_item_ids and not item_errors:
-            item_status = "success"
-        elif has_needs_dimensions and not dest_item_ids:
-            item_status = "needs_dimensions"
-        elif dest_item_ids and item_errors:
-            item_status = "partial"
-        else:
-            item_status = "error"
-
-        # Update the log entry with final results
-        try:
-            update_data = {
-                "status": item_status,
                 "dest_item_ids": dest_item_ids,
+                "status": item_status,
                 "error_details": item_errors if item_errors else None,
             }
-            if log_id is not None:
-                db.table("copy_logs").update(update_data).eq("id", log_id).execute()
-            else:
-                # Fallback: insert a new row if in_progress insert failed
-                fallback = {
-                    "user_email": user_email,
-                    "source_seller": source_seller,
-                    "dest_sellers": dest_sellers,
-                    "source_item_id": item_id,
-                    "dest_item_ids": dest_item_ids,
-                    "status": item_status,
-                    "error_details": item_errors if item_errors else None,
-                }
-                if user_id:
-                    fallback["user_id"] = user_id
-                if org_id:
-                    fallback["org_id"] = org_id
-                db.table("copy_logs").insert(fallback).execute()
-        except Exception as e:
-            logger.error(f"Failed to update log for {item_id}: {e}")
+            if user_id:
+                fallback["user_id"] = user_id
+            if org_id:
+                fallback["org_id"] = org_id
+            db.table("copy_logs").insert(fallback).execute()
+    except Exception as e:
+        logger.error(f"Failed to update log for {item_id}: {e}")
 
-    return all_results
+    return results
 
 
 async def copy_with_dimensions(

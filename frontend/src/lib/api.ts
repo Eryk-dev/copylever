@@ -28,6 +28,12 @@ export interface CopyResponse {
   results: CopyResult[];
 }
 
+export interface CopyQueuedResponse {
+  status: 'queued';
+  total: number;
+  message: string;
+}
+
 export interface CopyLog {
   id: number;
   user_email: string | null;
@@ -37,6 +43,8 @@ export interface CopyLog {
   dest_item_ids: Record<string, string>;
   status: string;
   error_details: Record<string, string> | null;
+  source_item_title: string | null;
+  source_item_thumbnail: string | null;
   created_at: string;
 }
 
@@ -132,6 +140,8 @@ export interface ShopeeCopyLog {
   dest_item_ids: Record<string, string>;
   status: string;
   error_details: Record<string, string> | null;
+  source_item_title: string | null;
+  source_item_thumbnail: string | null;
   created_at: string;
 }
 
