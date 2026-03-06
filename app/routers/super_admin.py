@@ -37,6 +37,8 @@ async def list_orgs(user: dict = Depends(require_super_admin)):
         seller_count = db.table("copy_sellers").select("slug", count="exact").eq("org_id", org_id).eq("active", True).execute().count or 0
         copy_count = db.table("copy_logs").select("id", count="exact").eq("org_id", org_id).gte("created_at", thirty_days_ago).execute().count or 0
         compat_count = db.table("compat_logs").select("id", count="exact").eq("org_id", org_id).gte("created_at", thirty_days_ago).execute().count or 0
+        shopee_seller_count = db.table("shopee_sellers").select("id", count="exact").eq("org_id", org_id).eq("active", True).execute().count or 0
+        shopee_copy_count = db.table("shopee_copy_logs").select("id", count="exact").eq("org_id", org_id).gte("created_at", thirty_days_ago).execute().count or 0
 
         enriched.append({
             **org,
@@ -44,6 +46,8 @@ async def list_orgs(user: dict = Depends(require_super_admin)):
             "seller_count": seller_count,
             "copy_count": copy_count,
             "compat_count": compat_count,
+            "shopee_seller_count": shopee_seller_count,
+            "shopee_copy_count": shopee_copy_count,
         })
 
     return enriched
