@@ -230,7 +230,6 @@ const css = `
     --lp-green-line: rgba(52,211,153,0.08);
     --lp-green-badge: rgba(52,211,153,0.08);
     --lp-quote-mark: rgba(255,255,255,0.06);
-    --lp-grain-opacity: 0.03;
     --lp-terminal-shadow: 0 0 80px rgba(52,211,153,0.03), 0 40px 100px rgba(0,0,0,0.5);
   }
 
@@ -242,16 +241,6 @@ const css = `
     background: radial-gradient(ellipse 70% 50% at 25% 0%, rgba(255,255,255,0.03) 0%, transparent 60%);
   }
 
-  /* Film grain */
-  .lp-page::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-    pointer-events: none;
-    z-index: 50;
-    opacity: var(--lp-grain-opacity);
-  }
 
   /* ---- Animations ---- */
   @keyframes lp-in {
