@@ -9,6 +9,9 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Changed
+- Preview da compatibilidade agora carrega automaticamente ao digitar o ID (debounce de 600ms), sem precisar clicar fora
+
 ### Added
 - Trial system: 20 copias gratuitas por org antes de exigir assinatura
 - Migration `010_trial_copies.sql`: campos `trial_copies_used` e `trial_copies_limit` na tabela `orgs`
@@ -16,6 +19,14 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Billing status agora retorna `trial_copies_used`, `trial_copies_limit`, `trial_active`, `trial_exhausted`
 - `require_active_org` permite acesso durante trial (bloqueia quando esgotado com HTTP 402)
 - `_check_trial_limit()` e `_increment_trial_copies()` no router de copy
+
+#### Shopee Integration (Phase 1 — Foundation)
+- Config: `shopee_partner_id`, `shopee_partner_key`, `shopee_redirect_uri`, `shopee_sandbox` em `app/config.py`
+- Migration `011_shopee_sellers.sql`: tabelas `shopee_sellers` e `shopee_copy_logs`
+- `app/services/shopee_api.py`: cliente API Shopee com HMAC-SHA256 signing, token management com locks async, wrappers para product/logistics/media APIs
+- `app/routers/auth_shopee.py`: OAuth2 flow Shopee (install, callback, list/rename/delete shops)
+- Endpoints: `GET /api/shopee/install`, `GET /api/shopee/callback`, `GET /api/shopee/sellers`, `PUT /api/shopee/sellers/{slug}/name`, `DELETE /api/shopee/sellers/{slug}`
+- Debug env endpoint agora mostra status das vars Shopee
 
 ### Changed
 - Billing status endpoint retorna campos adicionais de trial

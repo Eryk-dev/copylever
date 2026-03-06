@@ -114,6 +114,18 @@ export default function CompatPage({ sellers, headers }: Props) {
     };
   }, [hasInProgress, loadLogs]);
 
+  // Auto-preview when sourceInput changes (debounced)
+  useEffect(() => {
+    const raw = sourceInput.trim();
+    if (!raw) return;
+    const parsed = parseItemId(raw);
+    if (!/^MLB\d+$/.test(parsed)) return;
+    const timer = setTimeout(() => {
+      handlePreview(raw);
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [sourceInput]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handlePreview = useCallback(async (raw: string) => {
     const itemId = parseItemId(raw);
     if (!itemId) return;
@@ -260,20 +272,6 @@ export default function CompatPage({ sellers, headers }: Props) {
             placeholder="1234567890 ou MLB1234567890"
             value={sourceInput}
             onChange={e => setSourceInput(e.target.value)}
-            onBlur={() => {
-              if (sourceInput) {
-                const normalized = parseItemId(sourceInput);
-                if (normalized !== sourceInput) setSourceInput(normalized);
-                handlePreview(sourceInput);
-              }
-            }}
-            onKeyDown={e => {
-              if (e.key === 'Enter') {
-                const normalized = parseItemId(sourceInput);
-                if (normalized !== sourceInput) setSourceInput(normalized);
-                handlePreview(sourceInput);
-              }
-            }}
             style={{
               padding: 'var(--space-2) var(--space-3)',
               border: '1px solid var(--line)',
