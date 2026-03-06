@@ -38,6 +38,11 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Removed
 - Removido arquivo `ShopeeCopyPage.tsx` (~950 linhas de codigo morto) — componente nunca importado ou renderizado; toda logica util ja foi integrada ao `CopyPage.tsx` unificado
+- Removidos tipos mortos `ShopeeCopyResponse` e `ShopeeCopyResult` de `api.ts` — nunca importados por nenhum componente
+
+### Changed (Frontend)
+- Extraido componente `StatusBadge` para `frontend/src/components/StatusBadge.tsx` (antes duplicado inline em CopyPage)
+- Extraida funcao `isDimensionError` para `frontend/src/lib/helpers.ts` com suporte adicional a keyword 'weight' para erros Shopee
 
 ### Added
 - Rate limiting com backoff exponencial no cliente Shopee API — `_shop_get`, `_shop_post` e `upload_image` agora detectam erro `too_fast` e fazem retry automatico (ate 5 tentativas: 2s, 4s, 8s, 16s, 32s)

@@ -117,23 +117,6 @@ export interface ShopeeSeller {
   created_at: string;
 }
 
-export interface ShopeeCopyResult {
-  source_item_id: string;
-  dest_seller: string;
-  status: 'success' | 'error' | 'pending' | 'needs_dimensions';
-  dest_item_id: string | null;
-  error: string | null;
-  sku?: string | null;
-}
-
-export interface ShopeeCopyResponse {
-  total: number;
-  success: number;
-  errors: number;
-  needs_dimensions?: number;
-  results: ShopeeCopyResult[];
-}
-
 export interface ShopeeCopyLog {
   id: number;
   user_email: string | null;
