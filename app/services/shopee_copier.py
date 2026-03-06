@@ -284,13 +284,17 @@ def _is_dimension_error(error_message: str) -> bool:
 
 
 def _strip_attributes(payload: dict) -> dict:
-    """Remove brand and non-essential attributes for retry attempt 2."""
+    """Remove brand and non-essential attributes for retry attempt 2.
+
+    Keeps attributes that have non-empty attribute_value_list (real values).
+    Removes attributes with empty values (often brand or optional attrs that
+    cause validation errors).
+    """
     p = dict(payload)
     if "attribute_list" in p:
-        # Keep only mandatory-looking attributes (remove brand etc.)
         p["attribute_list"] = [
             a for a in p["attribute_list"]
-            if a.get("is_mandatory")
+            if a.get("attribute_value_list")
         ]
         if not p["attribute_list"]:
             del p["attribute_list"]
