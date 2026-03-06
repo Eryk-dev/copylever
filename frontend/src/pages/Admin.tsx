@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { Seller } from '../lib/api';
+import type { Seller, ShopeeSeller } from '../lib/api';
 import { API_BASE } from '../lib/api';
 import { Card } from './CopyPage';
 import { useToast } from '../components/Toast';
@@ -9,9 +9,12 @@ interface Props {
   loadSellers: () => Promise<void>;
   disconnectSeller: (slug: string) => Promise<void>;
   headers: () => Record<string, string>;
+  shopeeSellers: ShopeeSeller[];
+  loadShopeeSellers: () => Promise<void>;
+  disconnectShopeeSeller: (slug: string) => Promise<void>;
 }
 
-export default function Admin({ sellers, loadSellers, disconnectSeller, headers }: Props) {
+export default function Admin({ sellers, loadSellers, disconnectSeller, headers, shopeeSellers, loadShopeeSellers, disconnectShopeeSeller }: Props) {
   const { toast } = useToast();
   const [refreshing, setRefreshing] = useState(false);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
@@ -19,6 +22,14 @@ export default function Admin({ sellers, loadSellers, disconnectSeller, headers 
   const [editingSlug, setEditingSlug] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Shopee-specific state
+  const [shopeeRefreshing, setShopeeRefreshing] = useState(false);
+  const [shopeeDisconnecting, setShopeeDisconnecting] = useState<string | null>(null);
+  const [shopeeInstalling, setShopeeInstalling] = useState(false);
+  const [shopeeEditingSlug, setShopeeEditingSlug] = useState<string | null>(null);
+  const [shopeeEditName, setShopeeEditName] = useState('');
+  const [shopeeSaving, setShopeeSaving] = useState(false);
 
   const handleRename = async (slug: string) => {
     const trimmed = editName.trim();
@@ -81,6 +92,70 @@ export default function Admin({ sellers, loadSellers, disconnectSeller, headers 
     await disconnectSeller(slug);
     setDisconnecting(null);
     toast('Seller desconectado');
+  };
+
+  // Shopee handlers
+  const handleShopeeRename = async (slug: string) => {
+    const trimmed = shopeeEditName.trim();
+    if (!trimmed) return;
+    setShopeeSaving(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/shopee/sellers/${slug}/name`, {
+        method: 'PUT',
+        headers: { ...headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: trimmed }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        toast(err?.detail || 'Erro ao renomear loja');
+        return;
+      }
+      await loadShopeeSellers();
+      setShopeeEditingSlug(null);
+      toast('Nome atualizado');
+    } catch {
+      toast('Erro de conexão');
+    } finally {
+      setShopeeSaving(false);
+    }
+  };
+
+  const handleShopeeInstall = async () => {
+    setShopeeInstalling(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/shopee/install`, { headers: headers() });
+      if (!res.ok) {
+        if (res.status === 401) {
+          toast('Erro: sessão expirada. Faça login novamente.');
+        } else {
+          toast('Erro ao iniciar autorização Shopee.');
+        }
+        return;
+      }
+      const data = await res.json();
+      if (data.redirect_url) {
+        window.location.href = data.redirect_url;
+      }
+    } catch {
+      toast('Erro de conexão ao iniciar autorização.');
+    } finally {
+      setShopeeInstalling(false);
+    }
+  };
+
+  const handleShopeeRefresh = async () => {
+    setShopeeRefreshing(true);
+    await loadShopeeSellers();
+    setShopeeRefreshing(false);
+    toast('Lista atualizada');
+  };
+
+  const handleShopeeDisconnect = async (slug: string) => {
+    if (!confirm(`Desconectar loja Shopee "${slug}"? Os tokens serão removidos.`)) return;
+    setShopeeDisconnecting(slug);
+    await disconnectShopeeSeller(slug);
+    setShopeeDisconnecting(null);
+    toast('Loja Shopee desconectada');
   };
 
   return (
@@ -249,6 +324,200 @@ export default function Admin({ sellers, loadSellers, disconnectSeller, headers 
                 >
                   {disconnecting === seller.slug && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--danger)' }} />}
                   {disconnecting === seller.slug ? 'Removendo...' : 'Desconectar'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* Separator */}
+      <div style={{ height: 1, background: 'var(--line)', margin: '0' }} />
+
+      {/* Shopee Install Link */}
+      <Card title="Conectar loja Shopee">
+        <p style={{ color: 'var(--ink-muted)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-3)' }}>
+          Clique no botão abaixo para autorizar uma loja da Shopee:
+        </p>
+        <button
+          onClick={handleShopeeInstall}
+          disabled={shopeeInstalling}
+          className="btn-primary"
+          style={{
+            padding: 'var(--space-3) var(--space-5)',
+            fontSize: 'var(--text-sm)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--space-2)',
+            background: '#EE4D2D',
+          }}
+        >
+          {shopeeInstalling && <span className="spinner spinner-sm" />}
+          {shopeeInstalling ? 'Redirecionando...' : 'Autorizar loja Shopee'}
+        </button>
+      </Card>
+
+      {/* Shopee Sellers List */}
+      <Card title={`Lojas Shopee (${shopeeSellers.length})`}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 'var(--space-3)' }}>
+          <button
+            onClick={handleShopeeRefresh}
+            disabled={shopeeRefreshing}
+            className="btn-ghost"
+            style={{
+              padding: '6px 12px',
+              fontSize: 'var(--text-xs)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-2)',
+            }}
+          >
+            {shopeeRefreshing && <span className="spinner spinner-sm" />}
+            {shopeeRefreshing ? 'Atualizando...' : 'Atualizar'}
+          </button>
+        </div>
+
+        {shopeeSellers.length === 0 ? (
+          <div style={{
+            textAlign: 'center',
+            padding: 'var(--space-8) var(--space-4)',
+            color: 'var(--ink-faint)',
+            fontSize: 'var(--text-sm)',
+          }}>
+            <div style={{ fontSize: 'var(--text-2xl)', marginBottom: 'var(--space-2)', opacity: 0.4 }}>
+              {'\u2194'}
+            </div>
+            Nenhuma loja Shopee conectada.<br />
+            Use o botão acima para autorizar uma loja.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+            {shopeeSellers.map(shop => (
+              <div
+                key={shop.slug}
+                className="animate-in"
+                style={{
+                  background: 'var(--paper)',
+                  borderRadius: 6,
+                  padding: 'var(--space-3) var(--space-4)',
+                  border: '1px solid var(--line)',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: 'var(--space-3)',
+                  transition: 'border-color 0.15s',
+                }}
+              >
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
+                    <span style={{
+                      width: 8, height: 8,
+                      borderRadius: '50%',
+                      background: shop.token_valid ? 'var(--success)' : 'var(--danger)',
+                      display: 'inline-block',
+                      flexShrink: 0,
+                    }} />
+                    {shopeeEditingSlug === shop.slug ? (
+                      <form
+                        onSubmit={e => { e.preventDefault(); handleShopeeRename(shop.slug); }}
+                        style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flex: 1 }}
+                      >
+                        <input
+                          type="text"
+                          value={shopeeEditName}
+                          onChange={e => setShopeeEditName(e.target.value)}
+                          autoFocus
+                          maxLength={100}
+                          style={{
+                            background: 'var(--surface)',
+                            border: '1px solid var(--line-hover)',
+                            borderRadius: 4,
+                            padding: '4px 8px',
+                            color: 'var(--ink)',
+                            fontSize: 'var(--text-sm)',
+                            fontWeight: 600,
+                            flex: 1,
+                            minWidth: 0,
+                          }}
+                          onKeyDown={e => { if (e.key === 'Escape') setShopeeEditingSlug(null); }}
+                        />
+                        <button
+                          type="submit"
+                          disabled={shopeeSaving || !shopeeEditName.trim()}
+                          className="btn-primary"
+                          style={{ padding: '4px 10px', fontSize: 'var(--text-xs)' }}
+                        >
+                          {shopeeSaving ? 'Salvando...' : 'Salvar'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShopeeEditingSlug(null)}
+                          className="btn-ghost"
+                          style={{ padding: '4px 10px', fontSize: 'var(--text-xs)' }}
+                        >
+                          Cancelar
+                        </button>
+                      </form>
+                    ) : (
+                      <>
+                        <span style={{
+                          display: 'inline-block',
+                          padding: '1px 6px',
+                          borderRadius: 4,
+                          fontSize: 'var(--text-xs)',
+                          fontWeight: 600,
+                          background: 'rgba(238, 77, 45, 0.1)',
+                          color: '#EE4D2D',
+                          lineHeight: '18px',
+                          flexShrink: 0,
+                        }}>
+                          Shopee
+                        </span>
+                        <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 'var(--text-sm)' }}>
+                          {shop.name || shop.slug}
+                        </span>
+                        <span style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)' }}>
+                          ({shop.slug})
+                        </span>
+                        <button
+                          onClick={() => { setShopeeEditingSlug(shop.slug); setShopeeEditName(shop.name || shop.slug); }}
+                          className="btn-ghost"
+                          title="Renomear"
+                          style={{
+                            padding: '2px 6px',
+                            fontSize: 'var(--text-xs)',
+                            color: 'var(--ink-faint)',
+                            lineHeight: 1,
+                          }}
+                        >
+                          &#9998;
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: 'var(--space-3)', marginTop: 'var(--space-1)', fontSize: 'var(--text-xs)', color: 'var(--ink-faint)' }}>
+                    <span>ID: {shop.shop_id}</span>
+                    {shop.created_at && (
+                      <span>Conectado em {new Date(shop.created_at).toLocaleDateString('pt-BR')}</span>
+                    )}
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleShopeeDisconnect(shop.slug)}
+                  disabled={shopeeDisconnecting === shop.slug}
+                  className="btn-danger-ghost"
+                  style={{
+                    padding: '6px 12px',
+                    fontSize: 'var(--text-xs)',
+                    flexShrink: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 'var(--space-1)',
+                    opacity: shopeeDisconnecting === shop.slug ? 0.5 : 1,
+                  }}
+                >
+                  {shopeeDisconnecting === shop.slug && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--danger)' }} />}
+                  {shopeeDisconnecting === shop.slug ? 'Removendo...' : 'Desconectar'}
                 </button>
               </div>
             ))}

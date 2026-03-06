@@ -703,6 +703,9 @@ export default function App() {
                 loadSellers={auth.loadSellers}
                 disconnectSeller={auth.disconnectSeller}
                 headers={auth.headers}
+                shopeeSellers={auth.shopeeSellers}
+                loadShopeeSellers={auth.loadShopeeSellers}
+                disconnectShopeeSeller={auth.disconnectShopeeSeller}
               />
             )}
             {adminSubView === 'users' && auth.user && (
