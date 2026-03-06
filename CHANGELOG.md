@@ -36,6 +36,9 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - QuickStartGuide atualizado para mencionar Shopee como opcao de conexao
 - Paywall (tela de assinatura) agora lista "Integracao com Shopee" entre as funcionalidades do plano
 
+### Removed
+- Removido arquivo `ShopeeCopyPage.tsx` (~950 linhas de codigo morto) — componente nunca importado ou renderizado; toda logica util ja foi integrada ao `CopyPage.tsx` unificado
+
 ### Added
 - Rate limiting com backoff exponencial no cliente Shopee API — `_shop_get`, `_shop_post` e `upload_image` agora detectam erro `too_fast` e fazem retry automatico (ate 5 tentativas: 2s, 4s, 8s, 16s, 32s)
 - Cliente HTTP reutilizavel (singleton `httpx.AsyncClient`) para APIs Shopee — conexoes TCP reutilizadas via connection pooling (max 20 conexoes, 10 keep-alive), com shutdown graceful registrado no FastAPI

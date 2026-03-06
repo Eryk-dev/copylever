@@ -304,7 +304,7 @@
         "Typecheck passes"
       ],
       "priority": 19,
-      "passes": false,
+      "passes": true,
       "notes": "CopyPage.handlePreview (lines 154-162) normalizes Shopee data but drops weight, has_description, stock. The orphaned ShopeeCopyPage (lines 665-683) shows weight correctly as '{p.weight}kg' — use as reference. The backend /api/shopee/copy/preview/{item_id} already returns these fields."
     },
     {
@@ -319,7 +319,7 @@
         "Typecheck passes"
       ],
       "priority": 20,
-      "passes": false,
+      "passes": true,
       "notes": "CopyForm.tsx line ~198: `if (!res.ok) return;` silently ignores Shopee resolve errors. The ML path shows errors properly. Add toast(err.detail, 'error') matching the ML pattern. For the 'no Shopee sellers' case: check if shopeeSellers array is empty before even calling resolve."
     },
     {
@@ -334,7 +334,7 @@
         "Typecheck passes"
       ],
       "priority": 21,
-      "passes": false,
+      "passes": true,
       "notes": "App.tsx lines 418-491 show the empty state with only ML connect button. Lines 748-833 show QuickStartGuide mentioning only ML. The Shopee install flow uses the same pattern as ML: fetch /api/shopee/install, get redirect_url, window.location.href = redirect_url. Look at how the ML connect button works and replicate the pattern."
     },
     {
@@ -348,7 +348,7 @@
         "Typecheck passes"
       ],
       "priority": 22,
-      "passes": false,
+      "passes": true,
       "notes": "This file is ~950 lines that are never rendered. All useful logic has been extracted to CopyPage in previous stories (US-018 for retry payload, US-019 for preview weight). App.tsx never imports ShopeeCopyPage. Safe to delete. Run grep to triple-check no references exist."
     },
     {
