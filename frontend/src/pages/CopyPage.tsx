@@ -180,16 +180,16 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
     }
   }, [previewOpen, handlePreview]);
 
-  const handleLogRetry = useCallback(async (logId: number, dims: Dimensions, platform: Platform) => {
+  const handleLogRetry = useCallback(async (log: UnifiedLog, dims: Dimensions) => {
     try {
-      const endpoint = platform === 'ml' ? '/api/copy/retry-dimensions' : '/api/shopee/copy/with-dimensions';
+      const endpoint = log.platform === 'ml' ? '/api/copy/retry-dimensions' : '/api/shopee/copy/with-dimensions';
       const res = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: headers(),
         body: JSON.stringify(
-          platform === 'ml'
-            ? { log_id: logId, dimensions: dims }
-            : { log_id: logId, dimensions: dims }
+          log.platform === 'ml'
+            ? { log_id: log.id, dimensions: dims }
+            : { source: log.source_seller, destinations: log.dest_sellers, item_id: String(log.source_item_id), dimensions: dims }
         ),
       });
       if (!res.ok) {
@@ -370,7 +370,7 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
                         setRetryPlatform(log.platform);
                       }
                     }}
-                    onRetrySubmit={(dims) => handleLogRetry(log.id, dims, log.platform)}
+                    onRetrySubmit={(dims) => handleLogRetry(log, dims)}
                   />
                 ))}
               </div>

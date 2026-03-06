@@ -30,7 +30,7 @@
         "Typecheck passes"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": "Currently at shopee_copier.py:351-352 it logs a warning but proceeds. add_item requires at least 1 image_id. The 3 retry attempts all fail with empty images — waste of API calls. Check the return dict format used by other error paths in the same function for consistency."
     },
     {
@@ -46,7 +46,7 @@
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "notes": "Current code at lines 286-297 filters `a.get('is_mandatory')` but this field comes from get_attributes (category API), NOT from get_item_base_info. It's never present in the source item's attribute data, so the filter always returns empty list — removing ALL attributes. A pragmatic fix: instead of trying to detect mandatory, just remove the ones known to cause issues (brand). The Shopee brand attribute has no universal ID, so the safest approach is: keep all attributes but strip attribute_list entries with empty attribute_value_list."
     },
     {
@@ -60,7 +60,7 @@
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": "Three small fixes in three files. For updated_at: the refresh path in _get_token does db.table('shopee_sellers').update({...}) — just add 'updated_at' to that dict. For condition: line ~166 or ~311 in shopee_copier.py has condition='NEW' hardcoded. For urlencode: line 7 in auth_shopee.py."
     },
     {
@@ -75,7 +75,7 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": "Currently _fetch_dest_logistics is called without try/except in copy_single_item. Any exception bubbles up to the generic except handler. Adding specific handling gives better error messages. For _log_debug: check the existing api_debug_logs schema — it uses JSONB columns, so adding platform is safe. The ML copier (item_copier.py) has its own _log_debug that won't be affected."
     },
     {
@@ -89,7 +89,7 @@
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": "auth_shopee.py line 72 hardcodes `timedelta(days=30)`. The Shopee token exchange response may include `refresh_token_expire_in` (seconds). In _get_token refresh path (shopee_api.py ~line 286+), only access_token expiry is updated — refresh_token_expires_at is never recalculated even when a new refresh_token is returned."
     },
     {
@@ -104,7 +104,7 @@
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": "Current code at line 83: `slug = shop_name.lower().replace(' ', '-')[:50]` — allows slashes, dots, unicode. The slug is used in URL paths and DB lookups. The duplicate-suffix logic should query shopee_sellers for existing slugs in the org before inserting."
     },
     {
@@ -124,7 +124,7 @@
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "notes": "Both tables are currently empty (0 rows confirmed). Reference ML patterns: copy_sellers.org_id uses CASCADE, copy_logs.org_id uses SET NULL, copy_logs.user_id uses SET NULL. To find existing FK constraint names, the migration should use: ALTER TABLE ... DROP CONSTRAINT IF EXISTS ... then ADD CONSTRAINT. Check migration 007_multi_tenant.sql and 008_backfill_org_data.sql for ML FK patterns. Apply via mcp__supabase__apply_migration. Supabase project ID: wrbrbhuhsaaupqsimkqz."
     },
     {
@@ -141,7 +141,7 @@
         "Typecheck passes"
       ],
       "priority": 9,
-      "passes": false,
+      "passes": true,
       "notes": "Constants at lines 26-27 are already defined but never used. The pattern should be: call API -> check if response has error.too_fast -> if yes, sleep and retry -> if no, proceed to _raise_for_shopee or return. Don't retry on non-rate-limit errors. Match the pattern from ML's item_copier.py exponential backoff on 429s."
     },
     {
@@ -157,7 +157,7 @@
         "Typecheck passes"
       ],
       "priority": 10,
-      "passes": false,
+      "passes": true,
       "notes": "Currently every API call creates and destroys an httpx.AsyncClient (lines 167, 194, 326, 354, 450). This means no connection pooling. A singleton client will reuse TCP connections. Check how main.py handles lifecycle events — it may use lifespan context manager. Keep timeout=60.0 for upload_image specifically (can be overridden per-call)."
     },
     {
@@ -173,7 +173,7 @@
         "Typecheck passes"
       ],
       "priority": 11,
-      "passes": false,
+      "passes": true,
       "notes": "Current code at lines 60-92 uploads sequentially in a for loop. For 9 images at ~2s each = 18s. With semaphore(3) = ~6s. Use asyncio.gather with return_exceptions=False. Create a helper `_upload_one(sem, shop_id, url, org_id)` that acquires semaphore, calls _upload_single_image, returns image_id or None. Then gather all helpers and filter None values. CRITICAL: preserve order — asyncio.gather preserves input order."
     },
     {
@@ -191,7 +191,7 @@
         "Typecheck passes"
       ],
       "priority": 12,
-      "passes": false,
+      "passes": true,
       "notes": "Current code at lines 33-36 encodes state as `org_{org_id}` with no signing. The callback at lines 49-52 trusts it blindly. Using HMAC with the partner_key (already available) avoids needing a DB table or cache for state storage. The timestamp in the state enables expiry validation. The token is truncated to 16 chars for URL friendliness. This is stateless CSRF protection — no server-side storage needed."
     },
     {
@@ -207,7 +207,7 @@
         "Typecheck passes"
       ],
       "priority": 13,
-      "passes": false,
+      "passes": true,
       "notes": "Currently _fetch_dest_logistics is called inside copy_single_item for every (item, dest) pair. For 10 items x 3 dests = 30 calls, but only 3 are unique. Pre-fetch before the loop. Use try/except on pre-fetch — if logistics fetch fails for a dest, log error and skip that dest entirely."
     },
     {
@@ -224,7 +224,7 @@
         "Typecheck passes"
       ],
       "priority": 14,
-      "passes": false,
+      "passes": true,
       "notes": "Currently copy_single_item fetches source data (base_info + extra_info + models = 3 API calls) every time it's called. For 1 item copied to 3 destinations = 9 redundant calls. Pre-fetch in the outer loop of copy_items. The source_data dict contains keys like item_name, description, images, etc. — check _fetch_source_item return format."
     },
     {
@@ -240,7 +240,7 @@
         "Typecheck passes"
       ],
       "priority": 15,
-      "passes": false,
+      "passes": true,
       "notes": "copy_items and copy_with_dimensions are ~90% identical. The differences: copy_items handles multiple item_ids, copy_with_dimensions passes dimensions. Both do: resolve slugs -> create log -> loop items x dests -> update log. After US-013 and US-014 added the caching params, the refactor is even cleaner. Careful: the trial accounting differs — copy_items pre-increments, copy_with_dimensions doesn't. Unify to pre-increment pattern."
     },
     {
@@ -255,7 +255,7 @@
         "Typecheck passes"
       ],
       "priority": 16,
-      "passes": false,
+      "passes": true,
       "notes": "These are the two API calls needed after add_item to set up variations. init_tier_variation defines the tier structure (e.g., Color, Size). add_model defines the specific combinations with prices and stock. Payload formats: init_tier_variation body: {item_id, tier_variation: [{name: 'Color', option_list: [{option: 'Red', image: {image_id: '...'}}]}]}. add_model body: {item_id, model_list: [{tier_index: [0, 0], normal_stock: 10, original_price: 99.9, model_sku: 'SKU-RED-S'}]}. Use _shop_post which handles HMAC signing."
     },
     {
@@ -273,7 +273,7 @@
         "Typecheck passes"
       ],
       "priority": 17,
-      "passes": false,
+      "passes": true,
       "notes": "This is the core variation feature. The source data from _fetch_source_item already includes 'models' key from get_model_list. Structure: models response has 'tier_variation' (tier definitions) and 'model' (specific combinations). Steps: (1) check has_model from base_info, (2) extract tier_variation from models data — each tier has name + option_list, (3) upload tier images if present, (4) call init_tier_variation, (5) build model_list from models data — each model has tier_index, price, stock, sku, (6) call add_model. Handle the case where models data is empty/None (fallback to simple item). Mark result as 'partial' if item created but variations failed."
     },
     {
@@ -288,7 +288,7 @@
         "Typecheck passes"
       ],
       "priority": 18,
-      "passes": false,
+      "passes": true,
       "notes": "Critical frontend bug. Line 192 sends { log_id, dimensions } for Shopee but the backend ShopeeCopyWithDimensionsRequest expects { source, destinations, item_id, dimensions }. The orphaned ShopeeCopyPage.tsx (lines 315-329) has the correct implementation — use it as reference. The log object from /api/shopee/copy/logs contains source_seller, dest_sellers, and source_item_id. The onRetrySubmit callback chain passes through LogCard — may need to pass the full log object instead of just logId."
     },
     {
