@@ -18,6 +18,7 @@ router = APIRouter(prefix="/api/super", tags=["super-admin"])
 class UpdateOrgRequest(BaseModel):
     active: Optional[bool] = None
     payment_active: Optional[bool] = None
+    trial_copies_limit: Optional[int] = None
 
 
 @router.get("/orgs")
@@ -68,6 +69,10 @@ async def update_org(org_id: str, req: UpdateOrgRequest, user: dict = Depends(re
         updates["active"] = req.active
     if req.payment_active is not None:
         updates["payment_active"] = req.payment_active
+    if req.trial_copies_limit is not None:
+        if req.trial_copies_limit < 0:
+            raise HTTPException(status_code=400, detail="Limite de trial deve ser >= 0")
+        updates["trial_copies_limit"] = req.trial_copies_limit
 
     if not updates:
         raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")

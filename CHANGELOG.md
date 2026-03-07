@@ -12,6 +12,10 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 ### Added
 - Fluxo generico "Aguardando correções" no historico de copias, com `correction_details`, agrupamento por SKU+problema no ML e endpoint `/api/copy/retry-corrections` para reaplicar a mesma correção em lote
 
+### Added
+- Super admin pode alterar o limite de trial (`trial_copies_limit`) de qualquer organizacao pela tabela de orgs (clique no campo Trial para editar)
+- Coluna "Trial" na tabela de orgs do super admin mostrando copias usadas/limite com indicador visual
+
 ### Changed
 - Landing page: CTAs agora dizem "Começar grátis", eyebrow menciona Shopee, pricing card mostra badge "20 cópias grátis para testar" e nota "sem cartão de crédito"
 - Landing page: features do pricing incluem Shopee e preview

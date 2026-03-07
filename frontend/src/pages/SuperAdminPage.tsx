@@ -11,6 +11,9 @@ export default function SuperAdminPage({ headers }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [toggling, setToggling] = useState<string | null>(null);
+  const [editingTrial, setEditingTrial] = useState<string | null>(null);
+  const [trialInput, setTrialInput] = useState('');
+  const [savingTrial, setSavingTrial] = useState(false);
 
   const loadOrgs = useCallback(async () => {
     try {
@@ -49,6 +52,32 @@ export default function SuperAdminPage({ headers }: Props) {
     }
   }, [headers]);
 
+  const startEditTrial = (org: OrgWithStats) => {
+    setEditingTrial(org.id);
+    setTrialInput(String(org.trial_copies_limit));
+  };
+
+  const saveTrial = async (orgId: string) => {
+    const newLimit = parseInt(trialInput, 10);
+    if (isNaN(newLimit) || newLimit < 0) return;
+    setSavingTrial(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/super/orgs/${orgId}`, {
+        method: 'PUT',
+        headers: headers(),
+        body: JSON.stringify({ trial_copies_limit: newLimit }),
+      });
+      if (res.ok) {
+        setOrgs(prev => prev.map(o => o.id === orgId ? { ...o, trial_copies_limit: newLimit } : o));
+        setEditingTrial(null);
+      }
+    } catch (e) {
+      console.error('Save trial failed:', e);
+    } finally {
+      setSavingTrial(false);
+    }
+  };
+
   if (loading) {
     return (
       <Card title="Organizações">
@@ -79,7 +108,7 @@ export default function SuperAdminPage({ headers }: Props) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-sm)' }}>
             <thead>
               <tr>
-                {['Empresa', 'Email', 'Status', 'Pagamento', 'Usuários', 'Sellers', 'Cópias (30d)', 'Compats (30d)', 'Shopee Sellers', 'Shopee Cópias (30d)', 'Criado em', ''].map(h => (
+                {['Empresa', 'Email', 'Status', 'Pagamento', 'Trial', 'Usuários', 'Sellers', 'Cópias (30d)', 'Compats (30d)', 'Shopee Sellers', 'Shopee Cópias (30d)', 'Criado em', ''].map(h => (
                   <th key={h} style={thStyle}>{h}</th>
                 ))}
               </tr>
@@ -91,6 +120,88 @@ export default function SuperAdminPage({ headers }: Props) {
                   <td style={{ ...tdStyle, fontSize: 'var(--text-xs)' }}>{org.email}</td>
                   <td style={tdStyle}><StatusBadge active={org.active} label={org.active ? 'Ativo' : 'Inativo'} /></td>
                   <td style={tdStyle}><StatusBadge active={org.payment_active} label={org.payment_active ? 'Ativo' : 'Inativo'} /></td>
+                  <td style={tdStyle}>
+                    {editingTrial === org.id ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <input
+                          type="number"
+                          min="0"
+                          value={trialInput}
+                          onChange={e => setTrialInput(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') saveTrial(org.id);
+                            if (e.key === 'Escape') setEditingTrial(null);
+                          }}
+                          autoFocus
+                          style={{
+                            width: 56,
+                            padding: '2px 6px',
+                            fontSize: 'var(--text-xs)',
+                            borderRadius: 4,
+                            border: '1px solid var(--line)',
+                            background: 'var(--paper)',
+                            color: 'var(--ink)',
+                            textAlign: 'center',
+                          }}
+                        />
+                        <button
+                          onClick={() => saveTrial(org.id)}
+                          disabled={savingTrial}
+                          style={{
+                            padding: '2px 6px',
+                            fontSize: 'var(--text-xs)',
+                            borderRadius: 4,
+                            background: 'rgba(16,185,129,0.08)',
+                            color: 'var(--success)',
+                            border: '1px solid rgba(16,185,129,0.3)',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {savingTrial ? '...' : '✓'}
+                        </button>
+                        <button
+                          onClick={() => setEditingTrial(null)}
+                          style={{
+                            padding: '2px 6px',
+                            fontSize: 'var(--text-xs)',
+                            borderRadius: 4,
+                            background: 'rgba(239,68,68,0.08)',
+                            color: 'var(--danger)',
+                            border: '1px solid rgba(239,68,68,0.3)',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => startEditTrial(org)}
+                        title="Clique para editar o limite de trial"
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          cursor: 'pointer',
+                          padding: '2px 8px',
+                          borderRadius: 4,
+                          fontSize: 'var(--text-xs)',
+                          fontWeight: 500,
+                          color: org.trial_copies_used >= org.trial_copies_limit && !org.payment_active
+                            ? 'var(--danger)'
+                            : 'var(--ink-muted)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        <span style={{ fontWeight: 600, color: 'var(--ink)' }}>{org.trial_copies_used}</span>
+                        <span>/</span>
+                        <span>{org.trial_copies_limit}</span>
+                        <span style={{ fontSize: 10, opacity: 0.5 }}>✎</span>
+                      </button>
+                    )}
+                  </td>
                   <td style={{ ...tdStyle, textAlign: 'center' }}>{org.user_count}</td>
                   <td style={{ ...tdStyle, textAlign: 'center' }}>{org.seller_count}</td>
                   <td style={{ ...tdStyle, textAlign: 'center' }}>{org.copy_count}</td>

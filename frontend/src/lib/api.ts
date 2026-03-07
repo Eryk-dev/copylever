@@ -128,6 +128,8 @@ export interface OrgWithStats extends Org {
   compat_count: number;
   shopee_seller_count: number;
   shopee_copy_count: number;
+  trial_copies_used: number;
+  trial_copies_limit: number;
 }
 
 export interface ShopeeSeller {
