@@ -510,8 +510,14 @@ async def retry_corrections(req: RetryCorrectionsRequest, user: dict = Depends(r
             )
         else:
             values = _extract_retry_attribute_values(req.values, details.get("fields", []))
+            # When GTIN is the only missing attribute and user left it empty,
+            # auto-fill EMPTY_GTIN_REASON instead of rejecting
             if not values:
-                raise HTTPException(status_code=400, detail="Preencha os atributos obrigatorios antes de reenviar")
+                attr_ids = {str(f.get("id")) for f in details.get("fields", []) if isinstance(f, dict)}
+                if attr_ids == {"GTIN"}:
+                    values = {"EMPTY_GTIN_REASON": "No registrado"}
+                else:
+                    raise HTTPException(status_code=400, detail="Preencha os atributos obrigatorios antes de reenviar")
             results = await copy_with_attribute_corrections(
                 source_seller=source,
                 dest_sellers=destinations,
