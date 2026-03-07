@@ -9,6 +9,10 @@ interface Props {
 interface BillingStatus {
   payment_active: boolean;
   stripe_subscription_id: string | null;
+  trial_copies_used: number;
+  trial_copies_limit: number;
+  trial_active: boolean;
+  trial_exhausted: boolean;
 }
 
 export default function BillingPage({ headers }: Props) {
@@ -100,9 +104,64 @@ export default function BillingPage({ headers }: Props) {
     );
   }
 
+  const trialUsed = status?.trial_copies_used ?? 0;
+  const trialLimit = status?.trial_copies_limit ?? 20;
+  const trialPercent = Math.min(100, (trialUsed / trialLimit) * 100);
+
   return (
     <Card title="Assinatura">
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
+        {/* Trial progress — show when not yet paid */}
+        {!status?.payment_active && (
+          <div style={{
+            padding: 'var(--space-4)',
+            background: status?.trial_active
+              ? 'rgba(52,211,153,0.06)'
+              : 'rgba(245,158,11,0.06)',
+            borderRadius: 10,
+            border: `1px solid ${status?.trial_active
+              ? 'rgba(52,211,153,0.15)'
+              : 'rgba(245,158,11,0.15)'}`,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-2)' }}>
+              <p style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--ink)' }}>
+                {status?.trial_active ? 'Período de teste' : 'Teste encerrado'}
+              </p>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>
+                {trialUsed}/{trialLimit} cópias usadas
+              </span>
+            </div>
+            <div style={{
+              height: 6,
+              background: 'var(--line)',
+              borderRadius: 3,
+              overflow: 'hidden',
+            }}>
+              <div style={{
+                height: '100%',
+                width: `${trialPercent}%`,
+                background: status?.trial_exhausted
+                  ? 'var(--danger, #ef4444)'
+                  : trialUsed >= trialLimit * 0.8
+                    ? 'var(--warning, #f59e0b)'
+                    : 'var(--success, #22c55e)',
+                borderRadius: 3,
+                transition: 'width 0.3s ease',
+              }} />
+            </div>
+            {status?.trial_active && (
+              <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)', marginTop: 'var(--space-2)' }}>
+                Restam {trialLimit - trialUsed} cópias gratuitas. Assine para cópias ilimitadas.
+              </p>
+            )}
+            {status?.trial_exhausted && (
+              <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)', marginTop: 'var(--space-2)' }}>
+                Suas cópias gratuitas acabaram. Assine para continuar copiando.
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Status row */}
         <div style={{
           display: 'flex',
@@ -170,7 +229,7 @@ export default function BillingPage({ headers }: Props) {
             }}
           >
             {actionLoading && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--paper)' }} />}
-            {actionLoading ? 'Redirecionando...' : 'Ativar assinatura'}
+            {actionLoading ? 'Redirecionando...' : 'Ativar assinatura — R$ 349,90/mês'}
           </button>
         )}
       </div>

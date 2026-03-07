@@ -133,6 +133,21 @@ async def callback(code: str, shop_id: int, state: str = ""):
     try:
         db = get_db()
 
+        # Anti-abuse: check if this Shopee shop is already connected to a DIFFERENT org
+        global_check = db.table("shopee_sellers").select(
+            "org_id"
+        ).eq("shop_id", shop_id).neq("org_id", org_id).execute()
+        if global_check.data:
+            logger.warning(
+                "Trial abuse blocked: shop_id=%s already in org=%s, attempted org=%s",
+                shop_id, global_check.data[0]["org_id"], org_id,
+            )
+            return _error_page(
+                "Loja j\u00e1 vinculada",
+                "Esta loja Shopee j\u00e1 est\u00e1 conectada a outra organiza\u00e7\u00e3o. "
+                "Cada loja Shopee s\u00f3 pode ser usada em uma organiza\u00e7\u00e3o.",
+            )
+
         # Check for existing seller by shop_id within org
         result = db.table("shopee_sellers").select(
             "id, slug, refresh_token"
@@ -254,6 +269,38 @@ async def disconnect_seller(slug: str, user: dict = Depends(require_active_org))
         raise HTTPException(status_code=404, detail=f"Shop '{slug}' not found")
 
     return {"status": "ok", "slug": slug}
+
+
+def _error_page(title: str, message: str) -> HTMLResponse:
+    html = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Copy An&uacute;ncios &mdash; Erro</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: 'Inter', -apple-system, sans-serif; background: #0f0f0f; color: #f2f2f2; min-height: 100vh; display: flex; align-items: center; justify-content: center; }}
+        .card {{ background: #161616; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 48px; max-width: 460px; text-align: center; }}
+        .icon {{ font-size: 40px; margin-bottom: 16px; color: #ef4444; }}
+        h1 {{ font-size: 20px; font-weight: 600; margin-bottom: 12px; }}
+        p {{ font-size: 15px; line-height: 1.6; color: #b3b3b3; }}
+        .back {{ display: inline-block; margin-top: 20px; color: #EE4D2D; text-decoration: none; font-size: 13px; font-weight: 500; }}
+        .back:hover {{ text-decoration: underline; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon">&#10007;</div>
+        <h1>{title}</h1>
+        <p>{message}</p>
+        <a href="/" class="back">&larr; Voltar ao painel</a>
+    </div>
+</body>
+</html>"""
+    return HTMLResponse(content=html, status_code=403)
 
 
 def _success_page(shop_name: str, already_exists: bool) -> HTMLResponse:

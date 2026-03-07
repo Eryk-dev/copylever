@@ -90,7 +90,7 @@ export default function Signup({ onSignup, onNavigateToLogin }: Props) {
           marginBottom: 'var(--space-2)',
           fontSize: 'var(--text-sm)',
         }}>
-          Crie sua conta para começar
+          Comece grátis com 20 cópias
         </p>
         <p style={{
           color: 'var(--ink-muted)',
@@ -98,7 +98,7 @@ export default function Signup({ onSignup, onNavigateToLogin }: Props) {
           marginBottom: 'var(--space-4)',
           fontSize: 'var(--text-xs)',
         }}>
-          Copie anúncios e compatibilidades entre contas do Mercado Livre
+          Copie anúncios entre contas do Mercado Livre e Shopee
         </p>
         <div style={{
           marginBottom: 'var(--space-8)',
@@ -106,9 +106,9 @@ export default function Signup({ onSignup, onNavigateToLogin }: Props) {
           flexDirection: 'column',
           gap: 'var(--space-1)',
         }}>
-          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>&#10003; Copia em massa entre contas</p>
-          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>&#10003; Compatibilidades veiculares automáticas</p>
-          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>&#10003; Gerenciamento multi-conta</p>
+          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>&#10003; 20 cópias grátis para testar</p>
+          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>&#10003; Mercado Livre e Shopee</p>
+          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>&#10003; Compatibilidades veiculares</p>
         </div>
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
@@ -164,7 +164,7 @@ export default function Signup({ onSignup, onNavigateToLogin }: Props) {
             }}
           >
             {loading && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--paper)' }} />}
-            {loading ? 'Criando...' : 'Criar Conta'}
+            {loading ? 'Criando...' : 'Começar grátis'}
           </button>
         </form>
 
@@ -174,7 +174,7 @@ export default function Signup({ onSignup, onNavigateToLogin }: Props) {
           textAlign: 'center',
           marginTop: 'var(--space-4)',
         }}>
-          Plano mensal: R$ 349,90/mês
+          20 cópias grátis — sem cartão de crédito
         </p>
 
         <button

@@ -13,6 +13,19 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Fluxo generico "Aguardando correções" no historico de copias, com `correction_details`, agrupamento por SKU+problema no ML e endpoint `/api/copy/retry-corrections` para reaplicar a mesma correção em lote
 
 ### Changed
+- Landing page: CTAs agora dizem "Começar grátis", eyebrow menciona Shopee, pricing card mostra badge "20 cópias grátis para testar" e nota "sem cartão de crédito"
+- Landing page: features do pricing incluem Shopee e preview
+- Signup: subtitulo "Comece grátis com 20 cópias", CTA "Começar grátis", nota "20 cópias grátis — sem cartão de crédito", mencao a Shopee
+- BillingPage: exibe barra de progresso do trial (copias usadas/restantes), diferencia "Período de teste" de "Teste encerrado", CTA de assinatura mostra preco
+- Paywall: CTA agora mostra preco "Assinar — R$ 349,90/mês" em vez de "Começar agora"
+
+### Security
+- Blindagem anti-abuso do trial: contas ML e lojas Shopee agora so podem ser vinculadas a UMA organizacao (indice unico global no DB + verificacao no OAuth callback)
+- Bloqueio de reciclagem de sellers: desconectar seller e criar nova org nao permite mais reconectar a mesma conta ML/Shopee — registro persiste e impede vinculacao a outra org
+- Pagina de erro dedicada nos callbacks OAuth ML e Shopee quando seller ja esta vinculado a outra organizacao
+- Migration 015: indices unicos globais em `copy_sellers(ml_user_id)` e `shopee_sellers(shop_id)`
+
+### Changed
 - Pendencias de dimensoes e atributos agora usam o status unico `needs_correction`; logs ML e Shopee passam a salvar `source_item_sku` e metadados da correção para o frontend agrupar e exibir feedback apos o reenvio
 
 ### Fixed

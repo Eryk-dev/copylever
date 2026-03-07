@@ -342,7 +342,7 @@ export default function App() {
               }}
             >
               {paywallLoading && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--paper)' }} />}
-              {paywallLoading ? 'Redirecionando...' : 'Começar agora'}
+              {paywallLoading ? 'Redirecionando...' : 'Assinar — R$ 349,90/mês'}
             </button>
 
             {/* Trust signals */}

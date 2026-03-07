@@ -38,7 +38,7 @@ export default function LandingPage({ onNavigateToLogin, onNavigateToSignup }: P
           <img src="/logo-lever.svg" alt="Lever Talents" className="lp-logo-img" style={s.logo} />
           <div style={s.navRight}>
             <button className="lp-link" onClick={onNavigateToLogin} style={s.navLink}>Entrar</button>
-            <button className="lp-cta lp-cta-primary" onClick={onNavigateToSignup} style={s.navCta}>Começar</button>
+            <button className="lp-cta lp-cta-primary" onClick={onNavigateToSignup} style={s.navCta}>Começar grátis</button>
           </div>
         </div>
       </nav>
@@ -48,7 +48,10 @@ export default function LandingPage({ onNavigateToLogin, onNavigateToSignup }: P
         <div className="lp-atmosphere" style={s.heroAtmosphere} aria-hidden="true" />
         <div className="lp-hero-inner" style={s.heroInner}>
           <div className="lp-hero-text" style={s.heroText}>
-            <span className="lp-eyebrow" style={s.heroEyebrow}>Para sellers do Mercado Livre</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span className="lp-eyebrow" style={s.heroEyebrow}>Mercado Livre</span>
+              <span className="lp-eyebrow" style={s.heroEyebrowShopee}>Shopee</span>
+            </div>
             <h1 className="lp-h1" style={s.h1}>{'Copie anúncios\nentre contas'}</h1>
             <p className="lp-sub" style={s.heroSub}>
               Fotos, atributos, variações e compatibilidades veiculares.
@@ -56,7 +59,7 @@ export default function LandingPage({ onNavigateToLogin, onNavigateToSignup }: P
             </p>
             <div style={s.heroDivider} />
             <div className="lp-ctas" style={s.heroCtas}>
-              <button className="lp-cta lp-cta-primary" onClick={onNavigateToSignup} style={s.ctaPrimary}>Começar agora</button>
+              <button className="lp-cta lp-cta-primary" onClick={onNavigateToSignup} style={s.ctaPrimary}>Começar grátis</button>
               <button className="lp-link" onClick={onNavigateToLogin} style={s.ctaSecondary}>Já tenho conta</button>
             </div>
           </div>
@@ -115,10 +118,10 @@ export default function LandingPage({ onNavigateToLogin, onNavigateToSignup }: P
         <div className="lp-section" style={s.sectionInner}>
           <span style={s.quoteDecor}>{'\u201C'}</span>
           <blockquote className="lp-quote" style={s.quote}>
-            Eu copiava anúncio por anúncio, levava o dia inteiro.
-            Agora copio 50 de uma vez e saio pra almoçar.
+            A pior parte era a tabela de compatibilidade — 200 veículos, um por um.
+            Agora o anúncio sai completo em 3 segundos, com todas as compatibilidades junto.
           </blockquote>
-          <p style={s.quoteAuthor}>{'\u2014 Vendedor de autopeças, 4 contas no Mercado Livre'}</p>
+          <p style={s.quoteAuthor}>{'\u2014 Loja de autopeças com 6 contas no Mercado Livre'}</p>
         </div>
       </section>
 
@@ -141,6 +144,7 @@ export default function LandingPage({ onNavigateToLogin, onNavigateToSignup }: P
       <section ref={setRevealRef(2)} className="lp-reveal" style={s.pricingSection}>
         <div className="lp-section" style={{ ...s.sectionInner, maxWidth: 480 }}>
           <div style={s.priceCard}>
+            <span className="lp-trial-badge" style={s.trialBadge}>20 cópias grátis para testar</span>
             <span style={s.pricePlan}>{'Plano único'}</span>
             <div style={s.priceRow}>
               <span style={s.priceCurrency}>R$</span>
@@ -157,8 +161,8 @@ export default function LandingPage({ onNavigateToLogin, onNavigateToSignup }: P
                 </li>
               ))}
             </ul>
-            <button className="lp-cta lp-cta-primary" onClick={onNavigateToSignup} style={s.priceCta}>{'Começar agora'}</button>
-            <p style={s.priceNote}>Sem contrato. Cancele quando quiser.</p>
+            <button className="lp-cta lp-cta-primary" onClick={onNavigateToSignup} style={s.priceCta}>{'Começar grátis'}</button>
+            <p style={s.priceNote}>Sem cartão de crédito. Sem contrato. Cancele quando quiser.</p>
           </div>
         </div>
       </section>
@@ -197,8 +201,9 @@ const specs = [
 const features = [
   'Cópias ilimitadas',
   'Compatibilidades veiculares',
-  'Múltiplas contas do Mercado Livre',
+  'Mercado Livre e Shopee',
   'Usuários e permissões por conta',
+  'Preview antes de copiar',
   'Suporte por email',
 ];
 
@@ -331,6 +336,10 @@ const css = `
   }
   .lp-link:hover { color: var(--lp-ink) !important; }
 
+  .lp-trial-badge {
+    animation: lp-fade 0.5s ease-out both;
+  }
+
   /* ---- Responsive ---- */
   @media (max-width: 960px) {
     .lp-hero-inner {
@@ -412,7 +421,12 @@ const s: Record<string, React.CSSProperties> = {
   heroEyebrow: {
     fontSize: 12, fontWeight: 500, color: '#ffe600', letterSpacing: '0.04em',
     border: '1px solid rgba(255,230,0,0.25)', padding: '5px 14px',
-    borderRadius: 100, width: 'fit-content',
+    borderRadius: 100,
+  },
+  heroEyebrowShopee: {
+    fontSize: 12, fontWeight: 500, color: '#EE4D2D', letterSpacing: '0.04em',
+    border: '1px solid rgba(238,77,45,0.3)', padding: '5px 14px',
+    borderRadius: 100,
   },
   h1: {
     fontSize: 68, fontWeight: 400, lineHeight: 1.05, letterSpacing: '-0.02em',
@@ -552,6 +566,13 @@ const s: Record<string, React.CSSProperties> = {
   priceCard: {
     background: 'var(--lp-bg-raised)', border: '1px solid var(--lp-line)',
     borderRadius: 14, padding: '52px 44px', textAlign: 'center',
+  },
+  trialBadge: {
+    display: 'inline-block', fontSize: 12, fontWeight: 600,
+    color: 'var(--lp-green)', background: 'var(--lp-green-badge)',
+    border: '1px solid var(--lp-green-line)', borderRadius: 100,
+    padding: '6px 16px', marginBottom: 20,
+    letterSpacing: '0.01em',
   },
   pricePlan: {
     fontSize: 11, fontWeight: 600, textTransform: 'uppercase' as const,
