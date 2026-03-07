@@ -190,6 +190,21 @@ DIMENSION_CORRECTION_DETAILS = {
 }
 
 
+def _is_conditional_required_error(exc: MlApiError, attr_id: str) -> bool:
+    """Check if a specific attribute's error is conditional_required (not hard required)."""
+    payload = exc.payload if isinstance(exc.payload, dict) else {}
+    causes = payload.get("cause", [])
+    if isinstance(causes, list):
+        for cause in causes:
+            if not isinstance(cause, dict) or cause.get("type") != "error":
+                continue
+            code = str(cause.get("code", "")).lower()
+            msg = str(cause.get("message", "")).upper()
+            if "missing_conditional_required" in code and attr_id in msg:
+                return True
+    return False
+
+
 def _extract_missing_required_attributes(exc: MlApiError) -> set[str]:
     """Extract attribute IDs from 'attributes [X] are required for category' errors."""
     attrs: set[str] = set()
@@ -616,6 +631,38 @@ def _is_family_name_length_error(exc: MlApiError) -> bool:
     return False
 
 
+def _is_title_length_error(exc: MlApiError) -> bool:
+    """Detect item.title.length.invalid (category limits title to N chars)."""
+    payload = exc.payload if isinstance(exc.payload, dict) else {}
+    causes = payload.get("cause", [])
+    if isinstance(causes, list):
+        for cause in causes:
+            if not isinstance(cause, dict):
+                continue
+            code = str(cause.get("code", "")).lower()
+            if "title" in code and "length" in code:
+                return True
+    return False
+
+
+def _extract_title_max_length(exc: MlApiError) -> int:
+    """Extract max title length from error message, default 60."""
+    payload = exc.payload if isinstance(exc.payload, dict) else {}
+    causes = payload.get("cause", [])
+    if isinstance(causes, list):
+        for cause in causes:
+            if not isinstance(cause, dict):
+                continue
+            code = str(cause.get("code", "")).lower()
+            if "title" not in code or "length" not in code:
+                continue
+            msg = str(cause.get("message", ""))
+            match = re.search(r"greater than (\d+) characters", msg)
+            if match:
+                return int(match.group(1))
+    return 60
+
+
 def _ensure_top_level_stock(payload: dict, item: dict) -> None:
     if "available_quantity" in payload:
         return
@@ -727,6 +774,12 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
         adjusted["family_name"] = adjusted["family_name"][:60]
         actions.append("truncated family_name to 60 chars")
 
+    # Handle title length error: truncate to category limit instead of removing
+    if _is_title_length_error(exc) and adjusted.get("title"):
+        max_len = _extract_title_max_length(exc)
+        adjusted["title"] = adjusted["title"][:max_len]
+        actions.append(f"truncated title to {max_len} chars")
+
     # Auto-fill missing required attributes (e.g. MODEL) from item data
     missing_attrs = _extract_missing_required_attributes(exc)
     if missing_attrs:
@@ -737,6 +790,16 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
                 value = _clean_text(item.get("family_name")) or _clean_text(item.get("title"))
                 if value and len(value) > 60:
                     value = value[:60]
+            # For GTIN: if not in source and error is conditional_required,
+            # send EMPTY_GTIN_REASON instead of asking user (they won't know it either)
+            if not value and attr_id == "GTIN" and _is_conditional_required_error(exc, "GTIN"):
+                attrs = adjusted.setdefault("attributes", [])
+                if not isinstance(attrs, list):
+                    adjusted["attributes"] = []
+                    attrs = adjusted["attributes"]
+                attrs.append({"id": "EMPTY_GTIN_REASON", "value_id": "17055160", "value_name": "No registrado"})
+                actions.append("added EMPTY_GTIN_REASON=No registrado (GTIN not in source)")
+                continue
             if value and _ensure_attribute_in_payload(adjusted, attr_id, value):
                 actions.append(f"added missing required attribute {attr_id}={value[:30]}")
 
@@ -1035,7 +1098,7 @@ async def copy_single_item(
                     )
                     raise
 
-                if _is_title_invalid_error(exc):
+                if _is_title_invalid_error(exc) and not _is_title_length_error(exc):
                     force_no_title = True
                 if _is_family_name_invalid_error(exc) and not _is_family_name_length_error(exc):
                     force_no_family_name = True

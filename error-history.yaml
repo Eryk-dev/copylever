@@ -77,6 +77,12 @@ ml_error_codes:
       fix_applied: Truncate to 60 chars in _adjust_payload_for_ml_error instead of removing
       severity: blocking
 
+    item.title.length.invalid:
+      message: "Category MLBXXX does not support titles greater than N characters long"
+      cause: Source item title exceeds category's max title length (legacy items may violate current limits)
+      fix_applied: Truncate title to category limit extracted from error message (default 60)
+      severity: blocking
+
     body.invalid_fields_variations_with_family_name:
       ml_code: "body.invalid_fields"
       message: "The field variations is invalid with family name"
@@ -93,7 +99,9 @@ ml_error_codes:
     item.attribute.missing_conditional_required:
       message: "The attribute [X] is conditionally required for category Y"
       cause: Conditional attribute exists in source data but may be hidden in variation attributes or stripped from payload
-      fix_applied: "Fetch source with include_attributes=all and preserve/reinject the required attribute (ex: GTIN) before asking for manual correction"
+      fix_applied: |
+        For GTIN: if not found in source, auto-send EMPTY_GTIN_REASON=No registrado (value_id 17055160).
+        For other attrs: fetch source with include_attributes=all and preserve/reinject before asking for manual correction.
       severity: blocking
 
     field.constraint.violated_required_attribute:
@@ -852,6 +860,61 @@ error_history:
     lesson: |
       Error detectors must identify the invalid field itself, not any contextual
       mention that happens to contain the same words.
+
+  - id: ERR-042
+    date: "2026-03-07"
+    category: attributes
+    title: "Auto-fill EMPTY_GTIN_REASON when GTIN is conditional_required but missing from source"
+    symptom: |
+      When source item has no GTIN and dest category requires it (conditional_required),
+      the system showed a manual correction form asking the user to provide GTIN.
+      Users never know the GTIN — if the source seller didn't provide it, the copy
+      seller won't either.
+    ml_error_code: item.attribute.missing_conditional_required
+    root_cause: |
+      The auto-retry only tried to find GTIN in source item data. When not found,
+      it fell through to manual correction. ML allows EMPTY_GTIN_REASON attribute
+      as an alternative when GTIN is conditional_required (not hard required).
+    fix: |
+      - Added _is_conditional_required_error() to detect if a specific attribute error
+        is conditional_required (vs hard required)
+      - In _adjust_payload_for_ml_error: when GTIN is missing from source and error is
+        conditional_required, auto-add EMPTY_GTIN_REASON with value_id=17055160
+        ("No registrado") instead of asking user
+      - If ML still rejects (e.g. GTIN is hard required for some categories), the
+        correction form still works as fallback
+    file: app/services/item_copier.py
+    lesson: |
+      ML's EMPTY_GTIN_REASON attribute (values: Artesanal/Kit/No registrado/Otro)
+      is the official way to skip GTIN when it's conditional_required. Always prefer
+      this over asking users for data they don't have.
+
+  - id: ERR-041
+    date: "2026-03-07"
+    category: title
+    title: "Title length exceeds category limit on copy"
+    symptom: |
+      Copying item MLB3185636875 (net-air → autofy) failed with
+      item.title.length.invalid: "Category MLB190953 does not support titles
+      greater than 60 characters long". Title had ~100 chars.
+    ml_error_code: item.title.length.invalid
+    root_cause: |
+      Source item was created before the category enforced a 60-char title limit
+      (or was recategorized). ML does not retroactively enforce title length on
+      existing items, but validates on create. _build_item_payload copies the
+      title as-is with no length check, and there was no auto-retry handler for
+      this error — only for family_name length.
+    fix: |
+      - Added _is_title_length_error() detector (matches code containing "title" + "length")
+      - Added _extract_title_max_length() to parse limit from error message (default 60)
+      - In _adjust_payload_for_ml_error: truncate title to category limit instead of removing
+      - In retry loop: skip force_no_title when error is title length (not type mismatch)
+    file: app/services/item_copier.py
+    lesson: |
+      ML allows legacy items with titles exceeding current category limits.
+      On copy, always handle title length errors with truncation (same pattern
+      as family_name length). No need to pre-fetch category settings — the retry
+      loop handles it efficiently.
 
   - id: ERR-040
     date: "2026-03-06"
