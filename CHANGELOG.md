@@ -9,6 +9,10 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Fixed
+- Usuarios criados pelo painel admin nao conseguiam fazer login (campo `email` nao era preenchido, login busca por email)
+- Corrigido `POST /api/admin/users` para preencher `email` automaticamente (usa email informado ou username como fallback)
+
 ### Changed
 - Shopee desativada temporariamente no frontend via feature flag (`SHOPEE_ENABLED` em `frontend/src/lib/features.ts`)
 - Landing page, signup, paywall, empty state, admin, copy form e logs nao mostram mais referencias a Shopee

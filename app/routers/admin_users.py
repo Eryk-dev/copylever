@@ -42,6 +42,7 @@ def _hash_password(password: str) -> str:
 class CreateUserRequest(BaseModel):
     username: str
     password: str
+    email: Optional[str] = None
     role: str = "operator"
     can_run_compat: bool = False
 
@@ -87,8 +88,17 @@ async def create_user(req: CreateUserRequest, user: dict = Depends(require_admin
     if existing.data:
         raise HTTPException(status_code=409, detail="Usuário já existe")
 
+    # Use provided email, or fall back to username (allows login by email)
+    email = (req.email or req.username).strip().lower()
+
+    # Check for duplicate email across all orgs
+    existing_email = db.table("users").select("id").eq("email", email).execute()
+    if existing_email.data:
+        raise HTTPException(status_code=409, detail="Email já está em uso")
+
     new_user = {
         "username": req.username,
+        "email": email,
         "password_hash": _hash_password(req.password),
         "role": req.role,
         "can_run_compat": req.can_run_compat,
