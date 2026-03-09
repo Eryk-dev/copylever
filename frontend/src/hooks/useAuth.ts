@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { API_BASE, type Seller, type ShopeeSeller } from '../lib/api';
+import { SHOPEE_ENABLED } from '../lib/features';
 
 const TOKEN_KEY = 'copy-auth-token';
 
@@ -192,7 +193,7 @@ export function useAuth() {
   useEffect(() => {
     if (token && user) {
       loadSellers();
-      loadShopeeSellers();
+      if (SHOPEE_ENABLED) loadShopeeSellers();
     }
   }, [token, user, loadSellers, loadShopeeSellers]);
 
@@ -202,7 +203,7 @@ export function useAuth() {
     const onVisibility = () => {
       if (document.visibilityState === 'visible') {
         void loadSellers();
-        void loadShopeeSellers();
+        if (SHOPEE_ENABLED) void loadShopeeSellers();
       }
     };
     document.addEventListener('visibilitychange', onVisibility);

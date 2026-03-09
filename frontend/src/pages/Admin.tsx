@@ -3,6 +3,7 @@ import type { Seller, ShopeeSeller } from '../lib/api';
 import { API_BASE } from '../lib/api';
 import { Card } from './CopyPage';
 import { useToast } from '../components/Toast';
+import { SHOPEE_ENABLED } from '../lib/features';
 
 interface Props {
   sellers: Seller[];
@@ -102,7 +103,7 @@ export default function Admin({ sellers, loadSellers, disconnectSeller, headers,
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    await Promise.all([loadSellers(), loadShopeeSellers()]);
+    await Promise.all([loadSellers(), ...(SHOPEE_ENABLED ? [loadShopeeSellers()] : [])]);
     setRefreshing(false);
     toast('Lista atualizada');
   };
@@ -181,23 +182,25 @@ export default function Admin({ sellers, loadSellers, disconnectSeller, headers,
             {installing === 'ml' ? 'Redirecionando...' : 'Conectar conta'}
           </button>
 
-          <button
-            onClick={() => handleInstall('shopee')}
-            disabled={installing !== null}
-            className="btn-ghost"
-            style={{
-              padding: 'var(--space-3) var(--space-5)',
-              fontSize: 'var(--text-sm)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 'var(--space-2)',
-              borderRadius: 8,
-            }}
-          >
-            {installing === 'shopee' && <span className="spinner spinner-sm" />}
-            {installing !== 'shopee' && <ShopeeMark />}
-            {installing === 'shopee' ? 'Redirecionando...' : 'Conectar conta'}
-          </button>
+          {SHOPEE_ENABLED && (
+            <button
+              onClick={() => handleInstall('shopee')}
+              disabled={installing !== null}
+              className="btn-ghost"
+              style={{
+                padding: 'var(--space-3) var(--space-5)',
+                fontSize: 'var(--text-sm)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'var(--space-2)',
+                borderRadius: 8,
+              }}
+            >
+              {installing === 'shopee' && <span className="spinner spinner-sm" />}
+              {installing !== 'shopee' && <ShopeeMark />}
+              {installing === 'shopee' ? 'Redirecionando...' : 'Conectar conta'}
+            </button>
+          )}
         </div>
       </Card>
 

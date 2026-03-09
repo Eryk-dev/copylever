@@ -50,7 +50,6 @@ export default function LandingPage({ onNavigateToLogin, onNavigateToSignup }: P
           <div className="lp-hero-text" style={s.heroText}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span className="lp-eyebrow" style={s.heroEyebrow}>Mercado Livre</span>
-              <span className="lp-eyebrow" style={s.heroEyebrowShopee}>Shopee</span>
             </div>
             <h1 className="lp-h1" style={s.h1}>{'Copie anúncios\nentre contas'}</h1>
             <p className="lp-sub" style={s.heroSub}>
@@ -201,7 +200,7 @@ const specs = [
 const features = [
   'Cópias ilimitadas',
   'Compatibilidades veiculares',
-  'Mercado Livre e Shopee',
+  'Múltiplas contas do Mercado Livre',
   'Usuários e permissões por conta',
   'Preview antes de copiar',
   'Suporte por email',

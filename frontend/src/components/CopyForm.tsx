@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { API_BASE, type Seller, type ShopeeSeller } from '../lib/api';
+import { SHOPEE_ENABLED } from '../lib/features';
 
 export type Platform = 'ml' | 'shopee';
 
@@ -51,16 +52,16 @@ function classifyInput(raw: string): {
   }
 
   // Explicit Shopee URL
-  if (/shopee/i.test(t)) {
+  if (SHOPEE_ENABLED && /shopee/i.test(t)) {
     const urlMatch = t.match(/(?:product\/\d+\/|i\.\d+\.)(\d+)/i);
     if (urlMatch) return { display: urlMatch[1], hint: 'shopee', mlId: null, shopeeId: urlMatch[1] };
     const lastNum = t.match(/(\d+)\s*$/);
     if (lastNum) return { display: lastNum[1], hint: 'shopee', mlId: null, shopeeId: lastNum[1] };
   }
 
-  // Pure number → ambiguous (could be ML or Shopee)
+  // Pure number → ambiguous (could be ML or Shopee) when Shopee is enabled, otherwise ML only
   if (/^\d+$/.test(t)) {
-    return { display: t, hint: null, mlId: `MLB${t}`, shopeeId: t };
+    return { display: t, hint: SHOPEE_ENABLED ? null : 'ml', mlId: `MLB${t}`, shopeeId: SHOPEE_ENABLED ? t : null };
   }
 
   return { display: t, hint: null, mlId: null, shopeeId: null };
@@ -397,7 +398,9 @@ export default function CopyForm({
             requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = cursorPos; });
           }}
           onBlur={normalizeAndResolve}
-          placeholder={"Cole os IDs dos anúncios (um por linha)\nMLB1234567890\n9876543210\nhttps://shopee.com.br/product/123/456"}
+          placeholder={SHOPEE_ENABLED
+            ? "Cole os IDs dos anúncios (um por linha)\nMLB1234567890\n9876543210\nhttps://shopee.com.br/product/123/456"
+            : "Cole os IDs dos anúncios (um por linha)\nMLB1234567890\n9876543210"}
           rows={4}
           className="input-base"
           style={{

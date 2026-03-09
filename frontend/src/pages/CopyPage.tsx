@@ -9,6 +9,7 @@ import {
   type ItemPreview,
 } from '../lib/api';
 import type { AuthUser } from '../hooks/useAuth';
+import { SHOPEE_ENABLED } from '../lib/features';
 import CopyForm, { type CopyGroup, type Platform } from '../components/CopyForm';
 import CorrectionForm from '../components/CorrectionForm';
 import StatusBadge from '../components/StatusBadge';
@@ -58,12 +59,15 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
     const params = new URLSearchParams({ limit: String(LOGS_PAGE_SIZE), offset: '0' });
     if (statusFilter) params.set('status', statusFilter);
     try {
-      const [mlRes, shopeeRes] = await Promise.all([
+      const fetches: Promise<Response>[] = [
         fetch(`${API_BASE}/api/copy/logs?${params}`, { headers: headers(), cache: 'no-store' }),
-        fetch(`${API_BASE}/api/shopee/copy/logs?${params}`, { headers: headers(), cache: 'no-store' }),
-      ]);
+      ];
+      if (SHOPEE_ENABLED) {
+        fetches.push(fetch(`${API_BASE}/api/shopee/copy/logs?${params}`, { headers: headers(), cache: 'no-store' }));
+      }
+      const [mlRes, shopeeRes] = await Promise.all(fetches);
       const mlLogs: CopyLog[] = mlRes.ok ? await mlRes.json() : [];
-      const shopeeLogs: CopyLog[] = shopeeRes.ok ? await shopeeRes.json() : [];
+      const shopeeLogs: CopyLog[] = (SHOPEE_ENABLED && shopeeRes?.ok) ? await shopeeRes.json() : [];
       const merged: UnifiedLog[] = [
         ...mlLogs.map(l => ({ ...l, platform: 'ml' as Platform })),
         ...shopeeLogs.map(l => ({ ...l, platform: 'shopee' as Platform })),
@@ -83,12 +87,15 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
     const shopeeParams = new URLSearchParams({ limit: String(LOGS_PAGE_SIZE), offset: String(shopeeCount) });
     if (statusFilter) { mlParams.set('status', statusFilter); shopeeParams.set('status', statusFilter); }
     try {
-      const [mlRes, shopeeRes] = await Promise.all([
+      const moreFetches: Promise<Response>[] = [
         fetch(`${API_BASE}/api/copy/logs?${mlParams}`, { headers: headers(), cache: 'no-store' }),
-        fetch(`${API_BASE}/api/shopee/copy/logs?${shopeeParams}`, { headers: headers(), cache: 'no-store' }),
-      ]);
+      ];
+      if (SHOPEE_ENABLED) {
+        moreFetches.push(fetch(`${API_BASE}/api/shopee/copy/logs?${shopeeParams}`, { headers: headers(), cache: 'no-store' }));
+      }
+      const [mlRes, shopeeRes] = await Promise.all(moreFetches);
       const mlLogs: CopyLog[] = mlRes.ok ? await mlRes.json() : [];
-      const shopeeLogs: CopyLog[] = shopeeRes.ok ? await shopeeRes.json() : [];
+      const shopeeLogs: CopyLog[] = (SHOPEE_ENABLED && shopeeRes?.ok) ? await shopeeRes.json() : [];
       const newLogs: UnifiedLog[] = [
         ...mlLogs.map(l => ({ ...l, platform: 'ml' as Platform })),
         ...shopeeLogs.map(l => ({ ...l, platform: 'shopee' as Platform })),

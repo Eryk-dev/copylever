@@ -98,7 +98,7 @@ export default function Signup({ onSignup, onNavigateToLogin }: Props) {
           marginBottom: 'var(--space-4)',
           fontSize: 'var(--text-xs)',
         }}>
-          Copie anúncios entre contas do Mercado Livre e Shopee
+          Copie anúncios entre contas do Mercado Livre
         </p>
         <div style={{
           marginBottom: 'var(--space-8)',
@@ -107,7 +107,7 @@ export default function Signup({ onSignup, onNavigateToLogin }: Props) {
           gap: 'var(--space-1)',
         }}>
           <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>&#10003; 20 cópias grátis para testar</p>
-          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>&#10003; Mercado Livre e Shopee</p>
+          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>&#10003; Múltiplas contas do Mercado Livre</p>
           <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-muted)' }}>&#10003; Compatibilidades veiculares</p>
         </div>
 

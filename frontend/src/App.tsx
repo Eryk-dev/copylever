@@ -12,6 +12,7 @@ import SuperAdminPage from './pages/SuperAdminPage';
 import BillingPage from './pages/BillingPage';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
+import { SHOPEE_ENABLED } from './lib/features';
 
 type View = 'copy' | 'admin' | 'compat' | 'super';
 type AdminSubView = 'sellers' | 'users' | 'billing';
@@ -311,7 +312,7 @@ export default function App() {
                 'Cópia ilimitada de anúncios',
                 'Cópia de compatibilidades veiculares',
                 'Múltiplas contas do Mercado Livre',
-                'Integração com Shopee',
+                ...(SHOPEE_ENABLED ? ['Integração com Shopee'] : []),
                 'Usuários e permissões por conta',
                 'Dimensões e atributos automáticos',
               ].map((feature) => (
@@ -401,7 +402,7 @@ export default function App() {
   }
 
   // Empty state: no sellers connected yet — show connect screen
-  if (auth.sellers.length === 0 && auth.shopeeSellers.length === 0 && auth.user?.role === 'admin' && !auth.user?.is_super_admin) {
+  if (auth.sellers.length === 0 && (!SHOPEE_ENABLED || auth.shopeeSellers.length === 0) && auth.user?.role === 'admin' && !auth.user?.is_super_admin) {
     const handleConnectMl = async () => {
       setConnectingMl(true);
       try {
@@ -464,7 +465,7 @@ export default function App() {
             lineHeight: 1.6,
             marginBottom: 'var(--space-8)',
           }}>
-            Para começar a copiar anúncios, conecte pelo menos uma conta do Mercado Livre ou loja da Shopee.
+            Para começar a copiar anúncios, conecte pelo menos uma conta do Mercado Livre{SHOPEE_ENABLED ? ' ou loja da Shopee' : ''}.
           </p>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
@@ -488,25 +489,27 @@ export default function App() {
               {connectingMl ? 'Redirecionando...' : 'Conectar conta do Mercado Livre'}
             </button>
 
-            <button
-              onClick={handleConnectShopee}
-              disabled={connectingShopee}
-              className="btn-primary"
-              style={{
-                width: '100%',
-                padding: '14px 24px',
-                fontSize: 'var(--text-base)',
-                fontWeight: 600,
-                borderRadius: 10,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 'var(--space-2)',
-              }}
-            >
-              {connectingShopee && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--paper)' }} />}
-              {connectingShopee ? 'Redirecionando...' : 'Conectar loja Shopee'}
-            </button>
+            {SHOPEE_ENABLED && (
+              <button
+                onClick={handleConnectShopee}
+                disabled={connectingShopee}
+                className="btn-primary"
+                style={{
+                  width: '100%',
+                  padding: '14px 24px',
+                  fontSize: 'var(--text-base)',
+                  fontWeight: 600,
+                  borderRadius: 10,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 'var(--space-2)',
+                }}
+              >
+                {connectingShopee && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--paper)' }} />}
+                {connectingShopee ? 'Redirecionando...' : 'Conectar loja Shopee'}
+              </button>
+            )}
           </div>
 
           <div style={{ marginTop: 'var(--space-6)' }}>
@@ -709,7 +712,7 @@ export default function App() {
       {/* Content */}
       <div className="animate-in">
         <div style={{ display: activeView === 'copy' ? undefined : 'none' }}>
-          <CopyPage sellers={auth.sellers} shopeeSellers={auth.shopeeSellers} headers={auth.headers} user={auth.user} />
+          <CopyPage sellers={auth.sellers} shopeeSellers={SHOPEE_ENABLED ? auth.shopeeSellers : []} headers={auth.headers} user={auth.user} />
         </div>
         <div style={{ display: activeView === 'admin' ? undefined : 'none' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
@@ -732,7 +735,7 @@ export default function App() {
                 loadSellers={auth.loadSellers}
                 disconnectSeller={auth.disconnectSeller}
                 headers={auth.headers}
-                shopeeSellers={auth.shopeeSellers}
+                shopeeSellers={SHOPEE_ENABLED ? auth.shopeeSellers : []}
                 loadShopeeSellers={auth.loadShopeeSellers}
                 disconnectShopeeSeller={auth.disconnectShopeeSeller}
               />
@@ -846,7 +849,7 @@ function QuickStartGuide({
         <QuickStartStep
           step="1"
           title="Revise sellers conectados"
-          description="Abra Admin > Sellers para conectar novas contas do Mercado Livre ou lojas da Shopee, e revisar tokens antes de operar em produção."
+          description={`Abra Admin > Sellers para conectar novas contas do Mercado Livre${SHOPEE_ENABLED ? ' ou lojas da Shopee' : ''}, e revisar tokens antes de operar em produção.`}
           actionLabel="Abrir sellers"
           onAction={onOpenSellers}
         />
