@@ -98,6 +98,39 @@ async def debug_env(user: dict = Depends(require_super_admin)):
     }
 
 
+@app.get("/api/debug/shopee-sign-test")
+async def debug_shopee_sign(user: dict = Depends(require_super_admin)):
+    """Debug Shopee HMAC sign computation (super_admin only)."""
+    import hashlib
+    import hmac
+    import time
+
+    partner_id = settings.shopee_partner_id
+    partner_key = settings.shopee_partner_key
+    path = "/api/v2/shop/auth_partner"
+    ts = int(time.time())
+
+    base_string = f"{partner_id}{path}{ts}"
+    sign = hmac.new(
+        partner_key.encode(), base_string.encode(), hashlib.sha256
+    ).hexdigest()
+
+    return {
+        "partner_id": partner_id,
+        "partner_id_type": type(partner_id).__name__,
+        "partner_key_length": len(partner_key),
+        "partner_key_first4": partner_key[:4],
+        "partner_key_last4": partner_key[-4:],
+        "partner_key_repr": repr(partner_key[:10]) + "...",
+        "path": path,
+        "timestamp": ts,
+        "base_string": base_string,
+        "sign": sign,
+        "sandbox": settings.shopee_sandbox,
+        "base_url": "https://partner.test-stable.shopeemobile.com" if settings.shopee_sandbox else "https://partner.shopeemobile.com",
+    }
+
+
 # Serve frontend SPA (built React app)
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
