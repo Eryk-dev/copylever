@@ -14,9 +14,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Corrigido `POST /api/admin/users` para preencher `email` automaticamente (usa email informado ou username como fallback)
 
 ### Changed
-- Shopee desativada temporariamente no frontend via feature flag (`SHOPEE_ENABLED` em `frontend/src/lib/features.ts`)
-- Landing page, signup, paywall, empty state, admin, copy form e logs nao mostram mais referencias a Shopee
-- Para reativar, basta mudar `SHOPEE_ENABLED = true` em `frontend/src/lib/features.ts`
+- Shopee reativada no frontend (`SHOPEE_ENABLED = true` em `frontend/src/lib/features.ts`)
 
 ### Added
 - Fluxo generico "Aguardando correções" no historico de copias, com `correction_details`, agrupamento por SKU+problema no ML e endpoint `/api/copy/retry-corrections` para reaplicar a mesma correção em lote

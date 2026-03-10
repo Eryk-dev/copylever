@@ -5,4 +5,4 @@
  * All Shopee UI references (landing page, signup, copy form, admin panel,
  * seller loading, etc.) are gated behind this flag.
  */
-export const SHOPEE_ENABLED = false;
+export const SHOPEE_ENABLED = true;
