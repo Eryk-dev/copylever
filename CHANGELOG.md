@@ -10,6 +10,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 ## [Unreleased]
 
 ### Fixed
+- Agrupamento por SKU no historico de copias agora funciona em todas as abas (Todos, Erros, etc.), nao apenas na aba "Aguardando correções"
 - Usuarios criados pelo painel admin nao conseguiam fazer login (campo `email` nao era preenchido, login busca por email)
 - Corrigido `POST /api/admin/users` para preencher `email` automaticamente (usa email informado ou username como fallback)
 

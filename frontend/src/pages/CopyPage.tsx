@@ -322,6 +322,43 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
     }
   }, [headers, loadLogs, toast]);
 
+  // Merge correction groups into the log list for non-needs_correction tabs
+  const mergedLogItems = useMemo(() => {
+    if (statusFilter === 'needs_correction') return [];
+
+    const groupedLogIds = new Set<string>();
+    const items: Array<
+      | { type: 'group'; group: PendingCorrectionGroup; date: number }
+      | { type: 'log'; log: UnifiedLog; date: number }
+    > = [];
+
+    // Add correction groups as single items, track their log IDs
+    for (const group of correctionGroups) {
+      for (const log of group.logs) {
+        groupedLogIds.add(`${log.platform}-${log.id}`);
+      }
+      items.push({
+        type: 'group',
+        group,
+        date: new Date(group.logs[0]?.created_at || 0).getTime(),
+      });
+    }
+
+    // Add individual logs that are NOT part of any correction group
+    for (const log of logs) {
+      if (!groupedLogIds.has(`${log.platform}-${log.id}`)) {
+        items.push({
+          type: 'log',
+          log,
+          date: new Date(log.created_at).getTime(),
+        });
+      }
+    }
+
+    items.sort((a, b) => b.date - a.date);
+    return items;
+  }, [logs, correctionGroups, statusFilter]);
+
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hasInProgress = logs.some(l => l.status === 'in_progress');
 
@@ -489,22 +526,30 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
                     />
                   ))
                 ) : (
-                  logs.map(log => (
-                    <LogCard
-                      key={`${log.platform}-${log.id}`}
-                      log={log}
-                      isRetrying={retryLogId === log.id && retryPlatform === log.platform}
-                      onRetryClick={() => {
-                        if (retryLogId === log.id && retryPlatform === log.platform) {
-                          setRetryLogId(null);
-                        } else {
-                          setRetryLogId(log.id);
-                          setRetryPlatform(log.platform);
-                        }
-                      }}
-                      onRetrySubmit={(values) => handleCorrectionRetry(log, values)}
-                    />
-                  ))
+                  mergedLogItems.map(item =>
+                    item.type === 'group' ? (
+                      <PendingCorrectionCard
+                        key={item.group.key}
+                        group={item.group}
+                        onSubmit={values => handleCorrectionGroupSubmit(item.group, values)}
+                      />
+                    ) : (
+                      <LogCard
+                        key={`${item.log.platform}-${item.log.id}`}
+                        log={item.log}
+                        isRetrying={retryLogId === item.log.id && retryPlatform === item.log.platform}
+                        onRetryClick={() => {
+                          if (retryLogId === item.log.id && retryPlatform === item.log.platform) {
+                            setRetryLogId(null);
+                          } else {
+                            setRetryLogId(item.log.id);
+                            setRetryPlatform(item.log.platform);
+                          }
+                        }}
+                        onRetrySubmit={(values) => handleCorrectionRetry(item.log, values)}
+                      />
+                    )
+                  )
                 )}
               </div>
             )}
