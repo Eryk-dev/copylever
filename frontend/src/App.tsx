@@ -36,6 +36,7 @@ export default function App() {
   const [billingMessage, setBillingMessage] = useState<string | null>(null);
   const [paywallLoading, setPaywallLoading] = useState(false);
   const [connectingMl, setConnectingMl] = useState(false);
+  const [copyingMlLink, setCopyingMlLink] = useState(false);
   const [connectingShopee, setConnectingShopee] = useState(false);
   const [quickStartDismissed, setQuickStartDismissed] = useState(true);
   const [trialCopiesUsed, setTrialCopiesUsed] = useState(0);
@@ -418,6 +419,20 @@ export default function App() {
       }
     };
 
+    const handleCopyMlLink = async () => {
+      setCopyingMlLink(true);
+      try {
+        const res = await fetch(`${API_BASE}/api/ml/install`, { headers: auth.headers() });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.redirect_url) {
+          await navigator.clipboard.writeText(data.redirect_url);
+        }
+      } catch { /* ignore */ } finally {
+        setCopyingMlLink(false);
+      }
+    };
+
     const handleConnectShopee = async () => {
       setConnectingShopee(true);
       try {
@@ -487,6 +502,32 @@ export default function App() {
             >
               {connectingMl && <span className="spinner spinner-sm" style={{ borderTopColor: 'var(--paper)' }} />}
               {connectingMl ? 'Redirecionando...' : 'Conectar conta do Mercado Livre'}
+            </button>
+
+            <button
+              onClick={handleCopyMlLink}
+              disabled={copyingMlLink}
+              className="btn-ghost"
+              style={{
+                width: '100%',
+                padding: '12px 24px',
+                fontSize: 'var(--text-sm)',
+                fontWeight: 500,
+                borderRadius: 10,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 'var(--space-2)',
+              }}
+            >
+              {copyingMlLink && <span className="spinner spinner-sm" />}
+              {!copyingMlLink && (
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+                  <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+                  <path d="M10.5 5.5V3a1.5 1.5 0 00-1.5-1.5H3A1.5 1.5 0 001.5 3v6A1.5 1.5 0 003 10.5h2.5" stroke="currentColor" strokeWidth="1.3" />
+                </svg>
+              )}
+              {copyingMlLink ? 'Copiando...' : 'Copiar link de conexao'}
             </button>
 
             {SHOPEE_ENABLED && (

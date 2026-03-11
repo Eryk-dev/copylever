@@ -73,6 +73,7 @@ type ConnectedAccount = {
 export default function Admin({ sellers, loadSellers, disconnectSeller, headers, shopeeSellers, loadShopeeSellers, disconnectShopeeSeller }: Props) {
   const { toast } = useToast();
   const [installing, setInstalling] = useState<'ml' | 'shopee' | null>(null);
+  const [copyingLink, setCopyingLink] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ slug: string; platform: 'ml' | 'shopee' } | null>(null);
@@ -98,6 +99,26 @@ export default function Admin({ sellers, loadSellers, disconnectSeller, headers,
       toast('Erro de conexão.');
     } finally {
       setInstalling(null);
+    }
+  };
+
+  const handleCopyLink = async () => {
+    setCopyingLink(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/ml/install`, { headers: headers() });
+      if (!res.ok) {
+        toast(res.status === 401 ? 'Sessao expirada. Faca login novamente.' : 'Erro ao gerar link.');
+        return;
+      }
+      const data = await res.json();
+      if (data.redirect_url) {
+        await navigator.clipboard.writeText(data.redirect_url);
+        toast('Link copiado!');
+      }
+    } catch {
+      toast('Erro de conexao.');
+    } finally {
+      setCopyingLink(false);
     }
   };
 
@@ -180,6 +201,29 @@ export default function Admin({ sellers, loadSellers, disconnectSeller, headers,
             {installing === 'ml' && <span className="spinner spinner-sm" />}
             {installing !== 'ml' && <MlMark />}
             {installing === 'ml' ? 'Redirecionando...' : 'Conectar conta'}
+          </button>
+
+          <button
+            onClick={handleCopyLink}
+            disabled={copyingLink || installing !== null}
+            className="btn-ghost"
+            style={{
+              padding: 'var(--space-3) var(--space-5)',
+              fontSize: 'var(--text-sm)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-2)',
+              borderRadius: 8,
+            }}
+          >
+            {copyingLink && <span className="spinner spinner-sm" />}
+            {!copyingLink && (
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+                <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+                <path d="M10.5 5.5V3a1.5 1.5 0 00-1.5-1.5H3A1.5 1.5 0 001.5 3v6A1.5 1.5 0 003 10.5h2.5" stroke="currentColor" strokeWidth="1.3" />
+              </svg>
+            )}
+            {copyingLink ? 'Copiando...' : 'Copiar link'}
           </button>
 
           {SHOPEE_ENABLED && (

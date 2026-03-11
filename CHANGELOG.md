@@ -17,6 +17,9 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Shopee desativada no frontend (`SHOPEE_ENABLED = false` em `frontend/src/lib/features.ts`)
 
 ### Added
+- Botao "Copiar link" para conexao ML: gera o link OAuth e copia para o clipboard, permitindo enviar para outra pessoa conectar a conta facilmente (Admin + tela inicial)
+
+### Added
 - Fluxo generico "Aguardando correções" no historico de copias, com `correction_details`, agrupamento por SKU+problema no ML e endpoint `/api/copy/retry-corrections` para reaplicar a mesma correção em lote
 
 ### Added
