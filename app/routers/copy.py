@@ -479,37 +479,20 @@ async def retry_copy(req: RetryRequest, bg: BackgroundTasks, user: dict = Depend
     if denied:
         raise HTTPException(status_code=403, detail=f"Sem permissao de destino para: {', '.join(denied)}")
 
-    # Mark log as in_progress
-    db.table("copy_logs").update({"status": "in_progress", "error_details": None}).eq("id", log["id"]).execute()
+    # Delete the old log — copy_items will create a fresh one
+    db.table("copy_logs").delete().eq("id", log["id"]).execute()
 
     async def _bg_retry():
         try:
-            results = await copy_items(
+            await copy_items(
                 source_seller=source,
                 dest_sellers=destinations,
                 item_ids=[item_id],
                 user_id=user["id"],
                 org_id=org_id,
             )
-            dest_item_ids = {r["dest_seller"]: r["dest_item_id"] for r in results if r["status"] == "success"}
-            new_errors = {r["dest_seller"]: r["error"] for r in results if r["status"] != "success" and r.get("error")}
-            new_status = _derive_log_status(results)
-            new_correction = next(
-                (r.get("correction_details") for r in results if isinstance(r.get("correction_details"), dict)),
-                None,
-            )
-            db.table("copy_logs").update({
-                "status": new_status,
-                "dest_item_ids": dest_item_ids or None,
-                "error_details": new_errors or None,
-                "correction_details": new_correction if new_status == CORRECTION_STATUS else None,
-            }).eq("id", log["id"]).execute()
         except Exception as e:
             logger.error("Retry copy failed for log %s: %s", log["id"], e, exc_info=True)
-            db.table("copy_logs").update({
-                "status": "error",
-                "error_details": {"_retry": str(e)},
-            }).eq("id", log["id"]).execute()
 
     bg.add_task(_bg_retry)
 
