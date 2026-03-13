@@ -19,6 +19,38 @@ logger = logging.getLogger(__name__)
 # Per-seller locks to prevent concurrent token refreshes from invalidating each other
 _token_locks: dict[str, asyncio.Lock] = {}
 
+# ── Shared HTTP client (connection pooling) ───────────────
+_ml_http_client: httpx.AsyncClient | None = None
+
+
+def _get_ml_client() -> httpx.AsyncClient:
+    """Return the shared httpx.AsyncClient, creating it on first call.
+
+    Using a persistent client enables TCP/TLS connection reuse across
+    requests, eliminating redundant handshakes for multi-item copy operations.
+    """
+    global _ml_http_client
+    if _ml_http_client is None:
+        _ml_http_client = httpx.AsyncClient(
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
+    return _ml_http_client
+
+
+async def close_ml_client() -> None:
+    """Close the shared ML HTTP client (call on app shutdown)."""
+    global _ml_http_client
+    if _ml_http_client is not None:
+        await _ml_http_client.aclose()
+        _ml_http_client = None
+
+
+# ── In-memory token cache ─────────────────────────────────
+# Maps "{org_id}:{seller_slug}" -> (access_token, expires_at)
+_token_cache: dict[str, tuple[str, datetime]] = {}
+_TOKEN_CACHE_MARGIN = timedelta(minutes=5)  # refresh token 5 min before actual expiry
+
 
 def _get_seller_lock(seller_slug: str) -> asyncio.Lock:
     """Return (or create) an asyncio.Lock for the given seller."""
@@ -116,6 +148,7 @@ def _raise_for_status(resp: httpx.Response, service_name: str) -> None:
 
 _REQUEST_RATE_RETRIES = 5
 _REQUEST_RATE_BASE_WAIT = 3  # seconds
+_REQUEST_RATE_MAX_WAIT = 30  # seconds — cap individual backoff waits
 
 
 async def _ml_request(
@@ -126,17 +159,32 @@ async def _ml_request(
     params: dict | None = None,
     timeout: float = 30.0,
 ) -> httpx.Response:
-    """Make an ML API request with automatic 429 retry + exponential backoff."""
+    """Make an ML API request with automatic 429 retry + exponential backoff.
+
+    Uses a shared persistent HTTP client to reuse TCP/TLS connections.
+    The timeout parameter is applied per-request so callers can override it
+    (e.g. POST /items uses 60s).
+    """
     headers = {"Authorization": f"Bearer {token}"}
+    client = _get_ml_client()
     resp: httpx.Response | None = None
     for attempt in range(_REQUEST_RATE_RETRIES):
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.request(method, url, headers=headers, json=json, params=params)
+        resp = await client.request(
+            method, url, headers=headers, json=json, params=params,
+            timeout=timeout,
+        )
         if resp.status_code != 429:
             return resp
         retry_after = resp.headers.get("retry-after")
-        wait = int(retry_after) if retry_after and retry_after.isdigit() else _REQUEST_RATE_BASE_WAIT * (2 ** attempt)
-        logger.warning("ML rate-limited (429) on %s %s — waiting %ds (attempt %d/%d)", method, url, wait, attempt + 1, _REQUEST_RATE_RETRIES)
+        wait = min(
+            int(retry_after) if retry_after and str(retry_after).isdigit()
+            else _REQUEST_RATE_BASE_WAIT * (2 ** attempt),
+            _REQUEST_RATE_MAX_WAIT,
+        )
+        logger.warning(
+            "ML rate-limited (429) on %s %s — waiting %ds (attempt %d/%d)",
+            method, url, wait, attempt + 1, _REQUEST_RATE_RETRIES,
+        )
         await asyncio.sleep(wait)
     return resp  # type: ignore[return-value]
 
@@ -151,10 +199,22 @@ def _get_seller_credentials(seller: dict) -> tuple[str, str]:
 async def _get_token(seller_slug: str, org_id: str) -> str:
     """Get access_token for seller. Auto-refresh if expired.
 
+    Uses an in-memory cache to avoid hitting Supabase on every API call.
+    Falls back to a DB read on cache miss or near-expiry.
+
     Uses a per-seller lock so concurrent requests don't race to refresh
     the same token (which would invalidate the refresh_token and disconnect
     the seller).
     """
+    cache_key = f"{org_id}:{seller_slug}"
+
+    # Fast path: return cached token if it has more than 5 minutes remaining
+    if cache_key in _token_cache:
+        cached_token, cached_expires_at = _token_cache[cache_key]
+        if datetime.now(timezone.utc) < cached_expires_at - _TOKEN_CACHE_MARGIN:
+            return cached_token
+
+    # Cache miss or token nearing expiry — hit database
     db = get_db()
     result = db.table("copy_sellers").select(
         "ml_access_token, ml_refresh_token, ml_token_expires_at, ml_app_id, ml_secret_key, active"
@@ -170,6 +230,8 @@ async def _get_token(seller_slug: str, org_id: str) -> str:
 
     expires_at = datetime.fromisoformat(s["ml_token_expires_at"]) if s.get("ml_token_expires_at") else None
     if expires_at and expires_at > datetime.now(timezone.utc):
+        # Token is valid — populate cache and return
+        _token_cache[cache_key] = (s["ml_access_token"], expires_at)
         return s["ml_access_token"]
 
     # Token expired — acquire per-seller lock before refreshing
@@ -191,6 +253,8 @@ async def _get_token(seller_slug: str, org_id: str) -> str:
         s = result2.data[0]
         expires_at = datetime.fromisoformat(s["ml_token_expires_at"]) if s.get("ml_token_expires_at") else None
         if expires_at and expires_at > datetime.now(timezone.utc):
+            # Another coroutine already refreshed — update cache and return
+            _token_cache[cache_key] = (s["ml_access_token"], expires_at)
             return s["ml_access_token"]
 
         # Still expired — do the refresh
@@ -199,13 +263,13 @@ async def _get_token(seller_slug: str, org_id: str) -> str:
             raise RuntimeError(f"Seller '{seller_slug}' has no refresh_token. Reconnect via /api/ml/install")
 
         app_id, secret = _get_seller_credentials(s)
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(f"{MP_API}/oauth/token", json={
-                "grant_type": "refresh_token",
-                "client_id": app_id,
-                "client_secret": secret,
-                "refresh_token": old_refresh,
-            })
+        client = _get_ml_client()
+        resp = await client.post(f"{MP_API}/oauth/token", json={
+            "grant_type": "refresh_token",
+            "client_id": app_id,
+            "client_secret": secret,
+            "refresh_token": old_refresh,
+        }, timeout=30.0)
 
         if resp.status_code in (400, 401):
             logger.warning("Refresh token invalid/revoked for seller '%s' — clearing tokens", seller_slug)
@@ -214,6 +278,8 @@ async def _get_token(seller_slug: str, org_id: str) -> str:
                 "ml_refresh_token": None,
                 "ml_token_expires_at": None,
             }).eq("slug", seller_slug).eq("org_id", org_id).execute()
+            # Evict stale cache entry
+            _token_cache.pop(cache_key, None)
             raise RuntimeError(
                 f"Seller '{seller_slug}': refresh token inválido ou revogado. "
                 f"Reconecte via /api/ml/install"
@@ -229,6 +295,8 @@ async def _get_token(seller_slug: str, org_id: str) -> str:
             "ml_token_expires_at": new_expires.isoformat(),
         }).eq("slug", seller_slug).eq("org_id", org_id).execute()
 
+        # Update cache with freshly refreshed token
+        _token_cache[cache_key] = (data["access_token"], new_expires)
         return data["access_token"]
     finally:
         lock.release()
@@ -237,27 +305,28 @@ async def _get_token(seller_slug: str, org_id: str) -> str:
 async def exchange_code(code: str, org_id: str = "") -> dict:
     """Exchange authorization_code for access_token + refresh_token."""
     from app.config import settings
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(f"{MP_API}/oauth/token", json={
-            "grant_type": "authorization_code",
-            "client_id": settings.ml_app_id,
-            "client_secret": settings.ml_secret_key,
-            "code": code,
-            "redirect_uri": settings.ml_redirect_uri,
-        })
-        _raise_for_status(resp, "Mercado Livre API")
-        return resp.json()
+    client = _get_ml_client()
+    resp = await client.post(f"{MP_API}/oauth/token", json={
+        "grant_type": "authorization_code",
+        "client_id": settings.ml_app_id,
+        "client_secret": settings.ml_secret_key,
+        "code": code,
+        "redirect_uri": settings.ml_redirect_uri,
+    }, timeout=30.0)
+    _raise_for_status(resp, "Mercado Livre API")
+    return resp.json()
 
 
 async def fetch_user_info(access_token: str, org_id: str = "") -> dict:
     """GET /users/me — returns ML user profile."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(
-            f"{ML_API}/users/me",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-        _raise_for_status(resp, "Mercado Livre API")
-        return resp.json()
+    client = _get_ml_client()
+    resp = await client.get(
+        f"{ML_API}/users/me",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=30.0,
+    )
+    _raise_for_status(resp, "Mercado Livre API")
+    return resp.json()
 
 
 async def get_seller_official_store_id(seller_slug: str, org_id: str) -> int | None:
@@ -276,36 +345,38 @@ async def get_seller_official_store_id(seller_slug: str, org_id: str) -> int | N
         return cached
 
     token = await _get_token(seller_slug, org_id)
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(
-            f"{ML_API}/users/{user_id}/items/search",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"status": "active", "limit": "5"},
-        )
-        if resp.status_code != 200:
-            logger.warning("Items search failed for %s (status %d)", seller_slug, resp.status_code)
-            return None
-        results = resp.json().get("results", [])
-        if not results:
-            logger.warning("No active items found for seller %s — cannot resolve official_store_id", seller_slug)
-            return None
+    client = _get_ml_client()
+    resp = await client.get(
+        f"{ML_API}/users/{user_id}/items/search",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"status": "active", "limit": "5"},
+        timeout=30.0,
+    )
+    if resp.status_code != 200:
+        logger.warning("Items search failed for %s (status %d)", seller_slug, resp.status_code)
+        return None
+    results = resp.json().get("results", [])
+    if not results:
+        logger.warning("No active items found for seller %s — cannot resolve official_store_id", seller_slug)
+        return None
 
-        for item_id in results:
-            item_resp = await client.get(
-                f"{ML_API}/items/{item_id}",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            if item_resp.status_code != 200:
-                continue
-            osi = item_resp.json().get("official_store_id")
-            if osi:
-                # Cache in DB for future use
-                try:
-                    db.table("copy_sellers").update({"official_store_id": osi}).eq("slug", seller_slug).eq("org_id", org_id).execute()
-                except Exception:
-                    pass
-                logger.info("Found official_store_id=%d for %s (from item %s)", osi, seller_slug, item_id)
-                return osi
+    for item_id in results:
+        item_resp = await client.get(
+            f"{ML_API}/items/{item_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30.0,
+        )
+        if item_resp.status_code != 200:
+            continue
+        osi = item_resp.json().get("official_store_id")
+        if osi:
+            # Cache in DB for future use
+            try:
+                db.table("copy_sellers").update({"official_store_id": osi}).eq("slug", seller_slug).eq("org_id", org_id).execute()
+            except Exception:
+                pass
+            logger.info("Found official_store_id=%d for %s (from item %s)", osi, seller_slug, item_id)
+            return osi
 
     logger.warning("No item with official_store_id found for %s (checked %d items)", seller_slug, len(results))
     return None
@@ -387,25 +458,27 @@ async def search_items_by_sku(seller_slug: str, sku: str, org_id: str = "") -> l
 
     token = await _get_token(seller_slug, org_id)
     item_ids: set[str] = set()
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        for params in ({"seller_sku": sku}, {"sku": sku}):
-            resp = await client.get(
-                f"{ML_API}/users/{user_id}/items/search",
-                headers={"Authorization": f"Bearer {token}"},
-                params=params,
-            )
-            if resp.status_code == 404:
-                continue
-            _raise_for_status(resp, "Mercado Livre API")
-            for item_id in resp.json().get("results", []):
-                if item_id:
-                    item_ids.add(item_id)
+    client = _get_ml_client()
+    for params in ({"seller_sku": sku}, {"sku": sku}):
+        resp = await client.get(
+            f"{ML_API}/users/{user_id}/items/search",
+            headers={"Authorization": f"Bearer {token}"},
+            params=params,
+            timeout=30.0,
+        )
+        if resp.status_code == 404:
+            continue
+        _raise_for_status(resp, "Mercado Livre API")
+        for item_id in resp.json().get("results", []):
+            if item_id:
+                item_ids.add(item_id)
     return list(item_ids)
 
 
 _UP_COMPAT_BATCH = 200  # ML limit per request
 _RATE_LIMIT_RETRIES = 5
 _RATE_LIMIT_BASE_WAIT = 3  # seconds
+_RATE_LIMIT_MAX_WAIT = 30  # seconds — cap individual backoff waits
 _COMPAT_PACE = 1.0  # seconds between compat API calls to avoid 429s
 
 
@@ -418,7 +491,11 @@ async def _post_with_retry(
         if resp.status_code != 429:
             return resp
         retry_after = resp.headers.get("retry-after")
-        wait = int(retry_after) if retry_after and retry_after.isdigit() else _RATE_LIMIT_BASE_WAIT * (2 ** attempt)
+        wait = min(
+            int(retry_after) if retry_after and retry_after.isdigit()
+            else _RATE_LIMIT_BASE_WAIT * (2 ** attempt),
+            _RATE_LIMIT_MAX_WAIT,
+        )
         logger.warning("Rate-limited on %s — waiting %ds (attempt %d/%d)", url, wait, attempt + 1, _RATE_LIMIT_RETRIES)
         await asyncio.sleep(wait)
     return resp  # return last 429 response so caller can raise
@@ -453,21 +530,21 @@ async def copy_item_compatibilities(
     token = await _get_token(seller_slug, org_id)
     headers = {"Authorization": f"Bearer {token}"}
     payload = {"item_to_copy": {"item_id": source_item_id, "extended_information": True}}
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await _post_with_retry(
-            client, f"{ML_API}/items/{new_item_id}/compatibilities", headers, payload,
+    client = _get_ml_client()
+    resp = await _post_with_retry(
+        client, f"{ML_API}/items/{new_item_id}/compatibilities", headers, payload,
+    )
+    if resp.status_code == 404:
+        return {}
+
+    # If the target uses User Product compatibilities, retry via that endpoint
+    if _is_user_product_error(resp):
+        return await _copy_user_product_compatibilities(
+            client, token, new_item_id, source_compat_products,
         )
-        if resp.status_code == 404:
-            return {}
 
-        # If the target uses User Product compatibilities, retry via that endpoint
-        if _is_user_product_error(resp):
-            return await _copy_user_product_compatibilities(
-                client, token, new_item_id, source_compat_products,
-            )
-
-        _raise_for_status(resp, "Mercado Livre API")
-        return resp.json()
+    _raise_for_status(resp, "Mercado Livre API")
+    return resp.json()
 
 
 async def _copy_user_product_compatibilities(
@@ -489,7 +566,7 @@ async def _copy_user_product_compatibilities(
     headers = {"Authorization": f"Bearer {token}"}
 
     # 1. Fetch the target item to get its user_product_id
-    item_resp = await client.get(f"{ML_API}/items/{item_id}", headers=headers)
+    item_resp = await client.get(f"{ML_API}/items/{item_id}", headers=headers, timeout=30.0)
     _raise_for_status(item_resp, "Mercado Livre API")
     user_product_id = item_resp.json().get("user_product_id")
     if not user_product_id:

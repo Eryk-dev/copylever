@@ -65,18 +65,30 @@ export default function CompatPage({ sellers, headers }: Props) {
     return sellers.find(seller => seller.slug === slug)?.name || slug;
   }, [sellers]);
 
+  const logsAbortRef = useRef<AbortController | null>(null);
+
   const loadLogs = useCallback(async () => {
+    logsAbortRef.current?.abort();
+    const controller = new AbortController();
+    logsAbortRef.current = controller;
     const params = new URLSearchParams({ limit: String(COMPAT_PAGE_SIZE), offset: '0' });
     if (compatStatusFilter) params.set('status', compatStatusFilter);
     try {
-      const res = await fetch(`${API_BASE}/api/compat/logs?${params}`, { headers: headers(), cache: 'no-store' });
+      const res = await fetch(`${API_BASE}/api/compat/logs?${params}`, {
+        headers: headers(),
+        cache: 'no-store',
+        signal: controller.signal,
+      });
       if (res.ok) {
         const data: CompatLog[] = await res.json();
         setLogs(data);
         setHasMoreLogs(data.length === COMPAT_PAGE_SIZE);
         setLogsLoaded(true);
       }
-    } catch (e) { console.error('Failed to load compat logs:', e); }
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return;
+      console.error('Failed to load compat logs:', e);
+    }
   }, [headers, compatStatusFilter]);
 
   const loadMoreLogs = useCallback(async () => {
@@ -102,17 +114,16 @@ export default function CompatPage({ sellers, headers }: Props) {
     setLogsLoaded(false);
   }, [compatStatusFilter]);
 
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hasInProgress = logs.some(l => l.status === 'in_progress');
 
+  const loadLogsRef = useRef(loadLogs);
+  useEffect(() => { loadLogsRef.current = loadLogs; }, [loadLogs]);
+
   useEffect(() => {
-    if (hasInProgress) {
-      pollRef.current = setInterval(loadLogs, 5000);
-    }
-    return () => {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    };
-  }, [hasInProgress, loadLogs]);
+    if (!hasInProgress) return;
+    const id = setInterval(() => { void loadLogsRef.current(); }, 5000);
+    return () => clearInterval(id);
+  }, [hasInProgress]);
 
   // Auto-preview when sourceInput changes (debounced)
   useEffect(() => {

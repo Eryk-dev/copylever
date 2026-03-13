@@ -169,8 +169,11 @@ export default function CopyForm({
         setResolveError('Nenhuma loja Shopee conectada');
       }
 
+      const RESOLVE_TIMEOUT_MS = 20000;
+
       if (mlCandidates.length > 0) {
         promises.push((async () => {
+          const timeoutId = setTimeout(() => controller.abort(), RESOLVE_TIMEOUT_MS);
           try {
             const res = await fetch(`${API_BASE}/api/copy/resolve-sellers`, {
               method: 'POST',
@@ -178,6 +181,7 @@ export default function CopyForm({
               body: JSON.stringify({ item_ids: mlCandidates.map(c => c.apiId) }),
               signal: controller.signal,
             });
+            clearTimeout(timeoutId);
             if (!res.ok) return;
             const data: { results: { item_id: string; seller_slug: string }[]; errors: { item_id: string }[] } = await res.json();
             for (const r of data.results) {
@@ -192,6 +196,7 @@ export default function CopyForm({
               }
             }
           } catch (e) {
+            clearTimeout(timeoutId);
             if (e instanceof DOMException && e.name === 'AbortError') throw e;
           }
         })());
@@ -199,6 +204,7 @@ export default function CopyForm({
 
       if (shopeeCandidates.length > 0) {
         promises.push((async () => {
+          const timeoutId = setTimeout(() => controller.abort(), RESOLVE_TIMEOUT_MS);
           try {
             const res = await fetch(`${API_BASE}/api/shopee/copy/resolve-sellers`, {
               method: 'POST',
@@ -206,6 +212,7 @@ export default function CopyForm({
               body: JSON.stringify({ item_ids: shopeeCandidates.map(c => c.apiId) }),
               signal: controller.signal,
             });
+            clearTimeout(timeoutId);
             if (!res.ok) {
               const err = await res.json().catch(() => ({ detail: res.statusText }));
               setResolveError(err.detail || `Erro ao resolver sellers Shopee (${res.status})`);
@@ -224,6 +231,7 @@ export default function CopyForm({
               }
             }
           } catch (e) {
+            clearTimeout(timeoutId);
             if (e instanceof DOMException && e.name === 'AbortError') throw e;
           }
         })());

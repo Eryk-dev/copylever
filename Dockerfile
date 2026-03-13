@@ -22,4 +22,4 @@ COPY --from=frontend /app/frontend/dist frontend/dist
 ENV PORT=8000
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--timeout-keep-alive", "75", "--timeout-graceful-shutdown", "30"]

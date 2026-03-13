@@ -55,15 +55,21 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
   const [retryLogId, setRetryLogId] = useState<number | null>(null);
   const [retryPlatform, setRetryPlatform] = useState<Platform>('ml');
 
+  const logsAbortRef = useRef<AbortController | null>(null);
+
   const loadLogs = useCallback(async () => {
+    logsAbortRef.current?.abort();
+    const controller = new AbortController();
+    logsAbortRef.current = controller;
     const params = new URLSearchParams({ limit: String(LOGS_PAGE_SIZE), offset: '0' });
     if (statusFilter) params.set('status', statusFilter);
     try {
+      const signal = controller.signal;
       const fetches: Promise<Response>[] = [
-        fetch(`${API_BASE}/api/copy/logs?${params}`, { headers: headers(), cache: 'no-store' }),
+        fetch(`${API_BASE}/api/copy/logs?${params}`, { headers: headers(), cache: 'no-store', signal }),
       ];
       if (SHOPEE_ENABLED) {
-        fetches.push(fetch(`${API_BASE}/api/shopee/copy/logs?${params}`, { headers: headers(), cache: 'no-store' }));
+        fetches.push(fetch(`${API_BASE}/api/shopee/copy/logs?${params}`, { headers: headers(), cache: 'no-store', signal }));
       }
       const [mlRes, shopeeRes] = await Promise.all(fetches);
       const mlLogs: CopyLog[] = mlRes.ok ? await mlRes.json() : [];
@@ -76,7 +82,10 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
       setLogs(merged);
       setHasMoreLogs(mlLogs.length === LOGS_PAGE_SIZE || shopeeLogs.length === LOGS_PAGE_SIZE);
       setLogsLoaded(true);
-    } catch (e) { console.error('Failed to load logs:', e); }
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return;
+      console.error('Failed to load logs:', e);
+    }
   }, [headers, statusFilter]);
 
   const loadMoreLogs = useCallback(async () => {
@@ -119,34 +128,46 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
     const mlDestSlugs = destinations.filter(d => sellers.some(s => s.slug === d));
     const shopeeDestSlugs = destinations.filter(d => shopeeSellers.some(s => s.slug === d));
 
-    for (const group of groups) {
-      const dests = group.platform === 'ml' ? mlDestSlugs : shopeeDestSlugs;
-      if (dests.length === 0) continue;
+    try {
+      for (const group of groups) {
+        const dests = group.platform === 'ml' ? mlDestSlugs : shopeeDestSlugs;
+        if (dests.length === 0) continue;
 
-      const endpoint = group.platform === 'ml' ? '/api/copy' : '/api/shopee/copy';
-      try {
-        const res = await fetch(`${API_BASE}${endpoint}`, {
-          method: 'POST',
-          headers: headers(),
-          body: JSON.stringify({ source: group.source, destinations: dests, item_ids: group.itemIds }),
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({ detail: 'Erro desconhecido' }));
-          toast(err.detail, 'error');
-          continue;
+        const endpoint = group.platform === 'ml' ? '/api/copy' : '/api/shopee/copy';
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
+        try {
+          const res = await fetch(`${API_BASE}${endpoint}`, {
+            method: 'POST',
+            headers: headers(),
+            body: JSON.stringify({ source: group.source, destinations: dests, item_ids: group.itemIds }),
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: 'Erro desconhecido' }));
+            toast(err.detail, 'error');
+            continue;
+          }
+          const data: CopyQueuedResponse = await res.json();
+          totalQueued += data.total;
+        } catch (e) {
+          clearTimeout(timeoutId);
+          if (e instanceof DOMException && e.name === 'AbortError') {
+            toast('Tempo limite esgotado ao enviar a cópia. Tente novamente.', 'error');
+          } else {
+            toast(String(e), 'error');
+          }
         }
-        const data: CopyQueuedResponse = await res.json();
-        totalQueued += data.total;
-      } catch (e) {
-        toast(String(e), 'error');
       }
-    }
 
-    if (totalQueued > 0) {
-      toast(`${totalQueued} item(s) enfileirado(s). Acompanhe no histórico abaixo.`, 'success');
+      if (totalQueued > 0) {
+        toast(`${totalQueued} item(s) enfileirado(s). Acompanhe no histórico abaixo.`, 'success');
+      }
+    } finally {
+      setCopying(false);
+      void loadLogs();
     }
-    setCopying(false);
-    void loadLogs();
   }, [headers, loadLogs, toast, sellers, shopeeSellers]);
 
   const handlePreview = useCallback(async (items: Array<[string, string, Platform]>) => {
@@ -155,39 +176,60 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
     setPreviewLoading(true);
     setPreviewError('');
     setPreviews([]);
+
+    const PREVIEW_TIMEOUT_MS = 20000;
+    const BATCH_SIZE = 5;
+
+    const fetchOne = async ([rawId, seller, platform]: [string, string, Platform]): Promise<ItemPreview | null> => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), PREVIEW_TIMEOUT_MS);
+      try {
+        if (platform === 'ml') {
+          let itemId = rawId.trim();
+          const m = itemId.match(/MLB[-]?(\d+)/i);
+          if (m) itemId = `MLB${m[1]}`;
+          else if (/^\d+$/.test(itemId)) itemId = `MLB${itemId}`;
+          const res = await fetch(
+            `${API_BASE}/api/copy/preview/${itemId}?seller=${encodeURIComponent(seller)}`,
+            { headers: headers(), cache: 'no-store', signal: controller.signal },
+          );
+          clearTimeout(timeoutId);
+          if (!res.ok) return null;
+          return await res.json() as ItemPreview;
+        } else {
+          const res = await fetch(
+            `${API_BASE}/api/shopee/copy/preview/${rawId}`,
+            { headers: headers(), cache: 'no-store', signal: controller.signal },
+          );
+          clearTimeout(timeoutId);
+          if (!res.ok) return null;
+          const data = await res.json();
+          return {
+            id: String(data.item_id),
+            title: data.item_name,
+            price: data.original_price,
+            thumbnail: data.image_url,
+            pictures_count: data.image_count,
+            variations_count: data.model_count,
+            weight: data.weight,
+            has_description: data.has_description,
+            stock: data.stock,
+          } as ItemPreview;
+        }
+      } catch (e) {
+        clearTimeout(timeoutId);
+        return null;
+      }
+    };
+
     try {
-      const results = await Promise.all(
-        items.map(async ([rawId, seller, platform]) => {
-          try {
-            if (platform === 'ml') {
-              let itemId = rawId.trim();
-              const m = itemId.match(/MLB[-]?(\d+)/i);
-              if (m) itemId = `MLB${m[1]}`;
-              else if (/^\d+$/.test(itemId)) itemId = `MLB${itemId}`;
-              const res = await fetch(`${API_BASE}/api/copy/preview/${itemId}?seller=${encodeURIComponent(seller)}`, { headers: headers(), cache: 'no-store' });
-              if (!res.ok) return null;
-              return await res.json() as ItemPreview;
-            } else {
-              const res = await fetch(`${API_BASE}/api/shopee/copy/preview/${rawId}`, { headers: headers(), cache: 'no-store' });
-              if (!res.ok) return null;
-              const data = await res.json();
-              // Normalize to ItemPreview shape
-              return {
-                id: String(data.item_id),
-                title: data.item_name,
-                price: data.original_price,
-                thumbnail: data.image_url,
-                pictures_count: data.image_count,
-                variations_count: data.model_count,
-                weight: data.weight,
-                has_description: data.has_description,
-                stock: data.stock,
-              } as ItemPreview;
-            }
-          } catch { return null; }
-        })
-      );
-      const valid = results.filter((r): r is ItemPreview => r !== null);
+      const allResults: Array<ItemPreview | null> = [];
+      for (let i = 0; i < items.length; i += BATCH_SIZE) {
+        const batch = items.slice(i, i + BATCH_SIZE);
+        const batchResults = await Promise.all(batch.map(fetchOne));
+        allResults.push(...batchResults);
+      }
+      const valid = allResults.filter((r): r is ItemPreview => r !== null);
       if (valid.length === 0) { setPreviewError('Nenhum item encontrado'); return; }
       setPreviews(valid);
     } catch (e) { setPreviewError(String(e)); }
@@ -378,17 +420,16 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
     return items;
   }, [logs, correctionGroups, statusFilter]);
 
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hasInProgress = logs.some(l => l.status === 'in_progress');
 
+  const loadLogsRef = useRef(loadLogs);
+  useEffect(() => { loadLogsRef.current = loadLogs; }, [loadLogs]);
+
   useEffect(() => {
-    if (hasInProgress) {
-      pollRef.current = setInterval(loadLogs, 5000);
-    }
-    return () => {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    };
-  }, [hasInProgress, loadLogs]);
+    if (!hasInProgress) return;
+    const id = setInterval(() => { void loadLogsRef.current(); }, 5000);
+    return () => clearInterval(id);
+  }, [hasInProgress]);
 
   useEffect(() => {
     if (!logsLoaded) { void loadLogs(); }

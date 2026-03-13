@@ -49,10 +49,14 @@ export function useAuth() {
   }, []);
 
   const fetchMe = useCallback(async (t: string): Promise<AuthUser | null> => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
       const res = await fetch(`${API_BASE}/api/auth/me`, {
         headers: { 'X-Auth-Token': t },
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
       if (res.status === 401) {
         clearAuth();
         return null;
@@ -60,6 +64,7 @@ export function useAuth() {
       if (!res.ok) return null;
       return await res.json();
     } catch {
+      clearTimeout(timeoutId);
       return null;
     }
   }, [clearAuth]);
@@ -122,15 +127,21 @@ export function useAuth() {
   const loadSellers = useCallback(async () => {
     if (!token) return;
     setLoadingSellers(true);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
       const res = await fetch(`${API_BASE}/api/sellers`, {
         headers: headers(),
         cache: 'no-store',
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
       if (res.status === 401) { clearAuth(); return; }
       const data = await res.json();
       setSellers(data);
     } catch (e) {
+      clearTimeout(timeoutId);
+      if (e instanceof DOMException && e.name === 'AbortError') return;
       console.error('Failed to load sellers:', e);
     } finally {
       setLoadingSellers(false);
@@ -152,15 +163,21 @@ export function useAuth() {
 
   const loadShopeeSellers = useCallback(async () => {
     if (!token) return;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
       const res = await fetch(`${API_BASE}/api/shopee/sellers`, {
         headers: headers(),
         cache: 'no-store',
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
       if (res.status === 401) { clearAuth(); return; }
       const data = await res.json();
       setShopeeSellers(data);
     } catch (e) {
+      clearTimeout(timeoutId);
+      if (e instanceof DOMException && e.name === 'AbortError') return;
       console.error('Failed to load Shopee sellers:', e);
     }
   }, [token, headers, clearAuth]);

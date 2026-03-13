@@ -24,6 +24,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/copy", tags=["copy"])
 CORRECTION_PENDING_STATUSES = {CORRECTION_STATUS, LEGACY_DIMENSION_STATUS}
 
+# ── Per-org queue management ──────────────────────────────────────────────────
+
+_org_copy_locks: dict[str, asyncio.Lock] = {}
+_org_queue_sizes: dict[str, int] = {}
+MAX_QUEUE_PER_ORG = 3  # max concurrent background copy tasks per org
+BATCH_TIMEOUT_SECONDS = 600  # 10 minutes per batch
+
+
+def _get_org_lock(org_id: str) -> asyncio.Lock:
+    """Return (or create) the per-org asyncio Lock using atomic setdefault."""
+    return _org_copy_locks.setdefault(org_id, asyncio.Lock())
+
+
+# ── Trial limit helpers ───────────────────────────────────────────────────────
+
 
 def _check_trial_limit(org_id: str, requested_copies: int) -> dict | None:
     """Check if org is on trial and has enough remaining copies.
@@ -80,6 +95,9 @@ def _refund_trial_copies(org_id: str, count: int):
         db.table("orgs").update({"trial_copies_used": new_val}).eq("id", org_id).execute()
 
 
+# ── Background task helpers ───────────────────────────────────────────────────
+
+
 async def _bg_copy_items(
     source: str,
     destinations: list[str],
@@ -88,22 +106,361 @@ async def _bg_copy_items(
     org_id: str,
     trial_reserved: int,
 ) -> None:
-    """Background task wrapper for copy_items with trial refund."""
+    """Inner background worker for copy_items with timeout and trial refund."""
     try:
-        results = await copy_items(
-            source_seller=source,
-            dest_sellers=destinations,
-            item_ids=item_ids,
-            user_id=user_id,
-            org_id=org_id,
+        results = await asyncio.wait_for(
+            copy_items(
+                source_seller=source,
+                dest_sellers=destinations,
+                item_ids=item_ids,
+                user_id=user_id,
+                org_id=org_id,
+            ),
+            timeout=BATCH_TIMEOUT_SECONDS,
         )
         if trial_reserved > 0:
             success_count = sum(1 for r in results if r["status"] == "success")
             _refund_trial_copies(org_id, trial_reserved - success_count)
+    except asyncio.TimeoutError:
+        logger.error(
+            "Batch copy timed out after %ss for org %s (items: %s)",
+            BATCH_TIMEOUT_SECONDS,
+            org_id,
+            item_ids,
+        )
+        if trial_reserved > 0:
+            _refund_trial_copies(org_id, trial_reserved)
+        # Mark any remaining in_progress logs as error
+        try:
+            db = get_db()
+            db.table("copy_logs").update({"status": "error", "error_details": {"_timeout": "Operacao excedeu o tempo limite de 10 minutos"}}).eq(
+                "org_id", org_id
+            ).eq("status", "in_progress").execute()
+        except Exception as db_err:
+            logger.error("Failed to update timed-out logs: %s", db_err)
     except Exception as e:
         logger.error("Background copy batch failed: %s", e, exc_info=True)
         if trial_reserved > 0:
             _refund_trial_copies(org_id, trial_reserved)
+
+
+async def _bg_copy_items_queued(
+    source: str,
+    destinations: list[str],
+    item_ids: list[str],
+    user_id: str,
+    org_id: str,
+    trial_reserved: int,
+) -> None:
+    """Wrapper that enforces per-org concurrency queue before running _bg_copy_items."""
+    current = _org_queue_sizes.get(org_id, 0)
+    if current >= MAX_QUEUE_PER_ORG:
+        logger.warning(
+            "Org %s already has %d task(s) running (max %d); rejecting new batch",
+            org_id,
+            current,
+            MAX_QUEUE_PER_ORG,
+        )
+        if trial_reserved > 0:
+            _refund_trial_copies(org_id, trial_reserved)
+        # Mark any in_progress logs we may have created as error
+        try:
+            db = get_db()
+            db.table("copy_logs").update({
+                "status": "error",
+                "error_details": {"_queue": "Fila maxima atingida. Aguarde o termino das operacoes em andamento."},
+            }).eq("org_id", org_id).eq("status", "in_progress").execute()
+        except Exception as db_err:
+            logger.error("Failed to update queue-full logs: %s", db_err)
+        return
+
+    _org_queue_sizes[org_id] = current + 1
+    try:
+        await _bg_copy_items(
+            source=source,
+            destinations=destinations,
+            item_ids=item_ids,
+            user_id=user_id,
+            org_id=org_id,
+            trial_reserved=trial_reserved,
+        )
+    finally:
+        _org_queue_sizes[org_id] = max(0, _org_queue_sizes.get(org_id, 1) - 1)
+
+
+async def _bg_copy_with_dims(
+    source: str,
+    destinations: list[str],
+    item_id: str,
+    dimensions: dict,
+    user_id: str,
+    org_id: str,
+    existing_log_id: int | None,
+    trial_info_present: bool,
+) -> None:
+    """Background worker for copy_with_dimensions."""
+    try:
+        results = await asyncio.wait_for(
+            copy_with_dimensions(
+                source_seller=source,
+                dest_sellers=destinations,
+                item_id=item_id,
+                dimensions=dimensions,
+                org_id=org_id,
+                user_id=user_id,
+            ),
+            timeout=BATCH_TIMEOUT_SECONDS,
+        )
+
+        success_count, error_count, correction_count = _count_result_statuses(results)
+
+        # Increment trial counter for successful copies
+        if trial_info_present and success_count > 0:
+            _increment_trial_copies(org_id, 1)
+
+        # Update any existing pending-correction log entries for this item
+        if success_count > 0 or existing_log_id:
+            db = get_db()
+            dest_item_ids = {r["dest_seller"]: r["dest_item_id"] for r in results if r["status"] == "success"}
+            new_errors = {r["dest_seller"]: r["error"] for r in results if r["status"] != "success" and r.get("error")}
+            new_status = _derive_log_status(results)
+            source_item_sku = next((r.get("sku") for r in results if r.get("sku")), None)
+            correction_details = next(
+                (r.get("correction_details") for r in results if isinstance(r.get("correction_details"), dict)),
+                None,
+            )
+            if existing_log_id:
+                try:
+                    db.table("copy_logs").update({
+                        "status": new_status,
+                        "dest_item_ids": dest_item_ids or None,
+                        "error_details": new_errors or None,
+                        "correction_details": correction_details if new_status == CORRECTION_STATUS else None,
+                        "source_item_sku": source_item_sku,
+                    }).eq("id", existing_log_id).eq("org_id", org_id).execute()
+                except Exception as e:
+                    logger.warning("Failed to update log %s: %s", existing_log_id, e)
+            else:
+                for pending_status in CORRECTION_PENDING_STATUSES:
+                    try:
+                        db.table("copy_logs").update({
+                            "status": new_status,
+                            "dest_item_ids": dest_item_ids or None,
+                            "error_details": new_errors or None,
+                            "correction_details": correction_details if new_status == CORRECTION_STATUS else None,
+                            "source_item_sku": source_item_sku,
+                        }).eq("source_item_id", item_id).eq(
+                            "source_seller", source
+                        ).eq("status", pending_status).eq("org_id", org_id).execute()
+                    except Exception as e:
+                        logger.warning("Failed to update pending correction logs for %s (%s): %s", item_id, pending_status, e)
+    except asyncio.TimeoutError:
+        logger.error("copy_with_dims timed out after %ss for org %s item %s", BATCH_TIMEOUT_SECONDS, org_id, item_id)
+        try:
+            db = get_db()
+            if existing_log_id:
+                db.table("copy_logs").update({"status": "error", "error_details": {"_timeout": "Operacao excedeu o tempo limite de 10 minutos"}}).eq(
+                    "id", existing_log_id
+                ).execute()
+            else:
+                db.table("copy_logs").update({"status": "error", "error_details": {"_timeout": "Operacao excedeu o tempo limite de 10 minutos"}}).eq(
+                    "org_id", org_id
+                ).eq("status", "in_progress").eq("source_item_id", item_id).execute()
+        except Exception as db_err:
+            logger.error("Failed to update timed-out dims logs: %s", db_err)
+    except Exception as e:
+        logger.error("Background copy_with_dims failed for item %s: %s", item_id, e, exc_info=True)
+        try:
+            db = get_db()
+            if existing_log_id:
+                db.table("copy_logs").update({"status": "error", "error_details": {"_error": str(e)}}).eq(
+                    "id", existing_log_id
+                ).execute()
+        except Exception:
+            pass
+
+
+async def _bg_copy_with_dims_queued(
+    source: str,
+    destinations: list[str],
+    item_id: str,
+    dimensions: dict,
+    user_id: str,
+    org_id: str,
+    existing_log_id: int | None,
+    trial_info_present: bool,
+) -> None:
+    """Wrapper that enforces per-org concurrency queue before running _bg_copy_with_dims."""
+    current = _org_queue_sizes.get(org_id, 0)
+    if current >= MAX_QUEUE_PER_ORG:
+        logger.warning(
+            "Org %s already has %d task(s) running (max %d); rejecting dims task",
+            org_id,
+            current,
+            MAX_QUEUE_PER_ORG,
+        )
+        try:
+            db = get_db()
+            if existing_log_id:
+                db.table("copy_logs").update({
+                    "status": "error",
+                    "error_details": {"_queue": "Fila maxima atingida. Aguarde o termino das operacoes em andamento."},
+                }).eq("id", existing_log_id).execute()
+        except Exception as db_err:
+            logger.error("Failed to update queue-full dims log: %s", db_err)
+        return
+
+    _org_queue_sizes[org_id] = current + 1
+    try:
+        await _bg_copy_with_dims(
+            source=source,
+            destinations=destinations,
+            item_id=item_id,
+            dimensions=dimensions,
+            user_id=user_id,
+            org_id=org_id,
+            existing_log_id=existing_log_id,
+            trial_info_present=trial_info_present,
+        )
+    finally:
+        _org_queue_sizes[org_id] = max(0, _org_queue_sizes.get(org_id, 1) - 1)
+
+
+async def _bg_retry_corrections(
+    enriched_logs: list[tuple[dict, dict]],
+    values: dict,
+    user_id: str,
+) -> None:
+    """Background worker for retry_corrections — processes each log serially."""
+    for log, details in enriched_logs:
+        source = log["source_seller"]
+        destinations = log["dest_sellers"] or []
+        org_id = log["org_id"]
+        db = get_db()
+
+        try:
+            if details.get("kind") == "dimensions":
+                dims = _extract_retry_dimensions(values)
+                if not dims:
+                    logger.warning("retry_corrections: no dims provided for log %s", log["id"])
+                    db.table("copy_logs").update({
+                        "status": "error",
+                        "error_details": {"_input": "Nenhuma dimensao informada"},
+                    }).eq("id", log["id"]).execute()
+                    continue
+                results = await asyncio.wait_for(
+                    copy_with_dimensions(
+                        source_seller=source,
+                        dest_sellers=destinations,
+                        item_id=str(log["source_item_id"]),
+                        dimensions=dims,
+                        org_id=org_id,
+                        user_id=user_id,
+                    ),
+                    timeout=BATCH_TIMEOUT_SECONDS,
+                )
+            else:
+                attr_values = _extract_retry_attribute_values(values, details.get("fields", []))
+                if not attr_values:
+                    attr_ids = {str(f.get("id")) for f in details.get("fields", []) if isinstance(f, dict)}
+                    if attr_ids == {"GTIN"}:
+                        attr_values = {"EMPTY_GTIN_REASON": "No registrado"}
+                    else:
+                        logger.warning("retry_corrections: no attribute values for log %s", log["id"])
+                        db.table("copy_logs").update({
+                            "status": "error",
+                            "error_details": {"_input": "Preencha os atributos obrigatorios antes de reenviar"},
+                        }).eq("id", log["id"]).execute()
+                        continue
+                results = await asyncio.wait_for(
+                    copy_with_attribute_corrections(
+                        source_seller=source,
+                        dest_sellers=destinations,
+                        item_id=str(log["source_item_id"]),
+                        values=attr_values,
+                        org_id=org_id,
+                        user_id=user_id,
+                    ),
+                    timeout=BATCH_TIMEOUT_SECONDS,
+                )
+
+            success_count, error_count, correction_count = _count_result_statuses(results)
+            dest_item_ids = {r["dest_seller"]: r["dest_item_id"] for r in results if r["status"] == "success"}
+            new_errors = {r["dest_seller"]: r["error"] for r in results if r["status"] != "success" and r.get("error")}
+            new_status = _derive_log_status(results)
+            source_item_sku = next((r.get("sku") for r in results if r.get("sku")), None)
+            new_correction_details = next(
+                (r.get("correction_details") for r in results if isinstance(r.get("correction_details"), dict)),
+                None,
+            )
+
+            db.table("copy_logs").update({
+                "status": new_status,
+                "dest_item_ids": dest_item_ids or None,
+                "error_details": new_errors or None,
+                "correction_details": new_correction_details if new_status == CORRECTION_STATUS else None,
+                "source_item_sku": source_item_sku,
+            }).eq("id", log["id"]).eq("org_id", org_id).execute()
+
+        except asyncio.TimeoutError:
+            logger.error("retry_corrections timed out for log %s", log["id"])
+            try:
+                db.table("copy_logs").update({
+                    "status": "error",
+                    "error_details": {"_timeout": "Operacao excedeu o tempo limite de 10 minutos"},
+                }).eq("id", log["id"]).execute()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error("retry_corrections failed for log %s: %s", log["id"], e, exc_info=True)
+            try:
+                db.table("copy_logs").update({
+                    "status": "error",
+                    "error_details": {"_error": str(e)},
+                }).eq("id", log["id"]).execute()
+            except Exception:
+                pass
+
+
+async def _bg_retry_corrections_queued(
+    enriched_logs: list[tuple[dict, dict]],
+    values: dict,
+    user_id: str,
+    org_id: str,
+    log_ids: list[int],
+) -> None:
+    """Wrapper that enforces per-org concurrency queue before running _bg_retry_corrections."""
+    current = _org_queue_sizes.get(org_id, 0)
+    if current >= MAX_QUEUE_PER_ORG:
+        logger.warning(
+            "Org %s already has %d task(s) running (max %d); rejecting retry_corrections",
+            org_id,
+            current,
+            MAX_QUEUE_PER_ORG,
+        )
+        try:
+            db = get_db()
+            for lid in log_ids:
+                db.table("copy_logs").update({
+                    "status": "error",
+                    "error_details": {"_queue": "Fila maxima atingida. Aguarde o termino das operacoes em andamento."},
+                }).eq("id", lid).execute()
+        except Exception as db_err:
+            logger.error("Failed to update queue-full correction logs: %s", db_err)
+        return
+
+    _org_queue_sizes[org_id] = current + 1
+    try:
+        await _bg_retry_corrections(
+            enriched_logs=enriched_logs,
+            values=values,
+            user_id=user_id,
+        )
+    finally:
+        _org_queue_sizes[org_id] = max(0, _org_queue_sizes.get(org_id, 1) - 1)
+
+
+# ── Misc helpers ──────────────────────────────────────────────────────────────
 
 
 async def _resolve_item_seller(item_id: str, org_id: str, skip_seller: str | None = None) -> tuple[str | None, dict | None]:
@@ -206,6 +563,9 @@ def _extract_retry_attribute_values(
     return cleaned
 
 
+# ── Request models ────────────────────────────────────────────────────────────
+
+
 class CopyRequest(BaseModel):
     source: str
     destinations: list[str]
@@ -229,6 +589,9 @@ class CopyWithDimensionsRequest(BaseModel):
 class RetryCorrectionsRequest(BaseModel):
     log_ids: list[int]
     values: dict[str, str | float | int | bool | None]
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
 @router.post("")
@@ -265,6 +628,13 @@ async def copy_anuncios(req: CopyRequest, bg: BackgroundTasks, user: dict = Depe
 
     org_id = user["org_id"]
 
+    # Reject early if queue is already full
+    if _org_queue_sizes.get(org_id, 0) >= MAX_QUEUE_PER_ORG:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Fila cheia ({MAX_QUEUE_PER_ORG} operacoes em andamento). Aguarde o termino antes de enviar mais.",
+        )
+
     # Check trial limits for unpaid orgs
     trial_info = _check_trial_limit(org_id, len(clean_ids))
     if trial_info and not trial_info["allowed"]:
@@ -276,7 +646,7 @@ async def copy_anuncios(req: CopyRequest, bg: BackgroundTasks, user: dict = Depe
         _increment_trial_copies(org_id, trial_reserved)
 
     bg.add_task(
-        _bg_copy_items,
+        _bg_copy_items_queued,
         source=req.source,
         destinations=req.destinations,
         item_ids=clean_ids,
@@ -293,8 +663,8 @@ async def copy_anuncios(req: CopyRequest, bg: BackgroundTasks, user: dict = Depe
 
 
 @router.post("/with-dimensions")
-async def copy_with_dims(req: CopyWithDimensionsRequest, user: dict = Depends(require_active_org)):
-    """Apply dimensions to source item, then copy to destinations."""
+async def copy_with_dims(req: CopyWithDimensionsRequest, bg: BackgroundTasks, user: dict = Depends(require_active_org)):
+    """Apply dimensions to source item, then copy to destinations. Returns immediately."""
     dims = req.dimensions.model_dump(exclude_none=True)
     if not dims:
         raise HTTPException(status_code=400, detail="At least one dimension is required")
@@ -309,57 +679,34 @@ async def copy_with_dims(req: CopyWithDimensionsRequest, user: dict = Depends(re
     org_id = user["org_id"]
     item_id = req.item_id.strip()
 
+    # Reject early if queue is already full
+    if _org_queue_sizes.get(org_id, 0) >= MAX_QUEUE_PER_ORG:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Fila cheia ({MAX_QUEUE_PER_ORG} operacoes em andamento). Aguarde o termino antes de enviar mais.",
+        )
+
     # Check trial limits for unpaid orgs
     trial_info = _check_trial_limit(org_id, 1)
     if trial_info and not trial_info["allowed"]:
         raise HTTPException(status_code=402, detail=trial_info["message"])
 
-    results = await copy_with_dimensions(
-        source_seller=req.source,
-        dest_sellers=req.destinations,
+    bg.add_task(
+        _bg_copy_with_dims_queued,
+        source=req.source,
+        destinations=req.destinations,
         item_id=item_id,
         dimensions=dims,
-        org_id=org_id,
         user_id=user["id"],
+        org_id=org_id,
+        existing_log_id=None,
+        trial_info_present=bool(trial_info),
     )
 
-    success_count, error_count, correction_count = _count_result_statuses(results)
-
-    # Increment trial counter for successful copies
-    if trial_info and success_count > 0:
-        _increment_trial_copies(org_id, 1)
-
-    # Update any existing pending-correction log entries for this item
-    if success_count > 0:
-        db = get_db()
-        dest_item_ids = {r["dest_seller"]: r["dest_item_id"] for r in results if r["status"] == "success"}
-        new_errors = {r["dest_seller"]: r["error"] for r in results if r["status"] != "success" and r.get("error")}
-        new_status = _derive_log_status(results)
-        source_item_sku = next((r.get("sku") for r in results if r.get("sku")), None)
-        correction_details = next(
-            (r.get("correction_details") for r in results if isinstance(r.get("correction_details"), dict)),
-            None,
-        )
-        for pending_status in CORRECTION_PENDING_STATUSES:
-            try:
-                db.table("copy_logs").update({
-                    "status": new_status,
-                    "dest_item_ids": dest_item_ids or None,
-                    "error_details": new_errors or None,
-                    "correction_details": correction_details if new_status == CORRECTION_STATUS else None,
-                    "source_item_sku": source_item_sku,
-                }).eq("source_item_id", item_id).eq(
-                    "source_seller", req.source
-                ).eq("status", pending_status).eq("org_id", org_id).execute()
-            except Exception as e:
-                logger.warning("Failed to update pending correction logs for %s (%s): %s", item_id, pending_status, e)
-
     return {
-        "total": len(results),
-        "success": success_count,
-        "errors": error_count,
-        "needs_correction": correction_count,
-        "results": results,
+        "status": "queued",
+        "item_id": item_id,
+        "message": "Copia com dimensoes enfileirada. Acompanhe o progresso no historico.",
     }
 
 
@@ -369,8 +716,8 @@ class RetryDimensionsRequest(BaseModel):
 
 
 @router.post("/retry-dimensions")
-async def retry_dimensions(req: RetryDimensionsRequest, user: dict = Depends(require_active_org)):
-    """Retry a dimension-failed copy from the logs history."""
+async def retry_dimensions(req: RetryDimensionsRequest, bg: BackgroundTasks, user: dict = Depends(require_active_org)):
+    """Retry a dimension-failed copy from the logs history. Returns immediately."""
     db = get_db()
 
     # 1. Fetch the original log entry (scoped by org)
@@ -409,43 +756,35 @@ async def retry_dimensions(req: RetryDimensionsRequest, user: dict = Depends(req
     if not dims:
         raise HTTPException(status_code=400, detail="Pelo menos uma dimensao e necessaria")
 
-    # 4. Run copy with dimensions
-    results = await copy_with_dimensions(
-        source_seller=source,
-        dest_sellers=destinations,
-        item_id=log["source_item_id"],
+    # Reject early if queue is already full
+    if _org_queue_sizes.get(org_id, 0) >= MAX_QUEUE_PER_ORG:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Fila cheia ({MAX_QUEUE_PER_ORG} operacoes em andamento). Aguarde o termino antes de enviar mais.",
+        )
+
+    # Mark log as in_progress so frontend polling shows activity
+    try:
+        db.table("copy_logs").update({"status": "in_progress"}).eq("id", req.log_id).execute()
+    except Exception as e:
+        logger.warning("Could not mark log %s as in_progress: %s", req.log_id, e)
+
+    bg.add_task(
+        _bg_copy_with_dims_queued,
+        source=source,
+        destinations=destinations,
+        item_id=str(log["source_item_id"]),
         dimensions=dims,
-        org_id=org_id,
         user_id=user["id"],
+        org_id=org_id,
+        existing_log_id=req.log_id,
+        trial_info_present=False,
     )
-
-    success_count, error_count, correction_count = _count_result_statuses(results)
-
-    # 5. Update the original log row
-    dest_item_ids = {r["dest_seller"]: r["dest_item_id"] for r in results if r["status"] == "success"}
-    new_errors = {r["dest_seller"]: r["error"] for r in results if r["status"] != "success" and r.get("error")}
-    new_status = _derive_log_status(results)
-    source_item_sku = next((r.get("sku") for r in results if r.get("sku")), None)
-    new_correction_details = next(
-        (r.get("correction_details") for r in results if isinstance(r.get("correction_details"), dict)),
-        None,
-    )
-
-    db.table("copy_logs").update({
-        "status": new_status,
-        "dest_item_ids": dest_item_ids or None,
-        "error_details": new_errors or None,
-        "correction_details": new_correction_details if new_status == CORRECTION_STATUS else None,
-        "source_item_sku": source_item_sku,
-    }).eq("id", req.log_id).eq("org_id", org_id).execute()
 
     return {
+        "status": "queued",
         "log_id": req.log_id,
-        "total": len(results),
-        "success": success_count,
-        "errors": error_count,
-        "needs_correction": correction_count,
-        "results": results,
+        "message": "Retry de dimensoes enfileirado. Acompanhe o progresso no historico.",
     }
 
 
@@ -484,13 +823,18 @@ async def retry_copy(req: RetryRequest, bg: BackgroundTasks, user: dict = Depend
 
     async def _bg_retry():
         try:
-            await copy_items(
-                source_seller=source,
-                dest_sellers=destinations,
-                item_ids=[item_id],
-                user_id=user["id"],
-                org_id=org_id,
+            await asyncio.wait_for(
+                copy_items(
+                    source_seller=source,
+                    dest_sellers=destinations,
+                    item_ids=[item_id],
+                    user_id=user["id"],
+                    org_id=org_id,
+                ),
+                timeout=BATCH_TIMEOUT_SECONDS,
             )
+        except asyncio.TimeoutError:
+            logger.error("Retry copy timed out for log %s", log["id"])
         except Exception as e:
             logger.error("Retry copy failed for log %s: %s", log["id"], e, exc_info=True)
 
@@ -500,8 +844,8 @@ async def retry_copy(req: RetryRequest, bg: BackgroundTasks, user: dict = Depend
 
 
 @router.post("/retry-corrections")
-async def retry_corrections(req: RetryCorrectionsRequest, user: dict = Depends(require_active_org)):
-    """Retry one or more pending-correction logs using the same correction values."""
+async def retry_corrections(req: RetryCorrectionsRequest, bg: BackgroundTasks, user: dict = Depends(require_active_org)):
+    """Retry one or more pending-correction logs using the same correction values. Returns immediately."""
     clean_log_ids = list(dict.fromkeys(log_id for log_id in req.log_ids if log_id))
     if not clean_log_ids:
         raise HTTPException(status_code=400, detail="Informe pelo menos um log para reprocessar")
@@ -530,92 +874,71 @@ async def retry_corrections(req: RetryCorrectionsRequest, user: dict = Depends(r
     if len(group_keys) != 1:
         raise HTTPException(status_code=400, detail="Selecione apenas logs com o mesmo problema para corrigir em lote")
 
-    total_success = 0
-    total_errors = 0
-    total_needs_correction = 0
-    retried_logs = []
+    # All logs belong to the same org (validated above via org_id filter)
+    org_id = logs[0]["org_id"]
 
-    for log, details in enriched_logs:
+    # Reject early if queue is already full
+    if _org_queue_sizes.get(org_id, 0) >= MAX_QUEUE_PER_ORG:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Fila cheia ({MAX_QUEUE_PER_ORG} operacoes em andamento). Aguarde o termino antes de enviar mais.",
+        )
+
+    # Validate inputs synchronously before enqueuing so we can return 400 errors immediately
+    first_details = enriched_logs[0][1]
+    if first_details.get("kind") == "dimensions":
+        dims_check = _extract_retry_dimensions(req.values)
+        if not dims_check:
+            raise HTTPException(status_code=400, detail="Informe pelo menos uma dimensao")
+    else:
+        values_check = _extract_retry_attribute_values(req.values, first_details.get("fields", []))
+        if not values_check:
+            attr_ids = {str(f.get("id")) for f in first_details.get("fields", []) if isinstance(f, dict)}
+            if attr_ids != {"GTIN"}:
+                raise HTTPException(status_code=400, detail="Preencha os atributos obrigatorios antes de reenviar")
+
+    # Permission checks synchronously
+    for log, _ in enriched_logs:
         source = log["source_seller"]
         destinations = log["dest_sellers"] or []
-        org_id = log["org_id"]
-
         if not _check_seller_permission(user, source, "from"):
             raise HTTPException(status_code=403, detail=f"Sem permissao de origem para '{source}'")
         denied = [d for d in destinations if not _check_seller_permission(user, d, "to")]
         if denied:
             raise HTTPException(status_code=403, detail=f"Sem permissao de destino para: {', '.join(denied)}")
 
-        if details.get("kind") == "dimensions":
-            dims = _extract_retry_dimensions(req.values)
-            if not dims:
-                raise HTTPException(status_code=400, detail="Informe pelo menos uma dimensao")
-            results = await copy_with_dimensions(
-                source_seller=source,
-                dest_sellers=destinations,
-                item_id=str(log["source_item_id"]),
-                dimensions=dims,
-                org_id=org_id,
-                user_id=user["id"],
-            )
-        else:
-            values = _extract_retry_attribute_values(req.values, details.get("fields", []))
-            # When GTIN is the only missing attribute and user left it empty,
-            # auto-fill EMPTY_GTIN_REASON instead of rejecting
-            if not values:
-                attr_ids = {str(f.get("id")) for f in details.get("fields", []) if isinstance(f, dict)}
-                if attr_ids == {"GTIN"}:
-                    values = {"EMPTY_GTIN_REASON": "No registrado"}
-                else:
-                    raise HTTPException(status_code=400, detail="Preencha os atributos obrigatorios antes de reenviar")
-            results = await copy_with_attribute_corrections(
-                source_seller=source,
-                dest_sellers=destinations,
-                item_id=str(log["source_item_id"]),
-                values=values,
-                org_id=org_id,
-                user_id=user["id"],
-            )
+    # Mark all logs as in_progress immediately so the frontend polling sees activity
+    for log, _ in enriched_logs:
+        try:
+            db.table("copy_logs").update({"status": "in_progress"}).eq("id", log["id"]).execute()
+        except Exception as e:
+            logger.warning("Could not mark log %s as in_progress: %s", log["id"], e)
 
-        success_count, error_count, correction_count = _count_result_statuses(results)
-        total_success += success_count
-        total_errors += error_count
-        total_needs_correction += correction_count
-
-        dest_item_ids = {r["dest_seller"]: r["dest_item_id"] for r in results if r["status"] == "success"}
-        new_errors = {r["dest_seller"]: r["error"] for r in results if r["status"] != "success" and r.get("error")}
-        new_status = _derive_log_status(results)
-        source_item_sku = next((r.get("sku") for r in results if r.get("sku")), None)
-        new_correction_details = next(
-            (r.get("correction_details") for r in results if isinstance(r.get("correction_details"), dict)),
-            None,
-        )
-
-        db.table("copy_logs").update({
-            "status": new_status,
-            "dest_item_ids": dest_item_ids or None,
-            "error_details": new_errors or None,
-            "correction_details": new_correction_details if new_status == CORRECTION_STATUS else None,
-            "source_item_sku": source_item_sku,
-        }).eq("id", log["id"]).eq("org_id", org_id).execute()
-
-        retried_logs.append({
-            "log_id": log["id"],
-            "source_item_id": log["source_item_id"],
-            "status": new_status,
-            "success": success_count,
-            "errors": error_count,
-            "needs_correction": correction_count,
-            "results": results,
-        })
+    bg.add_task(
+        _bg_retry_corrections_queued,
+        enriched_logs=enriched_logs,
+        values=dict(req.values),
+        user_id=user["id"],
+        org_id=org_id,
+        log_ids=clean_log_ids,
+    )
 
     return {
+        "status": "queued",
         "log_ids": clean_log_ids,
-        "total_logs": len(retried_logs),
-        "success": total_success,
-        "errors": total_errors,
-        "needs_correction": total_needs_correction,
-        "logs": retried_logs,
+        "total_logs": len(enriched_logs),
+        "message": f"{len(enriched_logs)} log(s) enfileirado(s) para reprocessamento. Acompanhe o progresso no historico.",
+    }
+
+
+@router.get("/queue-status")
+async def get_queue_status(user: dict = Depends(require_user)):
+    """Return the current background-task queue size for the user's org."""
+    org_id = user["org_id"]
+    return {
+        "org_id": org_id,
+        "active_tasks": _org_queue_sizes.get(org_id, 0),
+        "max_tasks": MAX_QUEUE_PER_ORG,
     }
 
 

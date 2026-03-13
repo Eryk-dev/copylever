@@ -25,9 +25,13 @@ logger = logging.getLogger(__name__)
 MAX_DEBUG_PAYLOAD_SIZE = 50_000  # 50 KB max for JSON payloads in debug logs
 
 # Concurrent item copies — ~80% of ML rate limit headroom.
-# Each item = ~4-5 API calls, so 3 concurrent = ~12-15 requests in flight.
+# Each item = ~4-5 API calls, and each item fans out to all dest sellers in parallel.
+# With connection pooling, 5 concurrent items * N dest sellers in parallel is safe.
 # ML typically allows ~10k req/hour; this stays well within limits.
-ML_COPY_CONCURRENCY = 3
+ML_COPY_CONCURRENCY = 5
+
+# Maximum wall-clock time for a full copy_items batch (seconds).
+BATCH_COPY_TIMEOUT = 600  # 10 minutes
 
 
 def _truncate_json(data: Any, max_size: int = MAX_DEBUG_PAYLOAD_SIZE) -> Any:
@@ -1373,6 +1377,58 @@ async def copy_single_item(
     return result
 
 
+async def _do_copy_items(
+    db,
+    source_seller: str,
+    dest_sellers: list[str],
+    clean_ids: list[str],
+    user_email: str | None,
+    user_id: str | None,
+    org_id: str,
+) -> list[dict]:
+    """Inner implementation of copy_items, wrapped by a timeout in the public entry point."""
+    sem = asyncio.Semaphore(ML_COPY_CONCURRENCY)
+
+    async def _copy_one_item(item_id: str) -> list[dict]:
+        async with sem:
+            try:
+                return await _copy_item_to_all_dests(
+                    db, source_seller, dest_sellers, item_id,
+                    user_email=user_email, user_id=user_id, org_id=org_id,
+                )
+            except Exception as exc:
+                logger.error("Unexpected error copying item %s: %s", item_id, exc)
+                # Return error results for every destination so the batch continues
+                return [
+                    {
+                        "source_item_id": item_id,
+                        "dest_seller": ds,
+                        "status": "error",
+                        "dest_item_id": None,
+                        "error": str(exc),
+                        "sku": None,
+                        "correction_details": None,
+                    }
+                    for ds in dest_sellers
+                ]
+
+    batch_results = await asyncio.gather(
+        *[_copy_one_item(iid) for iid in clean_ids],
+        return_exceptions=True,
+    )
+
+    all_results: list[dict] = []
+    for r in batch_results:
+        if isinstance(r, Exception):
+            # Outer catch — should not happen given the try/except inside _copy_one_item,
+            # but guard against it anyway.
+            logger.error("Unhandled exception escaped copy task: %s", r)
+            continue
+        all_results.extend(r)
+
+    return all_results
+
+
 async def copy_items(
     source_seller: str,
     dest_sellers: list[str],
@@ -1383,33 +1439,77 @@ async def copy_items(
 ) -> list[dict]:
     """
     Copy multiple items to multiple destination sellers.
-    Processes up to ML_COPY_CONCURRENCY items in parallel.
-    Logs each copy to copy_logs table.
+
+    Processes up to ML_COPY_CONCURRENCY items in parallel. Within each item,
+    all destination sellers are also copied in parallel via asyncio.gather.
+    The entire batch is bounded by BATCH_COPY_TIMEOUT seconds (default 600s).
+    Each item's failure is isolated — one bad item does not abort the rest.
     """
     db = get_db()
-    sem = asyncio.Semaphore(ML_COPY_CONCURRENCY)
-
-    async def _copy_one_item(item_id: str) -> list[dict]:
-        async with sem:
-            return await _copy_item_to_all_dests(
-                db, source_seller, dest_sellers, item_id,
-                user_email=user_email, user_id=user_id, org_id=org_id,
-            )
-
     clean_ids = [iid.strip() for iid in item_ids if iid.strip()]
-    batch_results = await asyncio.gather(
-        *[_copy_one_item(iid) for iid in clean_ids],
-        return_exceptions=True,
-    )
 
-    all_results: list[dict] = []
-    for r in batch_results:
-        if isinstance(r, Exception):
-            logger.error("Unexpected error in copy batch: %s", r)
-            continue
-        all_results.extend(r)
+    try:
+        return await asyncio.wait_for(
+            _do_copy_items(db, source_seller, dest_sellers, clean_ids, user_email, user_id, org_id),
+            timeout=BATCH_COPY_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "Batch copy timed out after %ds for %d items from %s",
+            BATCH_COPY_TIMEOUT, len(clean_ids), source_seller,
+        )
+        # Return a timeout error entry for every item×dest pair so the
+        # caller and frontend can display a meaningful status.
+        return [
+            {
+                "source_item_id": item_id,
+                "dest_seller": ds,
+                "status": "error",
+                "dest_item_id": None,
+                "error": f"Tempo limite da operacao excedido ({BATCH_COPY_TIMEOUT}s). Tente um lote menor.",
+                "sku": None,
+                "correction_details": None,
+            }
+            for item_id in clean_ids
+            for ds in dest_sellers
+        ]
 
-    return all_results
+
+async def _copy_to_one_dest(
+    source_seller: str,
+    dest_seller: str,
+    item_id: str,
+    user_email: str | None,
+    user_id: str | None,
+    copy_log_id: int | None,
+    org_id: str,
+) -> dict:
+    """
+    Copy a single item to a single destination seller.
+
+    Wraps copy_single_item so that any unhandled exception is caught and
+    returned as an error dict, keeping asyncio.gather from treating it as a
+    raised exception that must be re-raised.
+    """
+    try:
+        return await copy_single_item(
+            source_seller, dest_seller, item_id, user_email,
+            user_id=user_id, copy_log_id=copy_log_id, org_id=org_id,
+        )
+    except Exception as exc:
+        logger.error(
+            "Unhandled exception copying %s -> %s (%s): %s",
+            item_id, dest_seller, source_seller, exc,
+        )
+        return {
+            "source_item_id": item_id,
+            "dest_seller": dest_seller,
+            "status": "error",
+            "dest_item_id": None,
+            "error": str(exc),
+            "sku": None,
+            "correction_details": None,
+        }
 
 
 async def _copy_item_to_all_dests(
@@ -1421,8 +1521,15 @@ async def _copy_item_to_all_dests(
     user_id: str | None = None,
     org_id: str = "",
 ) -> list[dict]:
-    """Copy a single item to all destinations. Creates/updates log entry."""
-    # Create in_progress log entry BEFORE starting the copy
+    """
+    Copy a single item to all destination sellers in parallel.
+
+    Creates an in_progress log entry before firing off the copies, then
+    updates the log with the final aggregated result once every destination
+    has completed (success or error). Each destination's failure is isolated
+    and does not abort copies to other destinations.
+    """
+    # Create in_progress log entry BEFORE starting the copies
     log_id: int | None = None
     try:
         log_insert: dict[str, Any] = {
@@ -1441,7 +1548,39 @@ async def _copy_item_to_all_dests(
     except Exception as e:
         logger.error(f"Failed to create in_progress log for {item_id}: {e}")
 
+    # Fan out to all destinations in parallel.  _copy_to_one_dest never raises
+    # (all exceptions are caught inside), so return_exceptions=True is a belt-
+    # and-suspenders guard — the gathered values are always dicts.
+    dest_tasks = [
+        _copy_to_one_dest(
+            source_seller, dest_seller, item_id, user_email,
+            user_id=user_id, copy_log_id=log_id, org_id=org_id,
+        )
+        for dest_seller in dest_sellers
+    ]
+    gathered = await asyncio.gather(*dest_tasks, return_exceptions=True)
+
+    # Normalise results — if somehow an exception leaked through, convert it
     results: list[dict] = []
+    for dest_seller, outcome in zip(dest_sellers, gathered):
+        if isinstance(outcome, Exception):
+            logger.error(
+                "Exception escaped _copy_to_one_dest for %s -> %s: %s",
+                item_id, dest_seller, outcome,
+            )
+            results.append({
+                "source_item_id": item_id,
+                "dest_seller": dest_seller,
+                "status": "error",
+                "dest_item_id": None,
+                "error": str(outcome),
+                "sku": None,
+                "correction_details": None,
+            })
+        else:
+            results.append(outcome)
+
+    # Aggregate metadata and per-dest status for the log entry
     dest_item_ids: dict[str, str] = {}
     item_errors: dict[str, str] = {}
     has_needs_correction = False
@@ -1450,29 +1589,27 @@ async def _copy_item_to_all_dests(
     item_thumbnail = ""
     item_sku: str | None = None
 
-    for dest_seller in dest_sellers:
-        result = await copy_single_item(
-            source_seller, dest_seller, item_id, user_email,
-            user_id=user_id, copy_log_id=log_id, org_id=org_id,
-        )
-        results.append(result)
-
-        # Capture title/thumbnail from first result
+    for result in results:
+        # Capture title/thumbnail from whichever dest returned it first
         if not item_title and result.get("_title"):
             item_title = result["_title"]
             item_thumbnail = result.get("_thumbnail", "")
         if not item_sku and result.get("sku"):
             item_sku = result["sku"]
 
+        dest = result.get("dest_seller", "")
         if result["status"] == "success":
-            dest_item_ids[dest_seller] = result["dest_item_id"]
+            if dest and result.get("dest_item_id"):
+                dest_item_ids[dest] = result["dest_item_id"]
         elif result["status"] == CORRECTION_STATUS:
             has_needs_correction = True
-            item_errors[dest_seller] = result["error"]
+            if dest:
+                item_errors[dest] = result["error"] or ""
             if not correction_details and isinstance(result.get("correction_details"), dict):
                 correction_details = result["correction_details"]
         else:
-            item_errors[dest_seller] = result["error"]
+            if dest:
+                item_errors[dest] = result.get("error") or ""
 
     # Determine final status
     if dest_item_ids and not item_errors:
@@ -1484,7 +1621,8 @@ async def _copy_item_to_all_dests(
     else:
         item_status = "error"
 
-    # Update the log entry with final results
+    # Persist final result — update the in_progress log created above, or
+    # insert a new row if the initial insert failed.
     try:
         update_data: dict[str, Any] = {
             "status": item_status,
@@ -1591,11 +1729,34 @@ async def _copy_with_source_attribute_updates(
             "correction_details": None,
         } for ds in dest_sellers]
 
-    # 2. Re-copy to all destinations (normal copy flow, item now has the correction)
-    results = []
-    for dest_seller in dest_sellers:
-        result = await copy_single_item(source_seller, dest_seller, item_id, org_id=org_id, user_id=user_id)
-        results.append(result)
+    # 2. Re-copy to all destinations in parallel (item now has the correction applied)
+    dest_tasks = [
+        _copy_to_one_dest(
+            source_seller, dest_seller, item_id, None,
+            user_id=user_id, copy_log_id=None, org_id=org_id,
+        )
+        for dest_seller in dest_sellers
+    ]
+    gathered = await asyncio.gather(*dest_tasks, return_exceptions=True)
+
+    results: list[dict] = []
+    for dest_seller, outcome in zip(dest_sellers, gathered):
+        if isinstance(outcome, Exception):
+            logger.error(
+                "Exception in correction re-copy %s -> %s: %s",
+                item_id, dest_seller, outcome,
+            )
+            results.append({
+                "source_item_id": item_id,
+                "dest_seller": dest_seller,
+                "status": "error",
+                "dest_item_id": None,
+                "error": str(outcome),
+                "sku": None,
+                "correction_details": None,
+            })
+        else:
+            results.append(outcome)
 
     return results
 

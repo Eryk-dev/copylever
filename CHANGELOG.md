@@ -9,7 +9,38 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Added
+- `db_execute()` helper em `app/db/supabase.py` para executar queries Supabase em thread pool, evitando bloqueio do event loop asyncio (opt-in, nao altera chamadas existentes)
+- Sistema de fila por org: maximo de 3 tarefas de copia simultaneas por organizacao (`MAX_QUEUE_PER_ORG=3`); requisicoes que excedem o limite recebem HTTP 429 imediatamente
+- `GET /api/copy/queue-status` — retorna `active_tasks` e `max_tasks` para a org do usuario autenticado
+- `GET /api/shopee/copy/queue-status` — mesmo recurso para filas Shopee
+
+### Changed
+- `POST /api/copy/with-dimensions` e `POST /api/copy/retry-dimensions` agora retornam imediatamente com `{"status":"queued"}` em vez de bloquear a conexao HTTP por 30-90s; trabalho real roda em BackgroundTasks
+- `POST /api/copy/retry-corrections` agora enfileira o reprocessamento em BackgroundTasks e retorna imediatamente; logs sao marcados como `in_progress` antes do retorno para o frontend acompanhar via polling
+- `POST /api/shopee/copy/with-dimensions` agora retorna imediatamente com `{"status":"queued"}` (mesmo padrao dos outros endpoints de copia)
+- Todos os background tasks de copia (ML e Shopee) agora tem timeout de 10 minutos via `asyncio.wait_for`; ao expirar, logs `in_progress` sao marcados como `error`
+- `item_copier.py`: destinos de cada item agora sao copiados em paralelo via `asyncio.gather` (funcao `_copy_to_one_dest`), reduzindo tempo de copia de N*T para ~T quando ha multiplos destinos
+- `item_copier.py`: `ML_COPY_CONCURRENCY` aumentado de 3 para 5, permitindo ate 5 itens sendo copiados simultaneamente
+- `item_copier.py`: `copy_items` agora envolve a operacao com `asyncio.wait_for(timeout=600s)` para seguranca de timeout em lotes grandes; retorna erros descritivos para cada item×destino se o timeout for atingido
+- `item_copier.py`: re-copias apos correcoes de dimensoes/atributos em `_copy_with_source_attribute_updates` tambem paralelas via `asyncio.gather`
+- `item_copier.py`: isolamento de erros reforçado — cada item e cada destino tem try/except proprios; falha em um nao interrompe os demais
+- Dockerfile: uvicorn agora inicia com `--workers 2`, `--timeout-keep-alive 75` e `--timeout-graceful-shutdown 30` para melhor estabilidade em producao
+- Middleware CORS: adicionado `max_age=3600` para cache de preflight por 1 hora
+- Shutdown hook: `shutdown_http_clients` agora tambem fecha o cliente HTTP do MercadoLivre (`close_ml_client`)
+- ML API client (`ml_api.py`): substituido cliente `httpx.AsyncClient` por requisicao por um cliente persistente compartilhado com connection pooling (20 conexoes max), eliminando handshakes TCP/TLS redundantes em operacoes com multiplos itens
+- ML API client: adicionado cache em memoria de tokens por vendedor (`_token_cache` com margem de 5 min), reduzindo round-trips ao Supabase de ~100 para 1 por lote de 20 itens
+- ML API client: backoff de rate-limit (429) limitado a 30 segundos por tentativa em `_ml_request` e `_post_with_retry` (era ate 48s)
+- ML API client: exportada `close_ml_client()` para encerramento gracioso na shutdown do servidor
+
 ### Fixed
+- Frontend: adicionado AbortController com timeout de 30s em todas as chamadas `fetch` de `handleCopy` em `CopyPage.tsx`; `setCopying(false)` agora e sempre chamado no bloco `finally`, eliminando spinner infinito em caso de servidor pendurado
+- Frontend: previews de itens em `CopyPage.tsx` agora usam timeout de 20s por requisicao e sao processados em lotes de 5 em paralelo, evitando 15-20 fetches simultaneos sem limite de tempo
+- Frontend: `loadLogs` em `CopyPage.tsx` e `CompatPage.tsx` agora usa ref-based AbortController para cancelar o fetch anterior antes de iniciar um novo, evitando race conditions no polling
+- Frontend: intervalo de polling em `CopyPage.tsx` e `CompatPage.tsx` estabilizado com `loadLogsRef` — o `setInterval` nao e mais recriado a cada mudanca de `loadLogs`, eliminando re-registros desnecessarios
+- Frontend: tabs `copy`, `compat` e `admin` em `App.tsx` agora usam renderizacao condicional (`{condition && <Component />}`) em vez de `display: none`, limpando intervalos de polling ao trocar de aba
+- Frontend: resolve-sellers em `CopyForm.tsx` agora tem timeout de 20s via AbortController nos dois endpoints (ML e Shopee), resolvendo estado `resolving` infinito em conexao lenta
+- Frontend: `fetchMe`, `loadSellers` e `loadShopeeSellers` em `useAuth.ts` agora tem timeout de 15s, evitando que a tela de inicializacao fique travada indefinidamente
 - Erro `item.pictures.max`: fotos do anuncio fonte agora sao limitadas a 12 (maximo da maioria das categorias) ao copiar, com truncamento automatico no retry
 - Erro `invalid.item.attribute.values`: atributos com `value_id` nulo (ex: VEHICLE_PARTS_POSITION) sao removidos automaticamente no retry em vez de falhar
 - Agrupamento por SKU no historico de copias agora funciona em todas as abas (Todos, Erros, etc.), nao apenas na aba "Aguardando correções"

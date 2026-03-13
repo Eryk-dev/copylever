@@ -1,6 +1,8 @@
+import asyncio
 import base64
 import json
 import logging
+from functools import partial
 
 from supabase import create_client, Client
 
@@ -56,3 +58,17 @@ def get_db() -> Client:
             _role_checked = True
         _client = create_client(settings.supabase_url, key)
     return _client
+
+
+async def db_execute(query_fn):
+    """Run a synchronous Supabase query in a thread pool to avoid blocking the event loop.
+
+    The Supabase Python client is entirely synchronous. Calling it directly from an
+    async handler blocks the asyncio event loop for the duration of the network round-trip.
+    This wrapper offloads the call to a thread-pool worker so the event loop remains free.
+
+    Usage:
+        result = await db_execute(lambda: get_db().table("users").select("*").execute())
+        result = await db_execute(partial(get_db().table("copy_logs").select("*").eq("status", "done").execute))
+    """
+    return await asyncio.to_thread(query_fn)

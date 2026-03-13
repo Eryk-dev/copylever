@@ -15,6 +15,17 @@ from app.services.shopee_copier import copy_items, copy_with_dimensions
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/shopee/copy", tags=["shopee-copy"])
 
+# ── Per-org queue management (mirrors copy.py) ────────────────────────────────
+
+_org_copy_locks: dict[str, asyncio.Lock] = {}
+_org_queue_sizes: dict[str, int] = {}
+MAX_QUEUE_PER_ORG = 3
+BATCH_TIMEOUT_SECONDS = 600  # 10 minutes per batch
+
+
+def _get_org_lock(org_id: str) -> asyncio.Lock:
+    return _org_copy_locks.setdefault(org_id, asyncio.Lock())
+
 
 # ── Trial limit helpers (same pattern as copy.py) ─────────
 
@@ -75,22 +86,166 @@ async def _bg_shopee_copy_items(
     org_id: str,
     trial_reserved: int,
 ) -> None:
-    """Background task wrapper for Shopee copy_items with trial refund."""
+    """Inner background worker for Shopee copy_items with timeout and trial refund."""
     try:
-        result = await copy_items(
-            source_slug=source,
-            dest_slugs=destinations,
-            item_ids=item_ids,
-            user_id=user_id,
-            org_id=org_id,
+        result = await asyncio.wait_for(
+            copy_items(
+                source_slug=source,
+                dest_slugs=destinations,
+                item_ids=item_ids,
+                user_id=user_id,
+                org_id=org_id,
+            ),
+            timeout=BATCH_TIMEOUT_SECONDS,
         )
         if trial_reserved > 0:
             success_count = result.get("success", 0)
             _refund_trial_copies(org_id, trial_reserved - success_count)
+    except asyncio.TimeoutError:
+        logger.error(
+            "Shopee batch copy timed out after %ss for org %s (items: %s)",
+            BATCH_TIMEOUT_SECONDS,
+            org_id,
+            item_ids,
+        )
+        if trial_reserved > 0:
+            _refund_trial_copies(org_id, trial_reserved)
+        try:
+            db = get_db()
+            db.table("shopee_copy_logs").update({
+                "status": "error",
+                "error_details": [{"_timeout": "Operacao excedeu o tempo limite de 10 minutos"}],
+            }).eq("org_id", org_id).eq("status", "in_progress").execute()
+        except Exception as db_err:
+            logger.error("Failed to update timed-out Shopee logs: %s", db_err)
     except Exception as e:
         logger.error("Background Shopee copy batch failed: %s", e, exc_info=True)
         if trial_reserved > 0:
             _refund_trial_copies(org_id, trial_reserved)
+
+
+async def _bg_shopee_copy_items_queued(
+    source: str,
+    destinations: list[str],
+    item_ids: list[int],
+    user_id: str,
+    org_id: str,
+    trial_reserved: int,
+) -> None:
+    """Wrapper that enforces per-org concurrency queue before running _bg_shopee_copy_items."""
+    current = _org_queue_sizes.get(org_id, 0)
+    if current >= MAX_QUEUE_PER_ORG:
+        logger.warning(
+            "Org %s already has %d Shopee task(s) running (max %d); rejecting new batch",
+            org_id,
+            current,
+            MAX_QUEUE_PER_ORG,
+        )
+        if trial_reserved > 0:
+            _refund_trial_copies(org_id, trial_reserved)
+        try:
+            db = get_db()
+            db.table("shopee_copy_logs").update({
+                "status": "error",
+                "error_details": [{"_queue": "Fila maxima atingida. Aguarde o termino das operacoes em andamento."}],
+            }).eq("org_id", org_id).eq("status", "in_progress").execute()
+        except Exception as db_err:
+            logger.error("Failed to update queue-full Shopee logs: %s", db_err)
+        return
+
+    _org_queue_sizes[org_id] = current + 1
+    try:
+        await _bg_shopee_copy_items(
+            source=source,
+            destinations=destinations,
+            item_ids=item_ids,
+            user_id=user_id,
+            org_id=org_id,
+            trial_reserved=trial_reserved,
+        )
+    finally:
+        _org_queue_sizes[org_id] = max(0, _org_queue_sizes.get(org_id, 1) - 1)
+
+
+async def _bg_shopee_copy_with_dims(
+    source: str,
+    destinations: list[str],
+    item_id: int,
+    dimensions: dict,
+    user_id: str,
+    org_id: str,
+    trial_info_present: bool,
+) -> None:
+    """Inner background worker for Shopee copy_with_dimensions."""
+    try:
+        results = await asyncio.wait_for(
+            copy_with_dimensions(
+                source_slug=source,
+                dest_slugs=destinations,
+                item_id=item_id,
+                dimensions=dimensions,
+                user_id=user_id,
+                org_id=org_id,
+            ),
+            timeout=BATCH_TIMEOUT_SECONDS,
+        )
+        success_count = results.get("success", 0)
+        if trial_info_present and success_count > 0:
+            _increment_trial_copies(org_id, success_count)
+    except asyncio.TimeoutError:
+        logger.error(
+            "Shopee copy_with_dims timed out after %ss for org %s item %s",
+            BATCH_TIMEOUT_SECONDS,
+            org_id,
+            item_id,
+        )
+        try:
+            db = get_db()
+            db.table("shopee_copy_logs").update({
+                "status": "error",
+                "error_details": [{"_timeout": "Operacao excedeu o tempo limite de 10 minutos"}],
+            }).eq("org_id", org_id).eq("status", "in_progress").eq("source_item_id", item_id).execute()
+        except Exception as db_err:
+            logger.error("Failed to update timed-out Shopee dims logs: %s", db_err)
+    except Exception as e:
+        logger.error(
+            "Background Shopee copy_with_dims failed for item %s: %s", item_id, e, exc_info=True
+        )
+
+
+async def _bg_shopee_copy_with_dims_queued(
+    source: str,
+    destinations: list[str],
+    item_id: int,
+    dimensions: dict,
+    user_id: str,
+    org_id: str,
+    trial_info_present: bool,
+) -> None:
+    """Wrapper that enforces per-org concurrency queue before running _bg_shopee_copy_with_dims."""
+    current = _org_queue_sizes.get(org_id, 0)
+    if current >= MAX_QUEUE_PER_ORG:
+        logger.warning(
+            "Org %s already has %d Shopee task(s) running (max %d); rejecting dims task",
+            org_id,
+            current,
+            MAX_QUEUE_PER_ORG,
+        )
+        return
+
+    _org_queue_sizes[org_id] = current + 1
+    try:
+        await _bg_shopee_copy_with_dims(
+            source=source,
+            destinations=destinations,
+            item_id=item_id,
+            dimensions=dimensions,
+            user_id=user_id,
+            org_id=org_id,
+            trial_info_present=trial_info_present,
+        )
+    finally:
+        _org_queue_sizes[org_id] = max(0, _org_queue_sizes.get(org_id, 1) - 1)
 
 
 # ── Permission helpers ────────────────────────────────────
@@ -202,13 +357,20 @@ async def shopee_copy(req: ShopeeCopyRequest, bg: BackgroundTasks, user: dict = 
     if trial_info and not trial_info["allowed"]:
         raise HTTPException(status_code=402, detail=trial_info["message"])
 
+    # Reject early if queue is already full
+    if _org_queue_sizes.get(org_id, 0) >= MAX_QUEUE_PER_ORG:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Fila cheia ({MAX_QUEUE_PER_ORG} operacoes em andamento). Aguarde o termino antes de enviar mais.",
+        )
+
     # Reserve trial copies upfront
     trial_reserved = len(clean_ids) if trial_info else 0
     if trial_reserved > 0:
         _increment_trial_copies(org_id, trial_reserved)
 
     bg.add_task(
-        _bg_shopee_copy_items,
+        _bg_shopee_copy_items_queued,
         source=req.source,
         destinations=req.destinations,
         item_ids=clean_ids,
@@ -226,9 +388,9 @@ async def shopee_copy(req: ShopeeCopyRequest, bg: BackgroundTasks, user: dict = 
 
 @router.post("/with-dimensions")
 async def shopee_copy_with_dims(
-    req: ShopeeCopyWithDimensionsRequest, user: dict = Depends(require_active_org)
+    req: ShopeeCopyWithDimensionsRequest, bg: BackgroundTasks, user: dict = Depends(require_active_org)
 ):
-    """Copy a Shopee item with user-provided dimensions."""
+    """Copy a Shopee item with user-provided dimensions. Returns immediately."""
     # Permission checks
     if not _check_seller_permission(user, req.source, "from"):
         raise HTTPException(status_code=403, detail=f"Sem permissao de origem para a loja '{req.source}'")
@@ -241,6 +403,13 @@ async def shopee_copy_with_dims(
         raise HTTPException(status_code=400, detail="Invalid item ID")
 
     org_id = user["org_id"]
+
+    # Reject early if queue is already full
+    if _org_queue_sizes.get(org_id, 0) >= MAX_QUEUE_PER_ORG:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Fila cheia ({MAX_QUEUE_PER_ORG} operacoes em andamento). Aguarde o termino antes de enviar mais.",
+        )
 
     # Trial limit check
     trial_info = _check_trial_limit(org_id, 1)
@@ -261,21 +430,33 @@ async def shopee_copy_with_dims(
     if not dims:
         raise HTTPException(status_code=400, detail="At least one dimension is required")
 
-    results = await copy_with_dimensions(
-        source_slug=req.source,
-        dest_slugs=req.destinations,
+    bg.add_task(
+        _bg_shopee_copy_with_dims_queued,
+        source=req.source,
+        destinations=req.destinations,
         item_id=parsed_id,
         dimensions=dims,
         user_id=user["id"],
         org_id=org_id,
+        trial_info_present=bool(trial_info),
     )
 
-    success_count = results.get("success", 0)
+    return {
+        "status": "queued",
+        "item_id": str(parsed_id),
+        "message": "Copia com dimensoes enfileirada. Acompanhe o progresso no historico.",
+    }
 
-    if trial_info and success_count > 0:
-        _increment_trial_copies(org_id, success_count)
 
-    return results
+@router.get("/queue-status")
+async def get_shopee_queue_status(user: dict = Depends(require_user)):
+    """Return the current background-task queue size for the user's org (Shopee)."""
+    org_id = user["org_id"]
+    return {
+        "org_id": org_id,
+        "active_tasks": _org_queue_sizes.get(org_id, 0),
+        "max_tasks": MAX_QUEUE_PER_ORG,
+    }
 
 
 @router.get("/preview/{item_id}")
