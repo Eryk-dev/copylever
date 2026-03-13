@@ -449,6 +449,73 @@ async def retry_dimensions(req: RetryDimensionsRequest, user: dict = Depends(req
     }
 
 
+class RetryRequest(BaseModel):
+    log_id: int
+
+
+@router.post("/retry")
+async def retry_copy(req: RetryRequest, bg: BackgroundTasks, user: dict = Depends(require_active_org)):
+    """Re-run a failed copy log. Simply re-queues the same copy operation."""
+    db = get_db()
+    query = db.table("copy_logs").select("*").eq("id", req.log_id)
+    if not user.get("is_super_admin"):
+        query = query.eq("org_id", user["org_id"])
+    row = query.execute().data
+    if not row:
+        raise HTTPException(status_code=404, detail="Log nao encontrado")
+    log = row[0]
+
+    if log["status"] not in ("error", "partial", "needs_correction"):
+        raise HTTPException(status_code=400, detail="Apenas logs com erro podem ser reenviados")
+
+    source = log["source_seller"]
+    destinations = log["dest_sellers"] or []
+    item_id = str(log["source_item_id"])
+    org_id = log["org_id"]
+
+    if not _check_seller_permission(user, source, "from"):
+        raise HTTPException(status_code=403, detail=f"Sem permissao de origem para '{source}'")
+    denied = [d for d in destinations if not _check_seller_permission(user, d, "to")]
+    if denied:
+        raise HTTPException(status_code=403, detail=f"Sem permissao de destino para: {', '.join(denied)}")
+
+    # Mark log as in_progress
+    db.table("copy_logs").update({"status": "in_progress", "error_details": None}).eq("id", log["id"]).execute()
+
+    async def _bg_retry():
+        try:
+            results = await copy_items(
+                source_seller=source,
+                dest_sellers=destinations,
+                item_ids=[item_id],
+                user_id=user["id"],
+                org_id=org_id,
+            )
+            dest_item_ids = {r["dest_seller"]: r["dest_item_id"] for r in results if r["status"] == "success"}
+            new_errors = {r["dest_seller"]: r["error"] for r in results if r["status"] != "success" and r.get("error")}
+            new_status = _derive_log_status(results)
+            new_correction = next(
+                (r.get("correction_details") for r in results if isinstance(r.get("correction_details"), dict)),
+                None,
+            )
+            db.table("copy_logs").update({
+                "status": new_status,
+                "dest_item_ids": dest_item_ids or None,
+                "error_details": new_errors or None,
+                "correction_details": new_correction if new_status == CORRECTION_STATUS else None,
+            }).eq("id", log["id"]).execute()
+        except Exception as e:
+            logger.error("Retry copy failed for log %s: %s", log["id"], e, exc_info=True)
+            db.table("copy_logs").update({
+                "status": "error",
+                "error_details": {"_retry": str(e)},
+            }).eq("id", log["id"]).execute()
+
+    bg.add_task(_bg_retry)
+
+    return {"status": "queued", "log_id": log["id"], "message": "Copia reenviada. Acompanhe no historico."}
+
+
 @router.post("/retry-corrections")
 async def retry_corrections(req: RetryCorrectionsRequest, user: dict = Depends(require_active_org)):
     """Retry one or more pending-correction logs using the same correction values."""

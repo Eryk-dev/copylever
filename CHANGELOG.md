@@ -10,6 +10,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 ## [Unreleased]
 
 ### Fixed
+- Erro `item.pictures.max`: fotos do anuncio fonte agora sao limitadas a 12 (maximo da maioria das categorias) ao copiar, com truncamento automatico no retry
+- Erro `invalid.item.attribute.values`: atributos com `value_id` nulo (ex: VEHICLE_PARTS_POSITION) sao removidos automaticamente no retry em vez de falhar
 - Agrupamento por SKU no historico de copias agora funciona em todas as abas (Todos, Erros, etc.), nao apenas na aba "Aguardando correções"
 - Usuarios criados pelo painel admin nao conseguiam fazer login (campo `email` nao era preenchido, login busca por email)
 - Corrigido `POST /api/admin/users` para preencher `email` automaticamente (usa email informado ou username como fallback)
@@ -18,6 +20,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Shopee desativada no frontend (`SHOPEE_ENABLED = false` em `frontend/src/lib/features.ts`)
 
 ### Added
+- Botao "Retentar" nos logs de copia com erro ou parcial, permitindo reenviar a copia sem precisar preencher formulario de correcao
+- Endpoint `POST /api/copy/retry` para reenviar copias falhas a partir do historico
 - Botao "Copiar link" para conexao ML: gera o link OAuth e copia para o clipboard, permitindo enviar para outra pessoa conectar a conta facilmente (Admin + tela inicial)
 
 ### Added

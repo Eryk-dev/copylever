@@ -10,7 +10,7 @@
 # 3. If it's new, add an entry following the same structure
 # 4. The retry_system section documents how the auto-retry loop works
 #
-# Last updated: 2026-03-05
+# Last updated: 2026-03-13
 # ============================================================================
 
 # ── Quick reference: ML API error codes we've encountered ──────────────────
@@ -110,6 +110,19 @@ ml_error_codes:
       cause: ML sometimes returns the required attribute id inline in the sentence instead of using bracket lists
       fix_applied: Parse the attribute id directly from the message and surface a manual correction form
       severity: blocking
+
+    item.pictures.max:
+      message: "Items in category MLBXXX cannot exceeds 12 pictures."
+      cause: Source item has more pictures than the category allows (usually 12)
+      fix_applied: Cap pictures at 12 in _build_item_payload; auto-truncate in _adjust_payload_for_ml_error using exact max from error message
+      severity: blocking
+
+    invalid.item.attribute.values:
+      message: "Attribute [VEHICLE_PARTS_POSITION] is not valid, item values [(null:Esquerdo)]"
+      cause: Attribute has null value_id — ML rejects it
+      fix_applied: Parse attribute ID from error message and remove from payload in _adjust_payload_for_ml_error
+      severity: blocking
+      notes: Typically happens with VEHICLE_PARTS_POSITION but could affect any attribute with null value_id
 
     item.attribute.missing.seller.package.dimensions:
       message: "The attributes [seller_package_height, width, length, weight] are all required"
@@ -939,6 +952,47 @@ error_history:
       Required-attribute parsing must be semantic, not just "anything inside []".
       ML mixes category ids, attribute ids, warnings and plain-text constraints in the
       same response family.
+
+  - id: ERR-043
+    date: "2026-03-13"
+    category: pictures
+    title: "item.pictures.max — Source item has more pictures than category limit"
+    symptom: |
+      Multiple items failing with item.pictures.max for seller 141air.
+      Categories MLB193937, MLB190940, MLB194775, MLB191728 all enforce 12 pictures max.
+      Auto-retry loop could not fix because no handler existed for this error code.
+    ml_error_code: item.pictures.max
+    root_cause: |
+      _build_item_payload copied ALL pictures from source without any cap.
+      _adjust_payload_for_ml_error had no handler for item.pictures.max.
+    fix: |
+      - Cap pictures to 12 in _build_item_payload (proactive, covers most categories)
+      - Added _extract_pictures_max() helper to parse exact max from error message
+      - Added handler in _adjust_payload_for_ml_error to truncate pictures on retry
+    file: app/services/item_copier.py
+    lesson: |
+      Most ML categories cap pictures at 12. Always cap proactively and handle
+      the error in retry for edge cases with different limits.
+
+  - id: ERR-044
+    date: "2026-03-13"
+    category: attributes
+    title: "invalid.item.attribute.values — Attribute with null value_id rejected"
+    symptom: |
+      Item MLB2683877883 failing with invalid.item.attribute.values for
+      VEHICLE_PARTS_POSITION with value (null:Esquerdo). Retry loop could not fix.
+    ml_error_code: invalid.item.attribute.values
+    root_cause: |
+      Source item has VEHICLE_PARTS_POSITION with value_name "Esquerdo" but null value_id.
+      _build_item_payload included it because it had a value_name.
+      ML rejected it because value_id is required for this attribute type.
+    fix: |
+      - Added _extract_invalid_attribute_ids() helper to parse attribute ID from error
+      - Added handler in _adjust_payload_for_ml_error to remove the offending attribute on retry
+    file: app/services/item_copier.py
+    lesson: |
+      Some attributes require a valid value_id, not just value_name.
+      When ML rejects with invalid.item.attribute.values, strip the attribute and retry.
 
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.

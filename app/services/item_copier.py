@@ -663,6 +663,40 @@ def _extract_title_max_length(exc: MlApiError) -> int:
     return 60
 
 
+def _extract_pictures_max(exc: MlApiError) -> int | None:
+    """Extract max pictures count from item.pictures.max error, or None if not present."""
+    payload = exc.payload if isinstance(exc.payload, dict) else {}
+    causes = payload.get("cause", [])
+    if isinstance(causes, list):
+        for cause in causes:
+            if not isinstance(cause, dict) or cause.get("type") != "error":
+                continue
+            code = str(cause.get("code", ""))
+            if code == "item.pictures.max":
+                msg = str(cause.get("message", ""))
+                match = re.search(r"cannot exceeds? (\d+) pictures", msg)
+                return int(match.group(1)) if match else 12
+    return None
+
+
+def _extract_invalid_attribute_ids(exc: MlApiError) -> set[str]:
+    """Extract attribute IDs from invalid.item.attribute.values errors."""
+    payload = exc.payload if isinstance(exc.payload, dict) else {}
+    causes = payload.get("cause", [])
+    ids: set[str] = set()
+    if isinstance(causes, list):
+        for cause in causes:
+            if not isinstance(cause, dict) or cause.get("type") != "error":
+                continue
+            code = str(cause.get("code", ""))
+            if code == "invalid.item.attribute.values":
+                msg = str(cause.get("message", ""))
+                match = re.search(r"Attribute \[(\w+)\]", msg)
+                if match:
+                    ids.add(match.group(1))
+    return ids
+
+
 def _ensure_top_level_stock(payload: dict, item: dict) -> None:
     if "available_quantity" in payload:
         return
@@ -769,6 +803,23 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
         if gtin and _ensure_attribute_in_payload(adjusted, "GTIN", gtin):
             actions.append("added GTIN from source after removing variations")
 
+    # Handle pictures max error: truncate to category limit
+    pic_max = _extract_pictures_max(exc)
+    if pic_max and isinstance(adjusted.get("pictures"), list) and len(adjusted["pictures"]) > pic_max:
+        adjusted["pictures"] = adjusted["pictures"][:pic_max]
+        actions.append(f"truncated pictures to {pic_max}")
+
+    # Handle invalid attribute values: remove the offending attribute
+    invalid_attrs = _extract_invalid_attribute_ids(exc)
+    if invalid_attrs and isinstance(adjusted.get("attributes"), list):
+        before = len(adjusted["attributes"])
+        adjusted["attributes"] = [
+            a for a in adjusted["attributes"] if a.get("id") not in invalid_attrs
+        ]
+        removed = before - len(adjusted["attributes"])
+        if removed:
+            actions.append(f"removed invalid attributes: {', '.join(invalid_attrs)}")
+
     # Handle family_name length error: truncate to 60 chars instead of removing
     if _is_family_name_length_error(exc) and adjusted.get("family_name"):
         adjusted["family_name"] = adjusted["family_name"][:60]
@@ -851,13 +902,13 @@ def _build_item_payload(item: dict, safe_mode: bool = False) -> dict:
     if family_name:
         payload["family_name"] = family_name[:MAX_FAMILY_NAME_LEN]
 
-    # Pictures — ML accepts source URLs
+    # Pictures — ML accepts source URLs (cap at 12, most categories' max)
     if item.get("pictures"):
         payload["pictures"] = [
             {"source": pic.get("secure_url") or pic.get("url")}
             for pic in item["pictures"]
             if pic.get("secure_url") or pic.get("url")
-        ]
+        ][:12]
 
     # Attributes — filter out read-only ones
     if item.get("attributes"):

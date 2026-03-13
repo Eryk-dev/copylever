@@ -236,6 +236,25 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
     }
   }, [headers, loadLogs, toast]);
 
+  const handleSimpleRetry = useCallback(async (log: UnifiedLog) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/copy/retry`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ log_id: log.id }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Erro desconhecido' }));
+        toast(err.detail, 'error');
+        return;
+      }
+      toast('Copia reenviada. Acompanhe no historico.', 'success');
+      void loadLogs();
+    } catch (e) {
+      toast(String(e), 'error');
+    }
+  }, [headers, loadLogs, toast]);
+
   const correctionGroups = useMemo<PendingCorrectionGroup[]>(() => {
     const groups = new Map<string, PendingCorrectionGroup>();
 
@@ -547,6 +566,7 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
                           }
                         }}
                         onRetrySubmit={(values) => handleCorrectionRetry(item.log, values)}
+                        onSimpleRetry={() => handleSimpleRetry(item.log)}
                       />
                     )
                   )
@@ -568,14 +588,17 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
   );
 }
 
-function LogCard({ log, isRetrying, onRetryClick, onRetrySubmit }: {
+function LogCard({ log, isRetrying, onRetryClick, onRetrySubmit, onSimpleRetry }: {
   log: UnifiedLog;
   isRetrying: boolean;
   onRetryClick: () => void;
   onRetrySubmit: (values: CorrectionValues) => void;
+  onSimpleRetry: () => void;
 }) {
+  const [retrying, setRetrying] = useState(false);
   const correction = getCorrectionDetails(log);
   const canRetry = Boolean(correction);
+  const canSimpleRetry = !canRetry && (log.status === 'error' || log.status === 'partial');
   const destEntries = log.dest_item_ids ? Object.entries(log.dest_item_ids) : [];
   const errorEntries = log.error_details ? Object.entries(log.error_details) : [];
   const isShopee = log.platform === 'shopee';
@@ -677,6 +700,26 @@ function LogCard({ log, isRetrying, onRetryClick, onRetrySubmit }: {
                 cursor: 'pointer', transition: 'all 0.15s',
               }}>
                 {isRetrying ? 'Cancelar' : 'Corrigir e reenviar'}
+              </button>
+            )}
+            {canSimpleRetry && (
+              <button
+                disabled={retrying}
+                onClick={async () => {
+                  setRetrying(true);
+                  try { await onSimpleRetry(); } finally { setRetrying(false); }
+                }}
+                style={{
+                  marginTop: 'var(--space-2)', padding: '4px 12px', borderRadius: 5,
+                  fontSize: 'var(--text-xs)', fontWeight: 600,
+                  background: retrying ? 'var(--surface)' : 'var(--info-bg, rgba(59,130,246,0.08))',
+                  color: retrying ? 'var(--ink-faint)' : 'var(--info, #3b82f6)',
+                  border: `1px solid ${retrying ? 'var(--line)' : 'rgba(59,130,246,0.2)'}`,
+                  cursor: retrying ? 'not-allowed' : 'pointer', transition: 'all 0.15s',
+                  opacity: retrying ? 0.7 : 1,
+                }}
+              >
+                {retrying ? 'Reenviando...' : 'Retentar'}
               </button>
             )}
           </div>
