@@ -385,30 +385,23 @@ async def get_seller_official_store_id(seller_slug: str, org_id: str) -> int | N
 # ── Item operations ──────────────────────────────────────
 
 
-async def get_item_public(item_id: str) -> dict | None:
-    """GET /items/{item_id} — public (no auth). Returns item dict or None on error."""
-    client = _get_ml_client()
-    try:
-        resp = await client.get(f"{ML_API}/items/{item_id}", timeout=15.0)
-        if resp.status_code == 200:
-            return resp.json()
-    except Exception:
-        pass
-    return None
+async def get_items_multiget(item_ids: list[str], token: str) -> list[dict]:
+    """GET /items?ids=... — authenticated multi-get (up to 20 per call).
 
-
-async def get_items_public(item_ids: list[str]) -> list[dict]:
-    """GET /items?ids=... — public multi-get (up to 20 per call). Returns list of item dicts."""
-    client = _get_ml_client()
+    Uses any valid token to fetch basic item data (including seller_id)
+    for items belonging to any seller. Returns list of item body dicts.
+    """
     results: list[dict] = []
     # ML allows up to 20 IDs per multi-get call
     for i in range(0, len(item_ids), 20):
         batch = item_ids[i:i + 20]
         ids_param = ",".join(batch)
         try:
-            resp = await client.get(
+            resp = await _ml_request(
+                "GET",
                 f"{ML_API}/items",
-                params={"ids": ids_param},
+                token,
+                params={"ids": ids_param, "attributes": "id,seller_id"},
                 timeout=15.0,
             )
             if resp.status_code == 200:

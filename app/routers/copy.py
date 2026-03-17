@@ -18,7 +18,7 @@ from app.services.item_copier import (
     copy_with_attribute_corrections,
     copy_with_dimensions,
 )
-from app.services.ml_api import get_item, get_item_description, get_item_compatibilities, get_items_public
+from app.services.ml_api import get_item, get_item_description, get_item_compatibilities, get_items_multiget, _get_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/copy", tags=["copy"])
@@ -1046,9 +1046,9 @@ def _normalize_item_id(raw: str) -> str:
 
 
 async def _resolve_items_sellers(item_ids: list[str], org_id: str) -> dict[str, str]:
-    """Resolve source seller for multiple items using public ML multi-get.
+    """Resolve source seller for multiple items using ML multi-get.
 
-    Uses GET /items?ids=... (public, no auth) to fetch seller_id for each item,
+    Uses GET /items?ids=... with any valid token to fetch seller_id for each item,
     then matches against connected sellers in the org. This avoids N*M authenticated
     requests (N items × M sellers) that cause 403 floods and rate limiting.
 
@@ -1064,10 +1064,14 @@ async def _resolve_items_sellers(item_ids: list[str], org_id: str) -> dict[str, 
         return {}
     uid_to_slug: dict[int, str] = {s["ml_user_id"]: s["slug"] for s in sellers.data}
 
-    # 2. Fetch items via public multi-get (batches of 20, no auth needed)
-    items = await get_items_public(item_ids)
+    # 2. Get a token from any connected seller (multi-get works with any valid token)
+    first_slug = sellers.data[0]["slug"]
+    token = await _get_token(first_slug, org_id)
 
-    # 3. Match seller_id to connected sellers
+    # 3. Fetch items via multi-get (batches of 20, only id + seller_id)
+    items = await get_items_multiget(item_ids, token)
+
+    # 4. Match seller_id to connected sellers
     result: dict[str, str] = {}
     for item in items:
         item_id = item.get("id")
