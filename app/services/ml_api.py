@@ -401,15 +401,25 @@ async def get_items_multiget(item_ids: list[str], token: str) -> list[dict]:
                 "GET",
                 f"{ML_API}/items",
                 token,
-                params={"ids": ids_param, "attributes": "id,seller_id"},
+                params={"ids": ids_param},
                 timeout=15.0,
             )
             if resp.status_code == 200:
                 for entry in resp.json():
                     if entry.get("code") == 200 and entry.get("body"):
                         results.append(entry["body"])
-        except Exception:
-            logger.warning("Failed to fetch items batch: %s", ids_param[:80])
+                    else:
+                        logger.warning(
+                            "Multiget item failed: code=%s, id=%s",
+                            entry.get("code"), entry.get("body", {}).get("id", "?"),
+                        )
+            else:
+                logger.error(
+                    "Multiget HTTP %s for ids: %s — body: %s",
+                    resp.status_code, ids_param[:80], resp.text[:200],
+                )
+        except Exception as e:
+            logger.error("Multiget exception for ids %s: %s", ids_param[:80], e)
     return results
 
 

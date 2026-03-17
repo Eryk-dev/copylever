@@ -1068,8 +1068,10 @@ async def _resolve_items_sellers(item_ids: list[str], org_id: str) -> dict[str, 
     first_slug = sellers.data[0]["slug"]
     token = await _get_token(first_slug, org_id)
 
-    # 3. Fetch items via multi-get (batches of 20, only id + seller_id)
+    # 3. Fetch items via multi-get (batches of 20)
+    logger.info("Resolving %d items via multiget (token from %s)", len(item_ids), first_slug)
     items = await get_items_multiget(item_ids, token)
+    logger.info("Multiget returned %d items", len(items))
 
     # 4. Match seller_id to connected sellers
     result: dict[str, str] = {}
@@ -1078,7 +1080,13 @@ async def _resolve_items_sellers(item_ids: list[str], org_id: str) -> dict[str, 
         seller_id = item.get("seller_id")
         if item_id and seller_id and seller_id in uid_to_slug:
             result[item_id] = uid_to_slug[seller_id]
+        elif item_id:
+            logger.warning(
+                "Item %s has seller_id=%s which is not in connected sellers: %s",
+                item_id, seller_id, list(uid_to_slug.keys()),
+            )
 
+    logger.info("Resolved %d/%d items to sellers", len(result), len(item_ids))
     return result
 
 
