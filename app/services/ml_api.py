@@ -385,44 +385,6 @@ async def get_seller_official_store_id(seller_slug: str, org_id: str) -> int | N
 # ── Item operations ──────────────────────────────────────
 
 
-async def get_items_multiget(item_ids: list[str], token: str) -> list[dict]:
-    """GET /items?ids=... — authenticated multi-get (up to 20 per call).
-
-    Uses any valid token to fetch basic item data (including seller_id)
-    for items belonging to any seller. Returns list of item body dicts.
-    """
-    results: list[dict] = []
-    # ML allows up to 20 IDs per multi-get call
-    for i in range(0, len(item_ids), 20):
-        batch = item_ids[i:i + 20]
-        ids_param = ",".join(batch)
-        try:
-            resp = await _ml_request(
-                "GET",
-                f"{ML_API}/items",
-                token,
-                params={"ids": ids_param},
-                timeout=15.0,
-            )
-            if resp.status_code == 200:
-                for entry in resp.json():
-                    if entry.get("code") == 200 and entry.get("body"):
-                        results.append(entry["body"])
-                    else:
-                        logger.warning(
-                            "Multiget item failed: code=%s, id=%s",
-                            entry.get("code"), entry.get("body", {}).get("id", "?"),
-                        )
-            else:
-                logger.error(
-                    "Multiget HTTP %s for ids: %s — body: %s",
-                    resp.status_code, ids_param[:80], resp.text[:200],
-                )
-        except Exception as e:
-            logger.error("Multiget exception for ids %s: %s", ids_param[:80], e)
-    return results
-
-
 async def get_item(seller_slug: str, item_id: str, org_id: str = "") -> dict:
     """GET /items/{item_id} — full item data (with 429 retry)."""
     token = await _get_token(seller_slug, org_id)

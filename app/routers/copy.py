@@ -18,7 +18,7 @@ from app.services.item_copier import (
     copy_with_attribute_corrections,
     copy_with_dimensions,
 )
-from app.services.ml_api import get_item, get_item_description, get_item_compatibilities, get_items_multiget, _get_token
+from app.services.ml_api import get_item, get_item_description, get_item_compatibilities
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/copy", tags=["copy"])
@@ -1046,47 +1046,30 @@ def _normalize_item_id(raw: str) -> str:
 
 
 async def _resolve_items_sellers(item_ids: list[str], org_id: str) -> dict[str, str]:
-    """Resolve source seller for multiple items using ML multi-get.
+    """Resolve source seller for multiple items in parallel.
 
-    Uses GET /items?ids=... with any valid token to fetch seller_id for each item,
-    then matches against connected sellers in the org. This avoids N*M authenticated
-    requests (N items × M sellers) that cause 403 floods and rate limiting.
-
+    Uses a semaphore to limit concurrency and avoid flooding the ML API.
     Returns {item_id: seller_slug} for items that were found.
     """
-    if not item_ids:
-        return {}
+    sem = asyncio.Semaphore(5)
 
-    # 1. Build seller_id → slug lookup from DB
-    db = get_db()
-    sellers = db.table("copy_sellers").select("slug, ml_user_id").eq("active", True).eq("org_id", org_id).execute()
-    if not sellers.data:
-        return {}
-    uid_to_slug: dict[int, str] = {s["ml_user_id"]: s["slug"] for s in sellers.data}
+    async def _resolve_one(item_id: str) -> tuple[str, str | None]:
+        async with sem:
+            slug, _ = await _resolve_item_seller(item_id, org_id=org_id)
+            return item_id, slug
 
-    # 2. Get a token from any connected seller (multi-get works with any valid token)
-    first_slug = sellers.data[0]["slug"]
-    token = await _get_token(first_slug, org_id)
+    tasks = await asyncio.gather(
+        *[_resolve_one(iid) for iid in item_ids],
+        return_exceptions=True,
+    )
 
-    # 3. Fetch items via multi-get (batches of 20)
-    logger.info("Resolving %d items via multiget (token from %s)", len(item_ids), first_slug)
-    items = await get_items_multiget(item_ids, token)
-    logger.info("Multiget returned %d items", len(items))
-
-    # 4. Match seller_id to connected sellers
     result: dict[str, str] = {}
-    for item in items:
-        item_id = item.get("id")
-        seller_id = item.get("seller_id")
-        if item_id and seller_id and seller_id in uid_to_slug:
-            result[item_id] = uid_to_slug[seller_id]
-        elif item_id:
-            logger.warning(
-                "Item %s has seller_id=%s which is not in connected sellers: %s",
-                item_id, seller_id, list(uid_to_slug.keys()),
-            )
-
-    logger.info("Resolved %d/%d items to sellers", len(result), len(item_ids))
+    for t in tasks:
+        if isinstance(t, Exception):
+            continue
+        item_id, slug = t
+        if slug:
+            result[item_id] = slug
     return result
 
 
