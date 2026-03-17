@@ -385,6 +385,41 @@ async def get_seller_official_store_id(seller_slug: str, org_id: str) -> int | N
 # ── Item operations ──────────────────────────────────────
 
 
+async def get_item_public(item_id: str) -> dict | None:
+    """GET /items/{item_id} — public (no auth). Returns item dict or None on error."""
+    client = _get_ml_client()
+    try:
+        resp = await client.get(f"{ML_API}/items/{item_id}", timeout=15.0)
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return None
+
+
+async def get_items_public(item_ids: list[str]) -> list[dict]:
+    """GET /items?ids=... — public multi-get (up to 20 per call). Returns list of item dicts."""
+    client = _get_ml_client()
+    results: list[dict] = []
+    # ML allows up to 20 IDs per multi-get call
+    for i in range(0, len(item_ids), 20):
+        batch = item_ids[i:i + 20]
+        ids_param = ",".join(batch)
+        try:
+            resp = await client.get(
+                f"{ML_API}/items",
+                params={"ids": ids_param},
+                timeout=15.0,
+            )
+            if resp.status_code == 200:
+                for entry in resp.json():
+                    if entry.get("code") == 200 and entry.get("body"):
+                        results.append(entry["body"])
+        except Exception:
+            logger.warning("Failed to fetch items batch: %s", ids_param[:80])
+    return results
+
+
 async def get_item(seller_slug: str, item_id: str, org_id: str = "") -> dict:
     """GET /items/{item_id} — full item data (with 429 retry)."""
     token = await _get_token(seller_slug, org_id)

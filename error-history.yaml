@@ -1016,6 +1016,30 @@ error_history:
       When using asyncio.create_task with as_completed, always consume
       exceptions from completed tasks before discarding them.
 
+  - id: ERR-046
+    date: "2026-03-17"
+    category: performance
+    title: "Bulk resolve-sellers fails with many items due to N×M authenticated requests"
+    symptom: |
+      When user pastes 15-20+ item IDs, resolve-sellers often fails to identify
+      the source seller. With 11 active sellers, each item triggers 11 authenticated
+      GET /items/{id}?include_attributes=all requests. 20 items = 220 concurrent requests,
+      causing 403 floods, rate limiting, and timeouts.
+    root_cause: |
+      _resolve_items_sellers called _resolve_item_seller per item, which tried
+      all sellers in parallel with authenticated requests. Only the owner seller
+      returns 200; all others return 403. Massive waste of API calls.
+    fix: |
+      - Added get_items_public() in ml_api.py: uses public GET /items?ids=... (up to 20 per call)
+      - Rewrote _resolve_items_sellers to: (1) build ml_user_id→slug lookup from DB,
+        (2) fetch items via public multi-get (no auth), (3) match seller_id to connected sellers
+      - 20 items now resolved in 1 API call instead of 220
+    file: app/routers/copy.py, app/services/ml_api.py
+    lesson: |
+      ML's /items endpoint is public — no auth needed to read seller_id.
+      Use GET /items?ids=id1,id2,...,id20 for bulk resolution (max 20 per call).
+      Only use authenticated requests when you need owner-only data (include_attributes=all).
+
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.
 patterns:

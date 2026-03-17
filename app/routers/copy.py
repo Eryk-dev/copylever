@@ -18,7 +18,7 @@ from app.services.item_copier import (
     copy_with_attribute_corrections,
     copy_with_dimensions,
 )
-from app.services.ml_api import get_item, get_item_description, get_item_compatibilities
+from app.services.ml_api import get_item, get_item_description, get_item_compatibilities, get_items_public
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/copy", tags=["copy"])
@@ -1046,27 +1046,35 @@ def _normalize_item_id(raw: str) -> str:
 
 
 async def _resolve_items_sellers(item_ids: list[str], org_id: str) -> dict[str, str]:
-    """Resolve source seller for multiple items in parallel.
+    """Resolve source seller for multiple items using public ML multi-get.
+
+    Uses GET /items?ids=... (public, no auth) to fetch seller_id for each item,
+    then matches against connected sellers in the org. This avoids N*M authenticated
+    requests (N items × M sellers) that cause 403 floods and rate limiting.
 
     Returns {item_id: seller_slug} for items that were found.
     """
+    if not item_ids:
+        return {}
 
-    async def _resolve_one(item_id: str) -> tuple[str, str | None]:
-        slug, _ = await _resolve_item_seller(item_id, org_id=org_id)
-        return item_id, slug
+    # 1. Build seller_id → slug lookup from DB
+    db = get_db()
+    sellers = db.table("copy_sellers").select("slug, ml_user_id").eq("active", True).eq("org_id", org_id).execute()
+    if not sellers.data:
+        return {}
+    uid_to_slug: dict[int, str] = {s["ml_user_id"]: s["slug"] for s in sellers.data}
 
-    tasks = await asyncio.gather(
-        *[_resolve_one(iid) for iid in item_ids],
-        return_exceptions=True,
-    )
+    # 2. Fetch items via public multi-get (batches of 20, no auth needed)
+    items = await get_items_public(item_ids)
 
+    # 3. Match seller_id to connected sellers
     result: dict[str, str] = {}
-    for t in tasks:
-        if isinstance(t, Exception):
-            continue
-        item_id, slug = t
-        if slug:
-            result[item_id] = slug
+    for item in items:
+        item_id = item.get("id")
+        seller_id = item.get("seller_id")
+        if item_id and seller_id and seller_id in uid_to_slug:
+            result[item_id] = uid_to_slug[seller_id]
+
     return result
 
 

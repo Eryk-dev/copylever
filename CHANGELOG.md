@@ -9,6 +9,9 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Changed
+- `POST /api/copy/resolve-sellers` reescrito: agora usa multi-get publico do ML (`GET /items?ids=...`) em vez de N×M requests autenticadas por seller; resolucao instantanea sem 403s, sem rate limiting
+
 ### Fixed
 - Eliminado warning "Task exception was never retrieved" no `_resolve_item_seller` quando sellers retornam 403 durante resolucao concorrente de itens
 
