@@ -488,7 +488,15 @@ async def _resolve_item_seller(item_id: str, org_id: str, skip_seller: str | Non
         try:
             slug, item = await coro
             for t in tasks:
-                t.cancel()
+                if not t.done():
+                    t.cancel()
+                elif not t.cancelled():
+                    # Suppress "Task exception was never retrieved" for
+                    # tasks that already failed before we could cancel them
+                    try:
+                        t.result()
+                    except Exception:
+                        pass
             return slug, item
         except Exception:
             continue

@@ -9,6 +9,9 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Fixed
+- Eliminado warning "Task exception was never retrieved" no `_resolve_item_seller` quando sellers retornam 403 durante resolucao concorrente de itens
+
 ### Added
 - `db_execute()` helper em `app/db/supabase.py` para executar queries Supabase em thread pool, evitando bloqueio do event loop asyncio (opt-in, nao altera chamadas existentes)
 - Sistema de fila por org: maximo de 3 tarefas de copia simultaneas por organizacao (`MAX_QUEUE_PER_ORG=3`); requisicoes que excedem o limite recebem HTTP 429 imediatamente

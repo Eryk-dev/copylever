@@ -994,6 +994,28 @@ error_history:
       Some attributes require a valid value_id, not just value_name.
       When ML rejects with invalid.item.attribute.values, strip the attribute and retry.
 
+  - id: ERR-045
+    date: "2026-03-17"
+    category: asyncio
+    title: "Task exception was never retrieved in _resolve_item_seller"
+    symptom: |
+      Logs flooded with "Task exception was never retrieved" for 403 errors
+      when _resolve_item_seller tries multiple sellers concurrently.
+    ml_error_code: access_denied (HTTP 403)
+    root_cause: |
+      _resolve_item_seller creates asyncio tasks for all sellers. When one
+      succeeds, remaining tasks are cancelled. But tasks that already finished
+      with an exception before cancel() was called have their exception
+      unretrieved, triggering Python's asyncio warning.
+    fix: |
+      - Check t.done() before cancelling
+      - For already-finished tasks, call t.result() inside try/except to
+        suppress the "exception was never retrieved" warning
+    file: app/routers/copy.py
+    lesson: |
+      When using asyncio.create_task with as_completed, always consume
+      exceptions from completed tasks before discarding them.
+
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.
 patterns:
