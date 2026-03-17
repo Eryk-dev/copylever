@@ -10,7 +10,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 ## [Unreleased]
 
 ### Changed
-- `POST /api/copy/resolve-sellers` agora limita concorrencia a 5 itens simultaneos via semaforo, evitando flood de requests na API do ML
+- `POST /api/copy/resolve-sellers` otimizado: identifica o seller do primeiro item e usa como fast path para os demais (1+N requests em vez de N×M); fallback completo apenas para itens de sellers diferentes
 
 ### Fixed
 - Eliminado warning "Task exception was never retrieved" no `_resolve_item_seller` quando sellers retornam 403 durante resolucao concorrente de itens

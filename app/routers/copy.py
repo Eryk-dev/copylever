@@ -1046,30 +1046,78 @@ def _normalize_item_id(raw: str) -> str:
 
 
 async def _resolve_items_sellers(item_ids: list[str], org_id: str) -> dict[str, str]:
-    """Resolve source seller for multiple items in parallel.
+    """Resolve source seller for multiple items.
 
-    Uses a semaphore to limit concurrency and avoid flooding the ML API.
+    Optimization: resolves the first item to discover the likely seller,
+    then tries that seller first for all remaining items (fast path).
+    Items that don't match the fast path fall back to full resolution.
+
     Returns {item_id: seller_slug} for items that were found.
     """
-    sem = asyncio.Semaphore(5)
-
-    async def _resolve_one(item_id: str) -> tuple[str, str | None]:
-        async with sem:
-            slug, _ = await _resolve_item_seller(item_id, org_id=org_id)
-            return item_id, slug
-
-    tasks = await asyncio.gather(
-        *[_resolve_one(iid) for iid in item_ids],
-        return_exceptions=True,
-    )
+    if not item_ids:
+        return {}
 
     result: dict[str, str] = {}
-    for t in tasks:
-        if isinstance(t, Exception):
-            continue
-        item_id, slug = t
-        if slug:
-            result[item_id] = slug
+
+    # Step 1: resolve the first item to discover the likely seller
+    first_slug, _ = await _resolve_item_seller(item_ids[0], org_id=org_id)
+    if first_slug:
+        result[item_ids[0]] = first_slug
+
+    if len(item_ids) == 1:
+        return result
+
+    # Step 2: try the discovered seller first for remaining items (fast path)
+    remaining = item_ids[1:]
+    fallback_ids: list[str] = []
+
+    if first_slug:
+        sem = asyncio.Semaphore(10)
+
+        async def _try_fast(item_id: str) -> tuple[str, str | None]:
+            async with sem:
+                try:
+                    await get_item(first_slug, item_id, org_id=org_id)
+                    return item_id, first_slug
+                except Exception:
+                    return item_id, None
+
+        fast_results = await asyncio.gather(
+            *[_try_fast(iid) for iid in remaining],
+            return_exceptions=True,
+        )
+
+        for t in fast_results:
+            if isinstance(t, Exception):
+                continue
+            item_id, slug = t
+            if slug:
+                result[item_id] = slug
+            else:
+                fallback_ids.append(item_id)
+    else:
+        fallback_ids = remaining
+
+    # Step 3: full resolution for items that didn't match the fast path
+    if fallback_ids:
+        sem_full = asyncio.Semaphore(5)
+
+        async def _resolve_full(item_id: str) -> tuple[str, str | None]:
+            async with sem_full:
+                slug, _ = await _resolve_item_seller(item_id, org_id=org_id)
+                return item_id, slug
+
+        full_results = await asyncio.gather(
+            *[_resolve_full(iid) for iid in fallback_ids],
+            return_exceptions=True,
+        )
+
+        for t in full_results:
+            if isinstance(t, Exception):
+                continue
+            item_id, slug = t
+            if slug:
+                result[item_id] = slug
     return result
 
 
