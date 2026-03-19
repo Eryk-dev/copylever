@@ -1139,6 +1139,29 @@ error_history:
       These are distinct from HTTP-level errors (4xx/5xx) and need their own retry logic.
       Long-running containers are especially susceptible to stale connection pool issues.
 
+  - id: ERR-051
+    date: "2026-03-19"
+    category: bug
+    title: "retry-corrections 404 when org has >1000 copy_logs"
+    symptom: |
+      Clicking "Aplicar correção e copiar" on a correction group returns HTTP 404
+      "Um ou mais logs nao foram encontrados" even though logs exist in the database.
+      Happens when the org has accumulated more than 1000 copy_logs entries.
+    root_cause: |
+      retry_corrections endpoint fetched ALL copy_logs for the org with select("*")
+      then filtered by IDs in Python. Supabase default limit is 1000 rows per query.
+      Older log IDs (e.g., 1265-1270 with 1343 total logs) fell outside the 1000-row
+      window and were not returned, causing the len() mismatch → 404.
+    fix: |
+      Added .in_("id", clean_log_ids) to the Supabase query so it fetches only the
+      requested logs directly instead of all logs. This eliminates the 1000-row limit
+      issue and is also more efficient.
+    file: app/routers/copy.py
+    lesson: |
+      Never fetch all rows and filter in Python when Supabase has a default 1000-row
+      limit. Always push filters into the query. This applies to any table that can
+      grow beyond 1000 rows.
+
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.
 patterns:

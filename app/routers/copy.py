@@ -859,11 +859,10 @@ async def retry_corrections(req: RetryCorrectionsRequest, bg: BackgroundTasks, u
         raise HTTPException(status_code=400, detail="Informe pelo menos um log para reprocessar")
 
     db = get_db()
-    log_query = db.table("copy_logs").select("*")
+    log_query = db.table("copy_logs").select("*").in_("id", clean_log_ids)
     if not user.get("is_super_admin"):
         log_query = log_query.eq("org_id", user["org_id"])
-    log_rows = log_query.execute().data or []
-    logs = [row for row in log_rows if row.get("id") in clean_log_ids]
+    logs = log_query.execute().data or []
     if len(logs) != len(clean_log_ids):
         raise HTTPException(status_code=404, detail="Um ou mais logs nao foram encontrados")
 
