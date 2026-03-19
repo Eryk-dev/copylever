@@ -151,6 +151,10 @@ _REQUEST_RATE_BASE_WAIT = 3  # seconds
 _REQUEST_RATE_MAX_WAIT = 30  # seconds — cap individual backoff waits
 
 
+_CONNECTION_RETRIES = 3
+_CONNECTION_RETRY_WAIT = 2  # seconds
+
+
 async def _ml_request(
     method: str,
     url: str,
@@ -161,6 +165,9 @@ async def _ml_request(
 ) -> httpx.Response:
     """Make an ML API request with automatic 429 retry + exponential backoff.
 
+    Also retries on transient connection errors (pool timeout, stale connections,
+    network hiccups) which are common in long-running Docker containers.
+
     Uses a shared persistent HTTP client to reuse TCP/TLS connections.
     The timeout parameter is applied per-request so callers can override it
     (e.g. POST /items uses 60s).
@@ -169,10 +176,25 @@ async def _ml_request(
     client = _get_ml_client()
     resp: httpx.Response | None = None
     for attempt in range(_REQUEST_RATE_RETRIES):
-        resp = await client.request(
-            method, url, headers=headers, json=json, params=params,
-            timeout=timeout,
-        )
+        try:
+            resp = await client.request(
+                method, url, headers=headers, json=json, params=params,
+                timeout=timeout,
+            )
+        except (httpx.ConnectError, httpx.RemoteProtocolError,
+                httpx.ReadError, httpx.WriteError, httpx.PoolTimeout) as exc:
+            if attempt >= _CONNECTION_RETRIES - 1:
+                raise RuntimeError(
+                    f"ML API connection failed after {attempt + 1} attempts "
+                    f"({type(exc).__name__}): {method} {url}"
+                ) from exc
+            wait = _CONNECTION_RETRY_WAIT * (attempt + 1)
+            logger.warning(
+                "ML connection error on %s %s (%s) — retrying in %ds (attempt %d)",
+                method, url, type(exc).__name__, wait, attempt + 1,
+            )
+            await asyncio.sleep(wait)
+            continue
         if resp.status_code != 429:
             return resp
         retry_after = resp.headers.get("retry-after")

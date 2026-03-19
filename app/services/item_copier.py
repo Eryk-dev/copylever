@@ -727,6 +727,19 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
     if _is_title_invalid_error(exc):
         invalid_top.add("title")
 
+    # Detect item.X.invalid cause codes (e.g. item.channels.invalid)
+    # that aren't caught by the text-based field extraction
+    _payload = exc.payload if isinstance(exc.payload, dict) else {}
+    _causes = _payload.get("cause", [])
+    if isinstance(_causes, list):
+        for _cause in _causes:
+            if not isinstance(_cause, dict) or _cause.get("type") != "error":
+                continue
+            _code = str(_cause.get("code", ""))
+            if _code.startswith("item.") and _code.endswith(".invalid"):
+                _field = _code.split(".")[1]
+                invalid_top.add(_field)
+
     if "shipping.methods" in invalid_raw and isinstance(adjusted.get("shipping"), dict):
         if "methods" in adjusted["shipping"]:
             adjusted["shipping"] = {k: v for k, v in adjusted["shipping"].items() if k != "methods"}
@@ -1131,6 +1144,33 @@ async def copy_single_item(
             except MlApiError as exc:
                 last_exc = exc
 
+                # ML 500 server errors — retry with backoff (transient infra issues)
+                if exc.status_code >= 500 and attempt < 4:
+                    wait = 3 * (2 ** (attempt - 1))  # 3s, 6s, 12s
+                    logger.warning(
+                        "ML server error %d for %s -> %s (attempt %d), retrying in %ds: %s",
+                        exc.status_code, item_id, dest_seller, attempt, wait, exc.detail,
+                    )
+                    _log_api_debug(
+                        action="create_item",
+                        source_seller=source_seller,
+                        dest_seller=dest_seller,
+                        source_item_id=item_id,
+                        user_id=user_id,
+                        copy_log_id=copy_log_id,
+                        api_method=exc.method,
+                        api_url=exc.url,
+                        request_payload=payload,
+                        response_status=exc.status_code,
+                        response_body=exc.payload if isinstance(exc.payload, dict) else {"raw": str(exc.payload)},
+                        error_message=exc.detail,
+                        attempt_number=attempt,
+                        adjustments=["server_error_retry"],
+                        org_id=org_id,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+
                 # Dimension errors can't be fixed by retries — bail out immediately
                 if _is_dimension_error(exc):
                     _log_api_debug(
@@ -1360,9 +1400,10 @@ async def copy_single_item(
             org_id=org_id,
         )
     except Exception as e:
-        logger.error(f"Failed to copy {item_id} to {dest_seller}: {e}")
+        error_msg = str(e) or f"{type(e).__name__}: {repr(e)}"
+        logger.error(f"Failed to copy {item_id} to {dest_seller}: {error_msg}")
         result["status"] = "error"
-        result["error"] = str(e)
+        result["error"] = error_msg
         _log_api_debug(
             action="copy_single_item_final",
             source_seller=source_seller,
@@ -1370,7 +1411,7 @@ async def copy_single_item(
             source_item_id=item_id,
             user_id=user_id,
             copy_log_id=copy_log_id,
-            error_message=str(e),
+            error_message=error_msg,
             org_id=org_id,
         )
 

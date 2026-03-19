@@ -10,7 +10,7 @@
 # 3. If it's new, add an entry following the same structure
 # 4. The retry_system section documents how the auto-retry loop works
 #
-# Last updated: 2026-03-13
+# Last updated: 2026-03-18
 # ============================================================================
 
 # ── Quick reference: ML API error codes we've encountered ──────────────────
@@ -67,8 +67,11 @@ ml_error_codes:
 
     item.channels.invalid:
       message: "user is not allowed to use this channel"
-      cause: Source item has channels (e.g. marketplace) that dest seller can't use
-      fix_applied: safe_mode strips channels field
+      cause: Source item has channels (e.g. marketplace, mshops) that dest seller can't use
+      fix_applied: >
+        Detect item.X.invalid cause codes in _adjust_payload_for_ml_error
+        (not just text-based field extraction). Channels is removed on first
+        retry attempt instead of waiting for safe_mode fallback.
       severity: blocking
 
     item.family_name.length_invalid:
@@ -1039,6 +1042,102 @@ error_history:
       ML's /items endpoint is public — no auth needed to read seller_id.
       Use GET /items?ids=id1,id2,...,id20 for bulk resolution (max 20 per call).
       Only use authenticated requests when you need owner-only data (include_attributes=all).
+
+  - id: ERR-047
+    date: "2026-03-18"
+    category: bug
+    title: "item.channels.invalid not detected by _adjust_payload_for_ml_error"
+    symptom: |
+      Copying MLB6478066466 from net-air to autofy/automy/netparts-sp fails with
+      item.channels.invalid error. The retry loop doesn't remove channels on first
+      attempt — only catches it on safe_mode fallback (attempt 3+), wasting retries.
+    root_cause: |
+      _extract_ml_error_fields uses text-based matching for "invalid_fields" marker,
+      but item.channels.invalid error code doesn't match any pattern: it doesn't
+      contain "invalid_fields", "invalid field", or "field ... invalid". The channels
+      field is never added to invalid_top, so removable_top_fields check never fires.
+    fix: |
+      Added cause-code pattern detection in _adjust_payload_for_ml_error: scan cause[]
+      entries for codes matching item.{field}.invalid pattern (type=="error") and add
+      the extracted field to invalid_top. This catches channels and any future fields
+      using this ML error code pattern.
+    file: app/services/item_copier.py
+    ml_error_codes: [item.channels.invalid]
+    lesson: |
+      ML uses two different error patterns: (1) body.invalid_fields with field names
+      in the message text, and (2) item.X.invalid with the field encoded in the error
+      code itself. Must detect BOTH patterns.
+
+  - id: ERR-048
+    date: "2026-03-18"
+    category: bug
+    title: "ML 500 errors not retried with backoff"
+    symptom: |
+      After channels error triggers safe_mode retry, ML returns 500 (internal_error,
+      internal_server). Since safe_mode was already used, the retry loop immediately
+      raises without retrying the server error.
+    root_cause: |
+      Retry loop only handles validation errors (adjusting payload). ML 500 errors
+      (Connection lease request time out, KVS errors) are transient infra issues
+      that resolve after a few seconds, but the loop treats them the same as
+      unresolvable validation errors.
+    fix: |
+      Added explicit 500 status code check at the top of the MlApiError handler.
+      When status >= 500 and attempt < 4, logs the error, waits with exponential
+      backoff (3s, 6s, 12s), and retries with the same payload.
+    file: app/services/item_copier.py
+    lesson: |
+      ML API has frequent transient 500 errors. Always retry server errors with
+      backoff before giving up. Don't conflate payload-fixable errors (400) with
+      server-side issues (500).
+
+  - id: ERR-049
+    date: "2026-03-18"
+    category: bug
+    title: "Empty error messages in copy_logs and api_debug_logs"
+    symptom: |
+      Recent api_debug_logs entries have null error_message, response_body, and
+      request_payload. copy_logs show error_details like {"autofy": "", "automy": ""}
+      with empty error strings.
+    root_cause: |
+      Generic Exception handler uses str(e) which can be empty for some exception
+      types (e.g. httpx network errors, Exception() without message). The
+      _log_api_debug function checks `if error_message` which is False for empty
+      string, storing null instead.
+    fix: |
+      Changed error_msg to use fallback: str(e) or f"{type(e).__name__}: {repr(e)}".
+      This ensures error messages always contain at least the exception type and
+      representation, even when str(e) is empty.
+    file: app/services/item_copier.py
+    lesson: |
+      Never use bare str(e) for error logging — some exceptions have empty string
+      representations. Always use a fallback like repr(e) or type(e).__name__.
+
+  - id: ERR-050
+    date: "2026-03-19"
+    category: bug
+    title: "httpx connection errors not retried in _ml_request"
+    symptom: |
+      Copies fail silently with empty error messages on the deployed Docker server.
+      All api_debug_logs entries have null error_message, api_method, response_body.
+      copy_logs show error_details like {"seller": ""}.
+    root_cause: |
+      _ml_request only handled 429 rate-limit retries but had no try/except for
+      httpx transport exceptions (PoolTimeout, ConnectError, RemoteProtocolError,
+      ReadError, WriteError). In long-running Docker containers, stale connections
+      in the httpx pool cause these exceptions, which bubble up to the generic
+      Exception handler with empty str() representation.
+      Confirmed: httpx.PoolTimeout("") → str() == "" (empty, falsy).
+    fix: |
+      Added try/except in _ml_request for httpx transport exceptions. On connection
+      error, retries up to 3 times with incremental backoff (2s, 4s, 6s). If all
+      retries fail, raises RuntimeError with descriptive message including exception
+      type, method, and URL.
+    file: app/services/ml_api.py
+    lesson: |
+      Always wrap httpx client.request() in try/except for transport-level exceptions.
+      These are distinct from HTTP-level errors (4xx/5xx) and need their own retry logic.
+      Long-running containers are especially susceptible to stale connection pool issues.
 
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.

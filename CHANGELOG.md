@@ -13,6 +13,10 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - `POST /api/copy/resolve-sellers` otimizado: identifica o seller do primeiro item e usa como fast path para os demais (1+N requests em vez de N×M); fallback completo apenas para itens de sellers diferentes
 
 ### Fixed
+- Corrigido deteccao de erro `item.channels.invalid`: campo `channels` agora e removido no primeiro retry em vez de esperar pelo safe_mode (detecta codigos de erro `item.X.invalid` nos causes da API ML)
+- Adicionado retry com backoff exponencial (3s, 6s, 12s) para erros 500 do ML (internal_error, internal_server) que sao problemas transitorios de infraestrutura
+- Corrigido mensagens de erro vazias em `copy_logs` e `api_debug_logs`: exceptions sem mensagem agora registram tipo e repr do erro como fallback
+- Adicionado retry com backoff para erros de conexao httpx (`PoolTimeout`, `ConnectError`, `RemoteProtocolError`) em `_ml_request` — resolve falhas silenciosas em containers Docker com conexoes stale
 - Eliminado warning "Task exception was never retrieved" no `_resolve_item_seller` quando sellers retornam 403 durante resolucao concorrente de itens
 
 ### Added
