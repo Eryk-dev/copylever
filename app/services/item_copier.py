@@ -1137,6 +1137,8 @@ async def copy_single_item(
         safe_mode_retry_used = False
         force_no_title = False
         force_no_family_name = False
+        locations_qty_zeroed = False  # tracks multi-location available_quantity workaround
+        original_quantity: int | None = None
         last_exc: Exception | None = None
 
         for attempt in range(1, 5):
@@ -1215,7 +1217,9 @@ async def copy_single_item(
                     payload = dict(payload)
                     loc_actions = []
                     if payload.get("available_quantity", 0) != 0:
+                        original_quantity = payload["available_quantity"]
                         payload["available_quantity"] = 0
+                        locations_qty_zeroed = True
                         loc_actions.append("set available_quantity=0 (multi-location seller)")
                     if isinstance(payload.get("variations"), list):
                         for v in payload["variations"]:
@@ -1357,6 +1361,14 @@ async def copy_single_item(
                 ).eq("dest_seller", dest_seller).eq("action", "create_item").execute()
             except Exception:
                 pass
+
+        # 4b. Restore available_quantity for multi-location sellers
+        if locations_qty_zeroed and original_quantity:
+            try:
+                await update_item(dest_seller, new_item_id, {"available_quantity": original_quantity}, org_id=org_id)
+                logger.info(f"Restored available_quantity={original_quantity} for {new_item_id}")
+            except Exception as e:
+                logger.warning(f"Failed to restore available_quantity for {new_item_id}: {e}")
 
         # 5. POST description
         if plain_text:
