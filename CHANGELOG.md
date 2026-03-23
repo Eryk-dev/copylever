@@ -13,6 +13,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - `POST /api/copy/resolve-sellers` otimizado: identifica o seller do primeiro item e usa como fast path para os demais (1+N requests em vez de N×M); fallback completo apenas para itens de sellers diferentes
 
 ### Fixed
+- Corrigido esgotamento do pool de conexoes httpx que impedia encontrar a conta de origem apos uptime prolongado — adicionado `keepalive_expiry=30` para descartar conexoes stale, aumentado pool para 30 conexoes, e implementado auto-reciclagem do cliente HTTP em caso de `PoolTimeout` (ERR-052)
 - Corrigido `retry-corrections` falhando com "Um ou mais logs nao foram encontrados" quando org tem mais de 1000 copy_logs — query agora filtra por IDs diretamente via `.in_()` em vez de buscar todos e filtrar em Python (limite default do Supabase: 1000 rows)
 - Corrigido deteccao de erro `item.channels.invalid`: campo `channels` agora e removido no primeiro retry em vez de esperar pelo safe_mode (detecta codigos de erro `item.X.invalid` nos causes da API ML)
 - Adicionado retry com backoff exponencial (3s, 6s, 12s) para erros 500 do ML (internal_error, internal_server) que sao problemas transitorios de infraestrutura

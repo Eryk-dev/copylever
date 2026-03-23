@@ -33,9 +33,13 @@ _http_client: httpx.AsyncClient | None = None
 def _get_client() -> httpx.AsyncClient:
     """Return the shared httpx.AsyncClient, creating it on first call."""
     global _http_client
-    if _http_client is None:
+    if _http_client is None or _http_client.is_closed:
         _http_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            limits=httpx.Limits(
+                max_connections=30,
+                max_keepalive_connections=15,
+                keepalive_expiry=30,
+            ),
             timeout=60.0,
         )
     return _http_client
@@ -47,6 +51,18 @@ async def close_client() -> None:
     if _http_client is not None:
         await _http_client.aclose()
         _http_client = None
+
+
+async def _recycle_client() -> None:
+    """Close and discard the shared HTTP client so it's recreated fresh."""
+    global _http_client
+    old = _http_client
+    _http_client = None
+    if old is not None:
+        try:
+            await old.aclose()
+        except Exception:
+            pass
 
 
 def _get_shop_lock(shop_id: int) -> asyncio.Lock:

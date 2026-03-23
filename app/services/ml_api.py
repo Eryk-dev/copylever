@@ -28,11 +28,17 @@ def _get_ml_client() -> httpx.AsyncClient:
 
     Using a persistent client enables TCP/TLS connection reuse across
     requests, eliminating redundant handshakes for multi-item copy operations.
+    keepalive_expiry=30 ensures stale idle connections are discarded,
+    preventing pool exhaustion in long-running Docker containers.
     """
     global _ml_http_client
-    if _ml_http_client is None:
+    if _ml_http_client is None or _ml_http_client.is_closed:
         _ml_http_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            limits=httpx.Limits(
+                max_connections=30,
+                max_keepalive_connections=15,
+                keepalive_expiry=30,
+            ),
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
     return _ml_http_client
@@ -44,6 +50,22 @@ async def close_ml_client() -> None:
     if _ml_http_client is not None:
         await _ml_http_client.aclose()
         _ml_http_client = None
+
+
+async def _recycle_ml_client() -> None:
+    """Close and discard the shared ML HTTP client so it's recreated fresh.
+
+    Called on PoolTimeout to flush leaked/stale connections that accumulate
+    in long-running containers (e.g. after cancelled asyncio tasks).
+    """
+    global _ml_http_client
+    old = _ml_http_client
+    _ml_http_client = None  # next _get_ml_client() call will create a fresh one
+    if old is not None:
+        try:
+            await old.aclose()
+        except Exception:
+            pass  # best-effort close; the important thing is discarding it
 
 
 # ── In-memory token cache ─────────────────────────────────
@@ -173,9 +195,9 @@ async def _ml_request(
     (e.g. POST /items uses 60s).
     """
     headers = {"Authorization": f"Bearer {token}"}
-    client = _get_ml_client()
     resp: httpx.Response | None = None
     for attempt in range(_REQUEST_RATE_RETRIES):
+        client = _get_ml_client()
         try:
             resp = await client.request(
                 method, url, headers=headers, json=json, params=params,
@@ -188,6 +210,13 @@ async def _ml_request(
                     f"ML API connection failed after {attempt + 1} attempts "
                     f"({type(exc).__name__}): {method} {url}"
                 ) from exc
+            # On PoolTimeout, recreate the client to flush stale connections
+            if isinstance(exc, httpx.PoolTimeout):
+                logger.warning(
+                    "ML PoolTimeout on %s %s — recycling HTTP client (attempt %d)",
+                    method, url, attempt + 1,
+                )
+                await _recycle_ml_client()
             wait = _CONNECTION_RETRY_WAIT * (attempt + 1)
             logger.warning(
                 "ML connection error on %s %s (%s) — retrying in %ds (attempt %d)",

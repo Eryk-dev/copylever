@@ -1162,6 +1162,39 @@ error_history:
       limit. Always push filters into the query. This applies to any table that can
       grow beyond 1000 rows.
 
+  - id: ERR-052
+    date: "2026-03-23"
+    category: infrastructure
+    title: "httpx connection pool exhaustion — source seller not found after uptime"
+    symptom: |
+      After the VPS runs for some time, resolve-sellers and copy operations fail
+      with "Item nao encontrado em nenhum seller conectado" or PoolTimeout errors.
+      Restarting the VPS temporarily fixes the issue. All copy_logs show
+      "ML API connection failed after 3 attempts (PoolTimeout)".
+    root_cause: |
+      The singleton httpx.AsyncClient had max_connections=20 and no keepalive_expiry.
+      With 11 active sellers, _resolve_item_seller fires 11 parallel requests per item.
+      Multiple concurrent resolves easily saturated the 20-connection pool.
+      Additionally, cancelled asyncio tasks (from the as_completed+cancel pattern)
+      could leak connections that were never returned to the pool.
+      Without keepalive_expiry, stale/leaked connections occupied pool slots indefinitely.
+      After enough operations, the pool was fully exhausted and all new requests timed out.
+    fix: |
+      1. Added keepalive_expiry=30 to both ML and Shopee httpx clients — stale idle
+         connections are automatically discarded after 30 seconds.
+      2. Increased pool to max_connections=30, max_keepalive_connections=15.
+      3. Added _recycle_ml_client() — on PoolTimeout, the entire client is closed and
+         recreated fresh, flushing all leaked/stale connections.
+      4. Added is_closed check in _get_ml_client/_get_client to auto-recreate.
+    files:
+      - app/services/ml_api.py
+      - app/services/shopee_api.py
+    lesson: |
+      Long-running singleton httpx clients MUST have keepalive_expiry set to prevent
+      stale connection accumulation. When using asyncio.create_task + cancel patterns
+      with httpx, connections can leak. Always have a recovery mechanism (client recycling)
+      for PoolTimeout scenarios.
+
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.
 patterns:
