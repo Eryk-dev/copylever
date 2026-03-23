@@ -270,6 +270,22 @@ def _build_attribute_correction_details(attr_ids: set[str]) -> dict[str, Any] | 
     }
 
 
+def _is_locations_assigned_error(exc: MlApiError) -> bool:
+    """Check if an ML API error is caused by user product already having locations assigned.
+
+    This is a non-retryable structural error — the destination seller already has
+    this product with multi-warehouse inventory locations configured.
+    """
+    text = str(exc).lower()
+    if "already has locations assigned" in text:
+        return True
+    payload = exc.payload if isinstance(exc.payload, dict) else {}
+    msg = str(payload.get("message", "")).lower()
+    if "already has locations assigned" in msg:
+        return True
+    return False
+
+
 def _is_dimension_error(exc: MlApiError) -> bool:
     """Check if an ML API error is caused by missing shipping dimensions."""
     text = str(exc).lower()
@@ -1192,6 +1208,42 @@ async def copy_single_item(
                         org_id=org_id,
                     )
                     raise
+
+                # Multi-location inventory: product already has locations assigned.
+                # Retry without available_quantity — stock is managed per-location.
+                if _is_locations_assigned_error(exc) and attempt < 4:
+                    payload = dict(payload)
+                    loc_actions = []
+                    if "available_quantity" in payload:
+                        payload.pop("available_quantity")
+                        loc_actions.append("removed available_quantity (multi-location seller)")
+                    if isinstance(payload.get("variations"), list):
+                        for v in payload["variations"]:
+                            v.pop("available_quantity", None)
+                        loc_actions.append("removed variation available_quantity")
+                    _log_api_debug(
+                        action="create_item",
+                        source_seller=source_seller,
+                        dest_seller=dest_seller,
+                        source_item_id=item_id,
+                        user_id=user_id,
+                        copy_log_id=copy_log_id,
+                        api_method=exc.method,
+                        api_url=exc.url,
+                        request_payload=payload,
+                        response_status=exc.status_code,
+                        response_body=exc.payload if isinstance(exc.payload, dict) else {"raw": str(exc.payload)},
+                        error_message=exc.detail,
+                        attempt_number=attempt,
+                        adjustments=loc_actions or ["locations_assigned_retry"],
+                        org_id=org_id,
+                    )
+                    logger.warning(
+                        "ML locations-assigned error for %s -> %s (attempt %d). "
+                        "Retrying without available_quantity: %s",
+                        item_id, dest_seller, attempt, ", ".join(loc_actions),
+                    )
+                    continue
 
                 if _is_title_invalid_error(exc) and not _is_title_length_error(exc):
                     force_no_title = True
