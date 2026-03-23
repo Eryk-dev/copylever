@@ -1137,8 +1137,7 @@ async def copy_single_item(
         safe_mode_retry_used = False
         force_no_title = False
         force_no_family_name = False
-        locations_qty_zeroed = False  # tracks multi-location available_quantity workaround
-        original_quantity: int | None = None
+        original_quantity: int | None = None  # saved for multi-location retry
         last_exc: Exception | None = None
 
         for attempt in range(1, 5):
@@ -1212,20 +1211,24 @@ async def copy_single_item(
                     raise
 
                 # Multi-location inventory: product already has locations assigned.
-                # Retry without available_quantity — stock is managed per-location.
+                # Strategy: force regular item mode (title instead of family_name)
+                # to avoid user_product matching that triggers the locations conflict.
                 if _is_locations_assigned_error(exc) and attempt < 4:
                     payload = dict(payload)
                     loc_actions = []
-                    if payload.get("available_quantity", 0) != 0:
-                        original_quantity = payload["available_quantity"]
-                        payload["available_quantity"] = 0
-                        locations_qty_zeroed = True
-                        loc_actions.append("set available_quantity=0 (multi-location seller)")
-                    if isinstance(payload.get("variations"), list):
-                        for v in payload["variations"]:
-                            if v.get("available_quantity", 0) != 0:
-                                v["available_quantity"] = 0
-                        loc_actions.append("set variation available_quantity=0")
+                    # Convert from user_product (family_name) to regular item (title)
+                    if payload.get("family_name") and not payload.get("title"):
+                        title = _clean_text(item.get("title"))
+                        if not title:
+                            title = payload["family_name"]
+                        payload["title"] = title
+                        payload.pop("family_name")
+                        loc_actions.append("switched family_name→title (avoid user_product locations conflict)")
+                    # Restore original available_quantity if it was zeroed
+                    if original_quantity and payload.get("available_quantity", -1) == 0:
+                        payload["available_quantity"] = original_quantity
+                        locations_qty_zeroed = False
+                        loc_actions.append(f"restored available_quantity={original_quantity}")
                     _log_api_debug(
                         action="create_item",
                         source_seller=source_seller,
@@ -1245,7 +1248,7 @@ async def copy_single_item(
                     )
                     logger.warning(
                         "ML locations-assigned error for %s -> %s (attempt %d). "
-                        "Retrying without available_quantity: %s",
+                        "Retrying as regular item: %s",
                         item_id, dest_seller, attempt, ", ".join(loc_actions),
                     )
                     continue
@@ -1361,14 +1364,6 @@ async def copy_single_item(
                 ).eq("dest_seller", dest_seller).eq("action", "create_item").execute()
             except Exception:
                 pass
-
-        # 4b. Restore available_quantity for multi-location sellers
-        if locations_qty_zeroed and original_quantity:
-            try:
-                await update_item(dest_seller, new_item_id, {"available_quantity": original_quantity}, org_id=org_id)
-                logger.info(f"Restored available_quantity={original_quantity} for {new_item_id}")
-            except Exception as e:
-                logger.warning(f"Failed to restore available_quantity for {new_item_id}: {e}")
 
         # 5. POST description
         if plain_text:

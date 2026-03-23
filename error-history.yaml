@@ -68,7 +68,7 @@ ml_error_codes:
     bad_request.locations_assigned:
       message: "user Product ID already has locations assigned"
       cause: Dest seller has multi-location inventory; the user product already has locations configured
-      fix_applied: Auto-detect → retry with available_quantity=0 (stock managed per-location, not per-item)
+      fix_applied: Auto-detect → retry as regular item (title instead of family_name) to avoid user_product locations conflict
       severity: blocking
       notes: cause array is empty for this error; detection via message text only
 
@@ -1217,14 +1217,17 @@ error_history:
       location-based stock management.
     fix: |
       1. Added _is_locations_assigned_error() detection function (message text match).
-      2. In the retry loop, when this error is detected: set available_quantity=0 in
-         payload (and in variations if present), then retry. ML requires the field
-         but rejects non-zero values when locations are configured.
-      3. Stock is managed per-location by the seller after item creation.
+      2. In the retry loop, when this error is detected: convert from user_product
+         (family_name) to regular item (title). The user_product matching triggers
+         the locations conflict; creating as regular item bypasses it.
+      3. available_quantity=0 alone does NOT fix it — the error is about the
+         user_product association, not the stock value.
     files:
       - app/services/item_copier.py
     lesson: |
-      ML multi-location sellers need available_quantity=0 on item creation (field required but non-zero conflicts with locations).
+      ML multi-location sellers reject user_product creation when locations are already assigned.
+      The fix is to create as regular item (title) instead of user_product (family_name).
+      available_quantity=0 does NOT fix it — the error is about user_product association.
       This error has an empty cause array, so it must be detected via message text.
       Any seller may or may not have multi-location inventory enabled.
 
