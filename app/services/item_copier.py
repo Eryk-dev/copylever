@@ -1214,13 +1214,14 @@ async def copy_single_item(
                 if _is_locations_assigned_error(exc) and attempt < 4:
                     payload = dict(payload)
                     loc_actions = []
-                    if "available_quantity" in payload:
-                        payload.pop("available_quantity")
-                        loc_actions.append("removed available_quantity (multi-location seller)")
+                    if payload.get("available_quantity", 0) != 0:
+                        payload["available_quantity"] = 0
+                        loc_actions.append("set available_quantity=0 (multi-location seller)")
                     if isinstance(payload.get("variations"), list):
                         for v in payload["variations"]:
-                            v.pop("available_quantity", None)
-                        loc_actions.append("removed variation available_quantity")
+                            if v.get("available_quantity", 0) != 0:
+                                v["available_quantity"] = 0
+                        loc_actions.append("set variation available_quantity=0")
                     _log_api_debug(
                         action="create_item",
                         source_seller=source_seller,
