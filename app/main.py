@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
-from app.routers import admin_users, auth, auth_ml, auth_shopee, billing, compat, copy, shopee_copy, super_admin
+from app.routers import admin_users, auth, auth_ml, auth_shopee, billing, compat, copy, photos, shopee_copy, super_admin
 from app.routers.auth import require_super_admin
 
 logging.basicConfig(
@@ -74,6 +74,7 @@ app.include_router(compat.router)
 app.include_router(super_admin.router)
 app.include_router(auth_shopee.router)
 app.include_router(shopee_copy.router)
+app.include_router(photos.router)
 
 
 @app.get("/api/health")

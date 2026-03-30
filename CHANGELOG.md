@@ -14,6 +14,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Contador de caracteres no campo de titulo com limite visual e `maxLength` no input
 - Correcoes de titulo agora sao individuais por MLB (nao agrupam por SKU) — cada anuncio precisa de um titulo proprio
 - Tabela `photo_logs` para rastrear operacoes de fotos em massa por org (migration 016)
+- `GET /api/photos/preview/{item_id}` — endpoint para visualizar fotos e SKUs de um anuncio ML antes de editar
 
 ### Changed
 - `POST /api/copy/resolve-sellers` otimizado: identifica o seller do primeiro item e usa como fast path para os demais (1+N requests em vez de N×M); fallback completo apenas para itens de sellers diferentes
