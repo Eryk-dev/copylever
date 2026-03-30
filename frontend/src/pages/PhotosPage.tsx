@@ -24,6 +24,33 @@ interface PhotoPreview {
   seller: string;
 }
 
+// Discriminated union for editable photos
+type EditablePhoto =
+  | { type: 'existing'; id: string; url: string; secure_url: string; size: string }
+  | { type: 'upload'; file: File; previewUrl: string; tempId: string }
+  | { type: 'url'; source: string; tempId: string };
+
+function getPhotoKey(photo: EditablePhoto): string {
+  return photo.type === 'existing' ? photo.id : photo.tempId;
+}
+
+function getPhotoSrc(photo: EditablePhoto): string {
+  switch (photo.type) {
+    case 'existing': return photo.secure_url || photo.url;
+    case 'upload': return photo.previewUrl;
+    case 'url': return photo.source;
+  }
+}
+
+function isNewPhoto(photo: EditablePhoto): boolean {
+  return photo.type !== 'existing';
+}
+
+let _tempIdCounter = 0;
+function nextTempId(): string {
+  return `temp-${Date.now()}-${++_tempIdCounter}`;
+}
+
 function parseItemId(input: string): string {
   const trimmed = input.trim();
   const match = trimmed.match(/MLB[-]?(\d+)/i);
@@ -40,9 +67,11 @@ export default function PhotosPage({ sellers, headers }: Props) {
   const [previewError, setPreviewError] = useState('');
   const [copiedSku, setCopiedSku] = useState<string | null>(null);
 
-  // Editable photo state (US-008)
-  const [activePhotos, setActivePhotos] = useState<PhotoPicture[]>([]);
-  const [removedPhotos, setRemovedPhotos] = useState<PhotoPicture[]>([]);
+  // Editable photo state (US-008, US-009)
+  const [activePhotos, setActivePhotos] = useState<EditablePhoto[]>([]);
+  const [removedPhotos, setRemovedPhotos] = useState<EditablePhoto[]>([]);
+  const [urlInput, setUrlInput] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
@@ -93,12 +122,13 @@ export default function PhotosPage({ sellers, headers }: Props) {
   // Initialize editable photos when preview loads
   useEffect(() => {
     if (preview) {
-      setActivePhotos([...preview.pictures]);
+      setActivePhotos(preview.pictures.map(p => ({ type: 'existing' as const, ...p })));
       setRemovedPhotos([]);
     } else {
       setActivePhotos([]);
       setRemovedPhotos([]);
     }
+    setUrlInput('');
   }, [preview]);
 
   // Photo editing handlers
@@ -106,6 +136,8 @@ export default function PhotosPage({ sellers, headers }: Props) {
     setActivePhotos(prev => {
       if (prev.length <= 1) return prev;
       const removed = prev[idx];
+      // Revoke blob URL for upload photos to prevent memory leaks
+      if (removed.type === 'upload') URL.revokeObjectURL(removed.previewUrl);
       setRemovedPhotos(r => [...r, removed]);
       return prev.filter((_, i) => i !== idx);
     });
@@ -113,11 +145,48 @@ export default function PhotosPage({ sellers, headers }: Props) {
 
   const handleRestorePhoto = useCallback((idx: number) => {
     setRemovedPhotos(prev => {
-      const restored = prev[idx];
+      const item = prev[idx];
+      // Re-create blob URL for upload photos being restored
+      const restored = item.type === 'upload'
+        ? { ...item, previewUrl: URL.createObjectURL(item.file) }
+        : item;
       setActivePhotos(a => [...a, restored]);
       return prev.filter((_, i) => i !== idx);
     });
   }, []);
+
+  // Add photos by file upload (US-009)
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+    const newPhotos: EditablePhoto[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (file.size > 10 * 1024 * 1024) {
+        toast(`${file.name}: arquivo excede 10MB.`, 'error');
+        continue;
+      }
+      newPhotos.push({
+        type: 'upload',
+        file,
+        previewUrl: URL.createObjectURL(file),
+        tempId: nextTempId(),
+      });
+    }
+    if (newPhotos.length > 0) {
+      setActivePhotos(prev => [...prev, ...newPhotos]);
+    }
+    // Reset input so the same file can be re-selected
+    e.target.value = '';
+  }, [toast]);
+
+  // Add photo by URL (US-009)
+  const handleAddUrl = useCallback(() => {
+    const url = urlInput.trim();
+    if (!url) return;
+    setActivePhotos(prev => [...prev, { type: 'url', source: url, tempId: nextTempId() }]);
+    setUrlInput('');
+  }, [urlInput]);
 
   const handleDragStart = useCallback((e: React.DragEvent, idx: number) => {
     setDragIdx(idx);
@@ -265,9 +334,72 @@ export default function PhotosPage({ sellers, headers }: Props) {
 
           {/* Photos Grid — editable */}
           <div style={{ marginTop: 'var(--space-4)' }}>
-            <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', fontWeight: 500, marginBottom: 'var(--space-2)' }}>
-              Fotos ({activePhotos.length})
-            </p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: 'var(--space-2)' }}>
+              <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', fontWeight: 500 }}>
+                Fotos ({activePhotos.length})
+              </p>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                style={{
+                  padding: '2px 10px',
+                  borderRadius: 4,
+                  border: '1px solid var(--line)',
+                  background: 'var(--surface)',
+                  color: 'var(--ink)',
+                  fontSize: 'var(--text-xs)',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                + Adicionar foto
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".jpg,.jpeg,.png"
+                multiple
+                onChange={handleFileSelect}
+                style={{ display: 'none' }}
+              />
+            </div>
+
+            {/* URL input */}
+            <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-3)' }}>
+              <input
+                className="input-base"
+                type="text"
+                placeholder="URL da imagem (https://...)"
+                value={urlInput}
+                onChange={e => setUrlInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleAddUrl(); }}
+                style={{
+                  flex: 1,
+                  padding: 'var(--space-1) var(--space-2)',
+                  border: '1px solid var(--line)',
+                  borderRadius: 4,
+                  fontSize: 'var(--text-xs)',
+                  background: 'var(--paper)',
+                  color: 'var(--ink)',
+                }}
+              />
+              <button
+                onClick={handleAddUrl}
+                disabled={!urlInput.trim()}
+                style={{
+                  padding: 'var(--space-1) var(--space-2)',
+                  borderRadius: 4,
+                  border: '1px solid var(--line)',
+                  background: urlInput.trim() ? 'var(--surface)' : 'var(--paper)',
+                  color: urlInput.trim() ? 'var(--ink)' : 'var(--ink-faint)',
+                  fontSize: 'var(--text-xs)',
+                  fontWeight: 600,
+                  cursor: urlInput.trim() ? 'pointer' : 'default',
+                }}
+              >
+                Adicionar
+              </button>
+            </div>
+
             <div style={{
               display: 'grid',
               gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
@@ -275,7 +407,7 @@ export default function PhotosPage({ sellers, headers }: Props) {
             }}>
               {activePhotos.map((pic, idx) => (
                 <div
-                  key={pic.id}
+                  key={getPhotoKey(pic)}
                   draggable
                   onDragStart={e => handleDragStart(e, idx)}
                   onDragOver={e => handleDragOver(e, idx)}
@@ -287,7 +419,11 @@ export default function PhotosPage({ sellers, headers }: Props) {
                     aspectRatio: '1',
                     borderRadius: 8,
                     overflow: 'hidden',
-                    border: dragOverIdx === idx ? '2px solid var(--accent)' : '1px solid var(--line)',
+                    border: dragOverIdx === idx
+                      ? '2px solid var(--accent)'
+                      : isNewPhoto(pic)
+                        ? '2px dashed var(--accent)'
+                        : '1px solid var(--line)',
                     background: 'var(--paper)',
                     opacity: dragIdx === idx ? 0.4 : 1,
                     cursor: 'grab',
@@ -295,7 +431,7 @@ export default function PhotosPage({ sellers, headers }: Props) {
                   }}
                 >
                   <img
-                    src={pic.secure_url || pic.url}
+                    src={getPhotoSrc(pic)}
                     alt={`Foto ${idx + 1}`}
                     draggable={false}
                     style={{
@@ -320,6 +456,23 @@ export default function PhotosPage({ sellers, headers }: Props) {
                       letterSpacing: '0.05em',
                     }}>
                       Principal
+                    </span>
+                  )}
+                  {isNewPhoto(pic) && (
+                    <span style={{
+                      position: 'absolute',
+                      bottom: 6,
+                      left: 6,
+                      background: 'var(--accent)',
+                      color: '#fff',
+                      fontSize: 10,
+                      fontWeight: 700,
+                      padding: '2px 6px',
+                      borderRadius: 4,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em',
+                    }}>
+                      Nova
                     </span>
                   )}
                   {/* Remove button — hidden when only 1 photo left */}
@@ -366,7 +519,7 @@ export default function PhotosPage({ sellers, headers }: Props) {
                 gap: 'var(--space-2)',
               }}>
                 {removedPhotos.map((pic, idx) => (
-                  <div key={pic.id} style={{
+                  <div key={getPhotoKey(pic)} style={{
                     position: 'relative',
                     aspectRatio: '1',
                     borderRadius: 8,
@@ -376,7 +529,7 @@ export default function PhotosPage({ sellers, headers }: Props) {
                     opacity: 0.5,
                   }}>
                     <img
-                      src={pic.secure_url || pic.url}
+                      src={getPhotoSrc(pic)}
                       alt="Removida"
                       style={{
                         width: '100%',
