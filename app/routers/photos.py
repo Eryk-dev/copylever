@@ -4,11 +4,11 @@ Photos endpoints — preview item photos, upload, search SKU, apply, logs.
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 
 from app.db.supabase import get_db
 from app.routers.auth import require_active_org
-from app.services.ml_api import get_item
+from app.services.ml_api import get_item, upload_picture
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/photos", tags=["photos"])
@@ -127,3 +127,41 @@ async def preview_item(
         "skus": unique_skus,
         "seller": seller,
     }
+
+
+_ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/jpg", "image/png"}
+_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+@router.post("/upload")
+async def upload_photo(
+    file: UploadFile,
+    seller: str = Query(...),
+    user: dict = Depends(require_active_org),
+):
+    """Upload an image to ML and return the picture_id."""
+    org_id = user["org_id"]
+
+    # Validate content type
+    ct = (file.content_type or "").lower()
+    if ct not in _ALLOWED_CONTENT_TYPES:
+        raise HTTPException(status_code=400, detail="Tipo de arquivo inválido. Apenas JPG/JPEG/PNG são aceitos.")
+
+    # Read and validate size
+    file_bytes = await file.read()
+    if len(file_bytes) > _MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="Arquivo excede o limite de 10MB.")
+
+    try:
+        result = await upload_picture(
+            seller_slug=seller,
+            file_bytes=file_bytes,
+            filename=file.filename or "image.jpg",
+            content_type=ct,
+            org_id=org_id,
+        )
+    except Exception as exc:
+        logger.error("Photo upload failed for seller=%s: %s", seller, exc)
+        raise HTTPException(status_code=502, detail=f"Erro ao enviar foto para o Mercado Livre: {exc}")
+
+    return result

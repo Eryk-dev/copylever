@@ -501,6 +501,27 @@ async def update_item(seller_slug: str, item_id: str, payload: dict, org_id: str
     return resp.json()
 
 
+async def upload_picture(seller_slug: str, file_bytes: bytes, filename: str, content_type: str, org_id: str = "") -> dict:
+    """POST /pictures/items/upload — upload image to ML and get picture_id."""
+    token = await _get_token(seller_slug, org_id)
+    client = _get_ml_client()
+    for attempt in range(_REQUEST_RATE_RETRIES):
+        resp = await client.post(
+            f"{ML_API}/pictures/items/upload",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": (filename, file_bytes, content_type)},
+            timeout=60.0,
+        )
+        if resp.status_code == 429:
+            wait = _REQUEST_RATE_BASE_WAIT * (2 ** attempt)
+            logger.warning("429 on picture upload, retry %d after %ds", attempt + 1, wait)
+            await asyncio.sleep(wait)
+            continue
+        break
+    _raise_for_status(resp, "Mercado Livre API (picture upload)")
+    return resp.json()
+
+
 async def search_items_by_sku(seller_slug: str, sku: str, org_id: str = "") -> list[str]:
     """GET /users/{user_id}/items/search with seller_sku and sku params."""
     db = get_db()
