@@ -18,6 +18,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - `POST /api/photos/upload` — endpoint para upload de imagens ao ML (multipart, valida tipo JPG/PNG e limite 10MB)
 - `upload_picture()` em `ml_api.py` — funcao publica para upload de imagens via ML API com retry em 429
 - `POST /api/photos/search-sku` — endpoint para buscar anuncios por SKU para aplicacao de fotos em massa (reutiliza `search_sku_all_sellers` do compat)
+- `apply_photos_to_targets()` em `photo_applier.py` — servico para aplicar fotos em multiplos anuncios ML via PUT /items/{id} com retry 429, logging de erros e atualizacao de photo_logs
 
 ### Changed
 - `POST /api/copy/resolve-sellers` otimizado: identifica o seller do primeiro item e usa como fast path para os demais (1+N requests em vez de N×M); fallback completo apenas para itens de sellers diferentes
