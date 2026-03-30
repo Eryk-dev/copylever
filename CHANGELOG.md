@@ -21,6 +21,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - `apply_photos_to_targets()` em `photo_applier.py` — servico para aplicar fotos em multiplos anuncios ML via PUT /items/{id} com retry 429, logging de erros e atualizacao de photo_logs
 - `POST /api/photos/apply` — endpoint para aplicar fotos editadas em anuncios destino (BackgroundTask, valida permissoes can_copy_to, retorna log_id imediatamente)
 - `GET /api/photos/logs` — endpoint para historico de operacoes de fotos com filtro por status e paginacao (org-scoped, operadores veem apenas seus logs)
+- `PhotosPage.tsx` — pagina frontend com aba "Fotos" para visualizar fotos de anuncios ML (input MLB, preview com grid de fotos, SKUs, seller detectado)
 
 ### Changed
 - `POST /api/copy/resolve-sellers` otimizado: identifica o seller do primeiro item e usa como fast path para os demais (1+N requests em vez de N×M); fallback completo apenas para itens de sellers diferentes
