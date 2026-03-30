@@ -24,6 +24,15 @@ interface PhotoPreview {
   seller: string;
 }
 
+interface SkuSearchResult {
+  seller_slug: string;
+  seller_name: string;
+  item_id: string;
+  sku: string;
+  title: string;
+  thumbnail: string;
+}
+
 // Discriminated union for editable photos
 type EditablePhoto =
   | { type: 'existing'; id: string; url: string; secure_url: string; size: string }
@@ -75,6 +84,14 @@ export default function PhotosPage({ sellers, headers }: Props) {
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
+  // SKU search and target selection state (US-010)
+  const [skuInput, setSkuInput] = useState('');
+  const [skuSearchResults, setSkuSearchResults] = useState<SkuSearchResult[]>([]);
+  const [selectedTargets, setSelectedTargets] = useState<Set<string>>(new Set());
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState('');
+  const [hasSearched, setHasSearched] = useState(false);
+
   const sellerName = useCallback((slug: string) => {
     return sellers.find(s => s.slug === slug)?.name || slug;
   }, [sellers]);
@@ -119,16 +136,23 @@ export default function PhotosPage({ sellers, headers }: Props) {
     return () => clearTimeout(timer);
   }, [sourceInput]);
 
-  // Initialize editable photos when preview loads
+  // Initialize editable photos and SKU input when preview loads
   useEffect(() => {
     if (preview) {
       setActivePhotos(preview.pictures.map(p => ({ type: 'existing' as const, ...p })));
       setRemovedPhotos([]);
+      // Auto-populate SKU input with first detected SKU
+      setSkuInput(preview.skus.length > 0 ? preview.skus[0] : '');
     } else {
       setActivePhotos([]);
       setRemovedPhotos([]);
+      setSkuInput('');
     }
     setUrlInput('');
+    setSkuSearchResults([]);
+    setSelectedTargets(new Set());
+    setSearchError('');
+    setHasSearched(false);
   }, [preview]);
 
   // Photo editing handlers
@@ -187,6 +211,55 @@ export default function PhotosPage({ sellers, headers }: Props) {
     setActivePhotos(prev => [...prev, { type: 'url', source: url, tempId: nextTempId() }]);
     setUrlInput('');
   }, [urlInput]);
+
+  // SKU search handler (US-010)
+  const handleSkuSearch = useCallback(async () => {
+    const sku = skuInput.trim();
+    if (!sku) return;
+    setSearching(true);
+    setSearchError('');
+    setSkuSearchResults([]);
+    setSelectedTargets(new Set());
+    try {
+      const res = await fetch(`${API_BASE}/api/photos/search-sku`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ skus: [sku] }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Erro na busca' }));
+        setSearchError(err.detail);
+        return;
+      }
+      const data: SkuSearchResult[] = await res.json();
+      // Exclude source item from results
+      const filtered = data.filter(r => r.item_id !== preview?.id);
+      setSkuSearchResults(filtered);
+      // Select all by default
+      setSelectedTargets(new Set(filtered.map(r => `${r.seller_slug}:${r.item_id}`)));
+      setHasSearched(true);
+    } catch (e) {
+      setSearchError(String(e));
+    } finally {
+      setSearching(false);
+    }
+  }, [skuInput, headers, preview]);
+
+  const handleToggleTarget = useCallback((key: string) => {
+    setSelectedTargets(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const handleToggleAll = useCallback(() => {
+    setSelectedTargets(prev => {
+      if (prev.size === skuSearchResults.length) return new Set();
+      return new Set(skuSearchResults.map(r => `${r.seller_slug}:${r.item_id}`));
+    });
+  }, [skuSearchResults]);
 
   const handleDragStart = useCallback((e: React.DragEvent, idx: number) => {
     setDragIdx(idx);
@@ -563,6 +636,142 @@ export default function PhotosPage({ sellers, headers }: Props) {
               </div>
             </div>
           )}
+        </Card>
+      )}
+
+      {/* SKU Search and Target Selection (US-010) */}
+      {preview && (
+        <Card title="Buscar por SKU">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+            <label style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', fontWeight: 500 }}>
+              SKU para buscar anuncios de destino
+            </label>
+            <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+              <input
+                className="input-base"
+                type="text"
+                placeholder="Digite o SKU"
+                value={skuInput}
+                onChange={e => setSkuInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && skuInput.trim()) void handleSkuSearch(); }}
+                style={{
+                  flex: 1,
+                  padding: 'var(--space-2) var(--space-3)',
+                  border: '1px solid var(--line)',
+                  borderRadius: 6,
+                  fontSize: 'var(--text-sm)',
+                  fontFamily: 'var(--font-mono)',
+                  background: 'var(--paper)',
+                  color: 'var(--ink)',
+                }}
+              />
+              <button
+                className="btn-primary"
+                onClick={() => void handleSkuSearch()}
+                disabled={!skuInput.trim() || searching}
+                style={{ padding: 'var(--space-2) var(--space-4)', fontSize: 'var(--text-sm)', whiteSpace: 'nowrap' }}
+              >
+                {searching ? (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                    <span className="spinner spinner-sm" /> Buscando...
+                  </span>
+                ) : 'Buscar por SKU'}
+              </button>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Search Error */}
+      {searchError && (
+        <Card title="Resultados">
+          <p style={{ color: 'var(--danger)', fontSize: 'var(--text-sm)' }}>{searchError}</p>
+        </Card>
+      )}
+
+      {/* Search Results — target selection */}
+      {skuSearchResults.length > 0 && (
+        <Card title={`Destinos (${selectedTargets.size} de ${skuSearchResults.length} anuncio${skuSearchResults.length !== 1 ? 's' : ''} selecionado${selectedTargets.size !== 1 ? 's' : ''})`}>
+          <div className="animate-in" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+            {/* Select all toggle */}
+            <label style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-2)',
+              fontSize: 'var(--text-xs)',
+              color: 'var(--ink-faint)',
+              fontWeight: 500,
+              cursor: 'pointer',
+              marginBottom: 'var(--space-1)',
+            }}>
+              <input
+                type="checkbox"
+                checked={selectedTargets.size === skuSearchResults.length}
+                onChange={handleToggleAll}
+                style={{ accentColor: 'var(--accent)' }}
+              />
+              Selecionar todos
+            </label>
+
+            {skuSearchResults.map(item => {
+              const key = `${item.seller_slug}:${item.item_id}`;
+              return (
+                <label
+                  key={key}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 'var(--space-3)',
+                    padding: 'var(--space-2) var(--space-3)',
+                    background: selectedTargets.has(key) ? 'var(--paper)' : 'var(--surface)',
+                    borderRadius: 6,
+                    border: `1px solid ${selectedTargets.has(key) ? 'var(--accent)' : 'var(--line)'}`,
+                    cursor: 'pointer',
+                    transition: 'border 0.15s, background 0.15s',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedTargets.has(key)}
+                    onChange={() => handleToggleTarget(key)}
+                    style={{ accentColor: 'var(--accent)', flexShrink: 0 }}
+                  />
+                  {item.thumbnail && (
+                    <img
+                      src={item.thumbnail}
+                      alt=""
+                      style={{ width: 40, height: 40, borderRadius: 4, objectFit: 'cover', background: 'var(--surface)', flexShrink: 0 }}
+                    />
+                  )}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ fontSize: 'var(--text-sm)', fontWeight: 500, lineHeight: 'var(--leading-tight)' }}>
+                      {item.title || item.item_id}
+                    </p>
+                    <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', fontFamily: 'var(--font-mono)' }}>
+                      {item.item_id}
+                    </p>
+                  </div>
+                  <span style={{
+                    fontSize: 'var(--text-xs)',
+                    fontWeight: 600,
+                    color: 'var(--ink-muted)',
+                    whiteSpace: 'nowrap',
+                  }}>
+                    {item.seller_name}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      {/* Empty state after search */}
+      {hasSearched && !searching && skuSearchResults.length === 0 && !searchError && (
+        <Card title="Resultados">
+          <p style={{ fontSize: 'var(--text-sm)', color: 'var(--ink-faint)' }}>
+            Nenhum anuncio encontrado com esse SKU.
+          </p>
         </Card>
       )}
     </div>
