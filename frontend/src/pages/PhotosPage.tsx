@@ -237,6 +237,20 @@ export default function PhotosPage({ sellers, headers }: Props) {
 
   // Initialize editable photos and SKU input when preview loads
   useEffect(() => {
+    // Clean up blob URLs from previous photos to prevent memory leaks
+    return () => {
+      setActivePhotos(prev => {
+        prev.forEach(p => { if (p.type === 'upload') URL.revokeObjectURL(p.previewUrl); });
+        return prev;
+      });
+      setRemovedPhotos(prev => {
+        prev.forEach(p => { if (p.type === 'upload') URL.revokeObjectURL(p.previewUrl); });
+        return prev;
+      });
+    };
+  }, [preview]);
+
+  useEffect(() => {
     if (preview) {
       setActivePhotos(preview.pictures.map(p => ({ type: 'existing' as const, ...p })));
       setRemovedPhotos([]);
@@ -259,8 +273,8 @@ export default function PhotosPage({ sellers, headers }: Props) {
     setActivePhotos(prev => {
       if (prev.length <= 1) return prev;
       const removed = prev[idx];
-      // Revoke blob URL for upload photos to prevent memory leaks
-      if (removed.type === 'upload') URL.revokeObjectURL(removed.previewUrl);
+      // Don't revoke blob URL here — photo may be displayed in "Removidas" section
+      // Blob URLs are cleaned up when preview resets (useEffect on preview change)
       setRemovedPhotos(r => [...r, removed]);
       return prev.filter((_, i) => i !== idx);
     });
@@ -427,10 +441,9 @@ export default function PhotosPage({ sellers, headers }: Props) {
 
       // Poll for completion to show summary toast
       if (pollRef.current) clearInterval(pollRef.current);
-      const hdrs = headers();
       pollRef.current = setInterval(async () => {
         try {
-          const logsRes = await fetch(`${API_BASE}/api/photos/logs?limit=50`, { headers: hdrs });
+          const logsRes = await fetch(`${API_BASE}/api/photos/logs?limit=50`, { headers: headers() });
           if (!logsRes.ok) return;
           const allLogs: Array<{ id: number; status: string; success_count: number; error_count: number }> = await logsRes.json();
           const log = allLogs.find(l => l.id === logId);

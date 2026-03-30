@@ -33,6 +33,13 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Erro de titulo longo nao faz mais truncamento automatico — agora entra no fluxo de correcao manual (needs_correction com kind="title")
 
 ### Fixed
+- Corrigido photo_logs "processing" nao limpos no restart do servidor (adicionado cleanup em `cleanup_stale_tasks`)
+- Corrigido guard contra lista de fotos vazia no `apply_photos_to_targets` — impede que PUT /items com pictures=[] apague todas as fotos de um anuncio
+- Corrigido validacao de permissao can_copy_to no endpoint POST /api/photos/upload para operadores
+- Corrigido validacao PictureEntry: rejeita entradas onde ambos id e source sao nulos
+- Corrigido blob URL revogado prematuramente em fotos removidas causando imagem quebrada na secao "Removidas" do PhotosPage
+- Corrigido headers stale no polling de apply do PhotosPage — agora chama headers() dentro do callback do setInterval
+- Corrigido tratamento de excecao fatal no photo_applier — targets nao processados sao marcados como erro em vez de ficar pendentes
 - Corrigido toast de correcao de grupo mostrando "nenhum anuncio copiado" quando o backend retorna status "queued" (background task) — agora mostra mensagem de sucesso correta
 - Corrigido `title_override` perdido durante retry: `_adjust_payload_for_ml_error` e safe_mode rebuild sobrescreviam o titulo corrigido com o original do source — agora o override e preservado apos cada ajuste no retry loop
 - Corrigido tratamento de warnings de envio do ML: `mandatory_free_shipping` agora seta `free_shipping=true` proativamente e `lost_me1_by_user` confirma `mode=me2` no retry (ERR-055)

@@ -41,6 +41,10 @@ async def cleanup_stale_tasks():
                 "status": "error",
                 "error_details": stale_error,
             }).eq("status", "in_progress").execute()
+        # photo_logs uses "processing" instead of "in_progress"
+        db.table("photo_logs").update({
+            "status": "error",
+        }).eq("status", "processing").execute()
         logger.info("Cleaned up stale in_progress tasks on startup")
     except Exception as e:
         logger.warning("Failed to clean up stale tasks: %s", e)

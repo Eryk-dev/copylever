@@ -146,6 +146,16 @@ async def upload_photo(
     """Upload an image to ML and return the picture_id."""
     org_id = user["org_id"]
 
+    # Validate seller permission for operators
+    if user["role"] != "admin":
+        allowed = {
+            p["seller_slug"]
+            for p in user.get("permissions", [])
+            if p.get("can_copy_to")
+        }
+        if seller not in allowed:
+            raise HTTPException(status_code=403, detail=f"Sem permissão para o seller: {seller}")
+
     # Validate content type
     ct = (file.content_type or "").lower()
     if ct not in _ALLOWED_CONTENT_TYPES:
@@ -209,6 +219,16 @@ async def search_sku(req: SearchSkuRequest, user: dict = Depends(require_active_
 class PictureEntry(BaseModel):
     id: str | None = None
     source: str | None = None
+
+    @field_validator("source")
+    @classmethod
+    def validate_not_empty(cls, v: str | None, info) -> str | None:  # noqa: N805
+        # At least one of id or source must be provided (checked at model level)
+        return v
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.id and not self.source:
+            raise ValueError("Cada foto deve ter 'id' ou 'source'")
 
 
 class ApplyTarget(BaseModel):

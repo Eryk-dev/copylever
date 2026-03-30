@@ -65,56 +65,83 @@ async def apply_photos_to_targets(
         elif pic.get("source"):
             ml_pictures.append({"source": pic["source"]})
 
+    # Guard: never send empty pictures (would wipe all photos from listings)
+    if not ml_pictures:
+        logger.error("apply_photos_to_targets called with no valid pictures for source=%s", source_item_id)
+        if log_id:
+            error_results = [
+                {**t, "status": "error", "error": "Nenhuma foto válida para aplicar"}
+                for t in targets
+            ]
+            db.table("photo_logs").update({
+                "targets": error_results,
+                "error_count": len(targets),
+                "status": "error",
+            }).eq("id", log_id).execute()
+        return [{"seller_slug": t["seller_slug"], "item_id": t["item_id"], "status": "error", "error": "Nenhuma foto válida"} for t in targets]
+
     results: list[dict[str, Any]] = []
     success_count = 0
     error_count = 0
 
-    for idx, target in enumerate(targets):
-        if idx > 0:
-            await asyncio.sleep(1)  # pace between targets to respect ML rate limits
+    try:
+        for idx, target in enumerate(targets):
+            if idx > 0:
+                await asyncio.sleep(1)  # pace between targets to respect ML rate limits
 
-        try:
-            await update_item(
-                target["seller_slug"],
-                target["item_id"],
-                {"pictures": ml_pictures},
-                org_id=org_id or "",
-            )
+            try:
+                await update_item(
+                    target["seller_slug"],
+                    target["item_id"],
+                    {"pictures": ml_pictures},
+                    org_id=org_id or "",
+                )
+                results.append({
+                    "seller_slug": target["seller_slug"],
+                    "item_id": target["item_id"],
+                    "status": "ok",
+                    "error": None,
+                })
+                success_count += 1
+            except Exception as exc:
+                error_msg = str(exc) or repr(exc)
+                logger.error(
+                    "Failed to apply photos to %s (seller %s): %s",
+                    target["item_id"], target["seller_slug"], error_msg,
+                )
+                results.append({
+                    "seller_slug": target["seller_slug"],
+                    "item_id": target["item_id"],
+                    "status": "error",
+                    "error": error_msg,
+                })
+                error_count += 1
+                _log_api_debug(
+                    action="apply_photos_to_target",
+                    source_seller=None,
+                    dest_seller=target["seller_slug"],
+                    source_item_id=source_item_id,
+                    dest_item_id=target["item_id"],
+                    user_id=user_id,
+                    copy_log_id=log_id,
+                    api_method=exc.method if isinstance(exc, MlApiError) else None,
+                    api_url=exc.url if isinstance(exc, MlApiError) else None,
+                    response_status=exc.status_code if isinstance(exc, MlApiError) else None,
+                    response_body=exc.payload if isinstance(exc, MlApiError) and isinstance(exc.payload, dict) else None,
+                    error_message=error_msg,
+                    org_id=org_id,
+                )
+    except Exception as fatal:
+        # Top-level handler: mark remaining targets as error
+        logger.exception("Fatal error in apply_photos_to_targets: %s", fatal)
+        for remaining in targets[len(results):]:
             results.append({
-                "seller_slug": target["seller_slug"],
-                "item_id": target["item_id"],
-                "status": "ok",
-                "error": None,
-            })
-            success_count += 1
-        except Exception as exc:
-            error_msg = str(exc) or repr(exc)
-            logger.error(
-                "Failed to apply photos to %s (seller %s): %s",
-                target["item_id"], target["seller_slug"], error_msg,
-            )
-            results.append({
-                "seller_slug": target["seller_slug"],
-                "item_id": target["item_id"],
+                "seller_slug": remaining["seller_slug"],
+                "item_id": remaining["item_id"],
                 "status": "error",
-                "error": error_msg,
+                "error": f"Erro inesperado: {fatal}",
             })
             error_count += 1
-            _log_api_debug(
-                action="apply_photos_to_target",
-                source_seller=None,
-                dest_seller=target["seller_slug"],
-                source_item_id=source_item_id,
-                dest_item_id=target["item_id"],
-                user_id=user_id,
-                copy_log_id=log_id,
-                api_method=exc.method if isinstance(exc, MlApiError) else None,
-                api_url=exc.url if isinstance(exc, MlApiError) else None,
-                response_status=exc.status_code if isinstance(exc, MlApiError) else None,
-                response_body=exc.payload if isinstance(exc, MlApiError) and isinstance(exc.payload, dict) else None,
-                error_message=error_msg,
-                org_id=org_id,
-            )
 
     # Determine final status
     if error_count == 0:
@@ -126,11 +153,14 @@ async def apply_photos_to_targets(
 
     # Update photo_logs with final results
     if log_id:
-        db.table("photo_logs").update({
-            "targets": results,
-            "success_count": success_count,
-            "error_count": error_count,
-            "status": final_status,
-        }).eq("id", log_id).execute()
+        try:
+            db.table("photo_logs").update({
+                "targets": results,
+                "success_count": success_count,
+                "error_count": error_count,
+                "status": final_status,
+            }).eq("id", log_id).execute()
+        except Exception as db_err:
+            logger.error("Failed to update photo_logs id=%s: %s", log_id, db_err)
 
     return results
