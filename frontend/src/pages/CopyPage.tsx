@@ -364,18 +364,27 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
       }
 
       const data = await res.json().catch(() => null) as {
+        status?: string;
         success?: number;
         errors?: number;
         needs_correction?: number;
+        total_logs?: number;
+        message?: string;
       } | null;
-      const successCount = data?.success || 0;
-      const remainingCount = (data?.errors || 0) + (data?.needs_correction || 0);
-      if (successCount > 0 && remainingCount === 0) {
-        toast(`${successCount} anúncio(s) copiado(s) após a correção.`, 'success');
-      } else if (successCount > 0) {
-        toast(`${successCount} anúncio(s) copiado(s), mas ainda restam ${remainingCount} pendência(s).`, 'success');
+      // retry-corrections returns { status: "queued" } — work happens in background
+      if (data?.status === 'queued') {
+        const count = data.total_logs || group.logs.length;
+        toast(`${count} correção(ões) enviada(s). Acompanhe o progresso no histórico.`, 'success');
       } else {
-        toast('A correção foi enviada, mas nenhum anúncio foi copiado nesta tentativa.', 'error');
+        const successCount = data?.success || 0;
+        const remainingCount = (data?.errors || 0) + (data?.needs_correction || 0);
+        if (successCount > 0 && remainingCount === 0) {
+          toast(`${successCount} anúncio(s) copiado(s) após a correção.`, 'success');
+        } else if (successCount > 0) {
+          toast(`${successCount} anúncio(s) copiado(s), mas ainda restam ${remainingCount} pendência(s).`, 'success');
+        } else {
+          toast('A correção foi enviada, mas nenhum anúncio foi copiado nesta tentativa.', 'error');
+        }
       }
       void loadLogs();
     } catch (e) {

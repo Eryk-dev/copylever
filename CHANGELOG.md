@@ -18,6 +18,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Erro de titulo longo nao faz mais truncamento automatico — agora entra no fluxo de correcao manual (needs_correction com kind="title")
 
 ### Fixed
+- Corrigido toast de correcao de grupo mostrando "nenhum anuncio copiado" quando o backend retorna status "queued" (background task) — agora mostra mensagem de sucesso correta
+- Corrigido `title_override` sendo aplicado apenas em `family_name` quando o dest seller precisa de `title` — agora seta ambos os campos para que o retry use o correto
 - Corrigido tratamento de warnings de envio do ML: `mandatory_free_shipping` agora seta `free_shipping=true` proativamente e `lost_me1_by_user` confirma `mode=me2` no retry (ERR-055)
 - Corrigido erro "user Product ID already has locations assigned" para sellers com inventario multi-localizacao: normaliza espacamento do PART_NUMBER para criar novo user_product evitando conflito com locations do existente (ERR-053)
 - Corrigido esgotamento do pool de conexoes httpx que impedia encontrar a conta de origem apos uptime prolongado — adicionado `keepalive_expiry=30` para descartar conexoes stale, aumentado pool para 30 conexoes, e implementado auto-reciclagem do cliente HTTP em caso de `PoolTimeout` (ERR-052)

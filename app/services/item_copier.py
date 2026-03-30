@@ -1171,14 +1171,13 @@ async def copy_single_item(
 
         # 4. Build payload and POST to dest seller
         payload = _build_item_payload(item)
-        # Apply user-provided title override (from title length correction)
+        # Apply user-provided title override (from title length correction).
+        # Set BOTH title and family_name so that whichever field the dest seller
+        # needs will have the corrected value. The retry logic removes the invalid one.
         if title_override:
-            if payload.get("title"):
-                payload["title"] = title_override
-            elif payload.get("family_name"):
+            payload["title"] = title_override
+            if payload.get("family_name"):
                 payload["family_name"] = title_override
-            else:
-                payload["title"] = title_override
         item_label = payload.get("title") or payload.get("family_name") or ""
         logger.info(f"Creating item on {dest_seller} (label: {item_label[:50]})")
 
