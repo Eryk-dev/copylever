@@ -5,9 +5,11 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from pydantic import BaseModel, field_validator
 
 from app.db.supabase import get_db
 from app.routers.auth import require_active_org
+from app.services.compat_copier import search_sku_all_sellers
 from app.services.ml_api import get_item, upload_picture
 
 logger = logging.getLogger(__name__)
@@ -165,3 +167,34 @@ async def upload_photo(
         raise HTTPException(status_code=502, detail=f"Erro ao enviar foto para o Mercado Livre: {exc}")
 
     return result
+
+
+class SearchSkuRequest(BaseModel):
+    skus: list[str]
+
+    @field_validator("skus")
+    @classmethod
+    def limit_skus(cls, v: list[str]) -> list[str]:
+        if len(v) > 50:
+            raise ValueError("Maximo de 50 SKUs por busca")
+        return v
+
+
+@router.post("/search-sku")
+async def search_sku(req: SearchSkuRequest, user: dict = Depends(require_active_org)):
+    """Search for items by SKU across connected sellers (filtered by permissions)."""
+    if not req.skus:
+        raise HTTPException(status_code=400, detail="Informe ao menos um SKU")
+
+    org_id = user["org_id"]
+    # Filter sellers by can_copy_to permission (admins get all)
+    allowed_sellers = None
+    if user["role"] != "admin":
+        allowed_sellers = [
+            p["seller_slug"]
+            for p in user.get("permissions", [])
+            if p.get("can_copy_to")
+        ]
+
+    results = await search_sku_all_sellers(req.skus, allowed_sellers=allowed_sellers, org_id=org_id)
+    return results

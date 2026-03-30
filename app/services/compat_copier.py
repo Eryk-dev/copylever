@@ -74,15 +74,18 @@ async def search_sku_all_sellers(
         try:
             item_data = await info_task
             title = item_data.get("title", "")
+            thumbnail = item_data.get("secure_thumbnail") or item_data.get("thumbnail") or ""
         except Exception:
             logger.warning("Failed to fetch item info for %s", item_id)
             title = ""
+            thumbnail = ""
         results.append({
             "seller_slug": seller["slug"],
             "seller_name": seller["name"],
             "item_id": item_id,
             "sku": sku,
             "title": title,
+            "thumbnail": thumbnail,
         })
 
     return results
