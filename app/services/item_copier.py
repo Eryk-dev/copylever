@@ -1374,6 +1374,12 @@ async def copy_single_item(
                 )
 
                 if actions and adjusted_payload != payload:
+                    # Preserve title_override: adjust may have added source title as fallback
+                    if title_override:
+                        if adjusted_payload.get("title"):
+                            adjusted_payload["title"] = title_override
+                        if adjusted_payload.get("family_name"):
+                            adjusted_payload["family_name"] = title_override
                     logger.warning(
                         "ML rejected payload for %s -> %s. Retrying with adjustments: %s. Error: %s",
                         item_id,
@@ -1400,6 +1406,12 @@ async def copy_single_item(
                     # Preserve official_store_id discovered in earlier retries
                     if payload.get("official_store_id") and not safe_payload.get("official_store_id"):
                         safe_payload["official_store_id"] = payload["official_store_id"]
+                    # Preserve title_override across safe_mode rebuild
+                    if title_override:
+                        if safe_payload.get("title"):
+                            safe_payload["title"] = title_override
+                        if safe_payload.get("family_name"):
+                            safe_payload["family_name"] = title_override
                     if safe_payload != payload:
                         safe_mode_retry_used = True
                         logger.warning(
