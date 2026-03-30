@@ -761,6 +761,22 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
             adjusted["shipping"] = {k: v for k, v in adjusted["shipping"].items() if k != "methods"}
             actions.append("removed shipping.methods")
 
+    # Handle mandatory_free_shipping: ML forces free_shipping for certain categories/prices.
+    # Also handle lost_me1_by_user: confirm me2 mode (me1/Full is seller-specific).
+    if isinstance(adjusted.get("shipping"), dict):
+        _causes = (exc.payload if isinstance(exc.payload, dict) else {}).get("cause", [])
+        if isinstance(_causes, list):
+            for _c in _causes:
+                if not isinstance(_c, dict):
+                    continue
+                _code = str(_c.get("code", "")).lower()
+                if "mandatory_free_shipping" in _code:
+                    adjusted["shipping"]["free_shipping"] = True
+                    actions.append("set free_shipping=true (mandatory for category/price)")
+                if "lost_me1" in _code or "me1" in _code:
+                    adjusted["shipping"]["mode"] = "me2"
+                    actions.append("confirmed shipping mode=me2 (me1 not available)")
+
     removable_top_fields = {
         "title",
         "family_name",
@@ -858,11 +874,8 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
         adjusted["family_name"] = adjusted["family_name"][:60]
         actions.append("truncated family_name to 60 chars")
 
-    # Handle title length error: truncate to category limit instead of removing
-    if _is_title_length_error(exc) and adjusted.get("title"):
-        max_len = _extract_title_max_length(exc)
-        adjusted["title"] = adjusted["title"][:max_len]
-        actions.append(f"truncated title to {max_len} chars")
+    # Title length errors are now handled as user corrections (needs_correction)
+    # so we no longer auto-truncate here — the user edits the title manually.
 
     # Auto-fill missing required attributes (e.g. MODEL) from item data
     missing_attrs = _extract_missing_required_attributes(exc)
@@ -893,9 +906,36 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
     return adjusted, actions
 
 
-def _extract_correction_details(exc: MlApiError) -> dict[str, Any] | None:
+def _build_title_correction_details(original_title: str, max_length: int) -> dict[str, Any]:
+    """Build correction details for title length errors — lets user edit the title."""
+    return {
+        "kind": "title",
+        "group_key": "title",
+        "summary": f"Titulo excede limite de {max_length} caracteres da categoria. Edite o titulo para continuar.",
+        "original_title": original_title,
+        "max_length": max_length,
+        "fields": [
+            {
+                "id": "title",
+                "label": f"Novo titulo (max {max_length} caracteres)",
+                "input": "text",
+                "placeholder": original_title[:max_length] if original_title else "",
+                "maxLength": max_length,
+            }
+        ],
+    }
+
+
+def _extract_correction_details(exc: MlApiError, payload: dict | None = None) -> dict[str, Any] | None:
     if _is_dimension_error(exc):
         return _build_dimension_correction_details()
+
+    if _is_title_length_error(exc):
+        max_len = _extract_title_max_length(exc)
+        original_title = ""
+        if payload:
+            original_title = payload.get("title") or payload.get("family_name") or ""
+        return _build_title_correction_details(original_title, max_len)
 
     missing_attrs = _extract_missing_required_attributes(exc)
     if missing_attrs:
@@ -1089,6 +1129,7 @@ async def copy_single_item(
     user_id: str | None = None,
     copy_log_id: int | None = None,
     org_id: str = "",
+    title_override: str | None = None,
 ) -> dict:
     """
     Copy a single item from source_seller to dest_seller.
@@ -1130,6 +1171,14 @@ async def copy_single_item(
 
         # 4. Build payload and POST to dest seller
         payload = _build_item_payload(item)
+        # Apply user-provided title override (from title length correction)
+        if title_override:
+            if payload.get("title"):
+                payload["title"] = title_override
+            elif payload.get("family_name"):
+                payload["family_name"] = title_override
+            else:
+                payload["title"] = title_override
         item_label = payload.get("title") or payload.get("family_name") or ""
         logger.info(f"Creating item on {dest_seller} (label: {item_label[:50]})")
 
@@ -1204,6 +1253,28 @@ async def copy_single_item(
                         error_message=exc.detail,
                         attempt_number=attempt,
                         adjustments=["dimension_error_detected"],
+                        resolved=True,
+                        org_id=org_id,
+                    )
+                    raise
+
+                # Title length errors need user input — bail out for manual correction
+                if _is_title_length_error(exc):
+                    _log_api_debug(
+                        action="create_item",
+                        source_seller=source_seller,
+                        dest_seller=dest_seller,
+                        source_item_id=item_id,
+                        user_id=user_id,
+                        copy_log_id=copy_log_id,
+                        api_method=exc.method,
+                        api_url=exc.url,
+                        request_payload=payload,
+                        response_status=exc.status_code,
+                        response_body=exc.payload if isinstance(exc.payload, dict) else {"raw": str(exc.payload)},
+                        error_message=exc.detail,
+                        attempt_number=attempt,
+                        adjustments=["title_length_error_detected"],
                         resolved=True,
                         org_id=org_id,
                     )
@@ -1422,7 +1493,7 @@ async def copy_single_item(
         result["status"] = "success"
 
     except MlApiError as e:
-        correction_details = _extract_correction_details(e)
+        correction_details = _extract_correction_details(e, payload=payload)
         if correction_details:
             logger.warning("Copy %s -> %s requires manual correction", item_id, dest_seller)
             result["status"] = CORRECTION_STATUS
@@ -1876,3 +1947,58 @@ async def copy_with_attribute_corrections(
         org_id=org_id,
         user_id=user_id,
     )
+
+
+async def copy_with_title_override(
+    source_seller: str,
+    dest_sellers: list[str],
+    item_id: str,
+    title: str,
+    org_id: str = "",
+    user_id: str | None = None,
+) -> list[dict]:
+    """Copy item with a user-provided title (for title length correction).
+
+    Unlike dimension/attribute corrections, this does NOT update the source item.
+    It fetches the source, builds the payload, replaces the title, and creates.
+    """
+    clean_title = _clean_text(title)
+    if not clean_title:
+        return [{
+            "source_item_id": item_id,
+            "dest_seller": ds,
+            "status": "error",
+            "dest_item_id": None,
+            "error": "Titulo nao pode ser vazio.",
+            "sku": None,
+            "correction_details": None,
+        } for ds in dest_sellers]
+
+    async def _copy_one(dest_seller: str) -> dict:
+        try:
+            return await copy_single_item(
+                source_seller=source_seller,
+                dest_seller=dest_seller,
+                item_id=item_id,
+                user_email=None,
+                user_id=user_id,
+                org_id=org_id,
+                title_override=clean_title,
+            )
+        except Exception as exc:
+            logger.error(
+                "Exception in title-override copy %s -> %s: %s",
+                item_id, dest_seller, exc,
+            )
+            return {
+                "source_item_id": item_id,
+                "dest_seller": dest_seller,
+                "status": "error",
+                "dest_item_id": None,
+                "error": str(exc),
+                "sku": None,
+                "correction_details": None,
+            }
+
+    results = await asyncio.gather(*[_copy_one(ds) for ds in dest_sellers])
+    return list(results)

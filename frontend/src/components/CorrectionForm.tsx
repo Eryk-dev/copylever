@@ -8,6 +8,7 @@ export interface CorrectionField {
   step?: string;
   min?: number;
   placeholder?: string;
+  maxLength?: number;
 }
 
 interface CorrectionFormProps {
@@ -61,16 +62,16 @@ export default function CorrectionForm({
     fontVariantNumeric: 'tabular-nums',
   };
 
-  const labelStyle: React.CSSProperties = {
+  const labelStyle = (field: CorrectionField): React.CSSProperties => ({
     display: 'flex',
     flexDirection: 'column',
     gap: 2,
-    flex: 1,
-    minWidth: 80,
+    flex: field.maxLength ? '1 1 100%' : 1,
+    minWidth: field.maxLength ? 200 : 80,
     fontSize: 'var(--text-xs)',
     color: 'var(--ink-faint)',
     fontWeight: 500,
-  };
+  });
 
   return (
     <div style={{
@@ -109,17 +110,27 @@ export default function CorrectionForm({
 
       <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
         {fields.map(field => (
-          <label key={field.id} style={labelStyle}>
+          <label key={field.id} style={labelStyle(field)}>
             {field.label}{field.unit ? ` (${field.unit})` : ''}
             <input
               type={field.input === 'number' ? 'number' : 'text'}
               step={field.input === 'number' ? (field.step || '0.1') : undefined}
               min={field.input === 'number' ? (field.min ?? 0) : undefined}
+              maxLength={field.maxLength}
               value={values[field.id] || ''}
               onChange={e => setValues(prev => ({ ...prev, [field.id]: e.target.value }))}
               style={inputStyle}
               placeholder={field.placeholder}
             />
+            {field.maxLength && values[field.id] && (
+              <span style={{
+                fontSize: '10px',
+                color: (values[field.id]?.length || 0) > field.maxLength ? 'var(--danger)' : 'var(--ink-faint)',
+                textAlign: 'right',
+              }}>
+                {values[field.id]?.length || 0}/{field.maxLength}
+              </span>
+            )}
           </label>
         ))}
       </div>

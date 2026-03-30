@@ -20,6 +20,11 @@ export function isDimensionError(log: CopyLog): boolean {
   return hasDimensionMessage(log);
 }
 
+export function isTitleLengthError(log: CopyLog): boolean {
+  const details = log.correction_details;
+  return details?.kind === 'title';
+}
+
 export function isCorrectionPending(log: CopyLog): boolean {
   return log.status === 'needs_correction' || isDimensionError(log);
 }

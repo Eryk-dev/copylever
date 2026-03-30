@@ -17,6 +17,7 @@ from app.services.item_copier import (
     copy_items,
     copy_with_attribute_corrections,
     copy_with_dimensions,
+    copy_with_title_override,
 )
 from app.services.ml_api import get_item, get_item_description, get_item_compatibilities
 
@@ -354,6 +355,33 @@ async def _bg_retry_corrections(
                         dest_sellers=destinations,
                         item_id=str(log["source_item_id"]),
                         dimensions=dims,
+                        org_id=org_id,
+                        user_id=user_id,
+                    ),
+                    timeout=BATCH_TIMEOUT_SECONDS,
+                )
+            elif details.get("kind") == "title":
+                title_value = str(values.get("title", "")).strip()
+                if not title_value:
+                    logger.warning("retry_corrections: no title provided for log %s", log["id"])
+                    db.table("copy_logs").update({
+                        "status": "error",
+                        "error_details": {"_input": "Titulo nao pode ser vazio"},
+                    }).eq("id", log["id"]).execute()
+                    continue
+                max_len = details.get("max_length", 60)
+                if len(title_value) > max_len:
+                    db.table("copy_logs").update({
+                        "status": "error",
+                        "error_details": {"_input": f"Titulo excede o limite de {max_len} caracteres ({len(title_value)} informados)"},
+                    }).eq("id", log["id"]).execute()
+                    continue
+                results = await asyncio.wait_for(
+                    copy_with_title_override(
+                        source_seller=source,
+                        dest_sellers=destinations,
+                        item_id=str(log["source_item_id"]),
+                        title=title_value,
                         org_id=org_id,
                         user_id=user_id,
                     ),
@@ -897,6 +925,16 @@ async def retry_corrections(req: RetryCorrectionsRequest, bg: BackgroundTasks, u
         dims_check = _extract_retry_dimensions(req.values)
         if not dims_check:
             raise HTTPException(status_code=400, detail="Informe pelo menos uma dimensao")
+    elif first_details.get("kind") == "title":
+        title_value = str(req.values.get("title", "")).strip()
+        if not title_value:
+            raise HTTPException(status_code=400, detail="Informe o novo titulo")
+        max_len = first_details.get("max_length", 60)
+        if len(title_value) > max_len:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Titulo excede o limite de {max_len} caracteres ({len(title_value)} informados)",
+            )
     else:
         values_check = _extract_retry_attribute_values(req.values, first_details.get("fields", []))
         if not values_check:

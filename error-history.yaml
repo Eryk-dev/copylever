@@ -10,7 +10,7 @@
 # 3. If it's new, add an entry following the same structure
 # 4. The retry_system section documents how the auto-retry loop works
 #
-# Last updated: 2026-03-18
+# Last updated: 2026-03-30
 # ============================================================================
 
 # ── Quick reference: ML API error codes we've encountered ──────────────────
@@ -90,7 +90,7 @@ ml_error_codes:
     item.title.length.invalid:
       message: "Category MLBXXX does not support titles greater than N characters long"
       cause: Source item title exceeds category's max title length (legacy items may violate current limits)
-      fix_applied: Truncate title to category limit extracted from error message (default 60)
+      fix_applied: "Bail out with needs_correction (kind=title) — user edits title via CorrectionForm (ERR-054)"
       severity: blocking
 
     body.invalid_fields_variations_with_family_name:
@@ -147,12 +147,12 @@ ml_error_codes:
     shipping.lost_me1_by_user:
       message: "User has not mode me1"
       cause: Dest seller doesn't have Mercado Envios Full (me1). We already send mode=me2.
-      action: Ignore — not blocking, just informational
+      action: "_adjust confirms mode=me2 (belt and suspenders). Not blocking. (ERR-055)"
 
     item.shipping.mandatory_free_shipping:
       message: "Mandatory free shipping added"
       cause: ML auto-adds free shipping for certain price ranges or categories
-      action: Ignore — ML handles it automatically
+      action: "_adjust sets free_shipping=true proactively to avoid edge cases. (ERR-055)"
 
     item.available_quantity.ignored:
       message: "available_quantity field is ignored for multi warehouse seller"
@@ -935,9 +935,8 @@ error_history:
     file: app/services/item_copier.py
     lesson: |
       ML allows legacy items with titles exceeding current category limits.
-      On copy, always handle title length errors with truncation (same pattern
-      as family_name length). No need to pre-fetch category settings — the retry
-      loop handles it efficiently.
+      Auto-truncation was the initial fix. Superseded by ERR-054: now uses
+      needs_correction flow so user can manually edit the title.
 
   - id: ERR-040
     date: "2026-03-06"
@@ -1234,6 +1233,63 @@ error_history:
       This error has an empty cause array, so it must be detected via message text.
       Any seller may or may not have multi-location inventory enabled.
 
+  - id: ERR-054
+    date: "2026-03-30"
+    category: ml_api_error
+    title: "item.title.length.invalid — title exceeds category limit"
+    symptom: |
+      POST /items returns 400 with cause code item.title.length.invalid:
+      "Category MLB63420 does not support titles greater than 60 characters long."
+      Previously auto-truncated, but user needs to review/edit the title manually.
+    root_cause: |
+      Some ML categories enforce a max title length (e.g., 60 chars for MLB63420).
+      The source item's title may exceed this limit. Auto-truncation can produce
+      meaningless titles (cutting words mid-way), so user should choose the new title.
+    fix: |
+      1. Removed auto-truncation from _adjust_payload_for_ml_error for title length errors.
+      2. Added _build_title_correction_details() — returns correction with kind="title",
+         original_title, max_length, and a text input field for the new title.
+      3. Title length error now bails out immediately in copy_single_item (like dimensions).
+      4. Added copy_with_title_override() — re-copies with user-provided title (no source update).
+      5. _bg_retry_corrections handles kind="title" by calling copy_with_title_override.
+      6. Frontend CorrectionForm shows text input with maxLength and character counter.
+    files:
+      - app/services/item_copier.py
+      - app/routers/copy.py
+      - frontend/src/lib/api.ts
+      - frontend/src/lib/helpers.ts
+      - frontend/src/components/CorrectionForm.tsx
+    lesson: |
+      Title length limits vary by category. Auto-truncation produces poor titles.
+      Better to let the user craft a proper short title via the correction flow.
+      The title_override parameter in copy_single_item does NOT modify the source item.
+
+  - id: ERR-055
+    date: "2026-03-30"
+    category: ml_api_warning
+    title: "mandatory_free_shipping and lost_me1_by_user shipping warnings"
+    symptom: |
+      POST /items response includes cause codes:
+      - shipping.lost_me1_by_user: "User has not mode me1"
+      - item.shipping.mandatory_free_shipping: "Mandatory free shipping added"
+      These are type="warning" in the ML response, not blocking errors.
+    root_cause: |
+      ML includes informational warnings alongside blocking errors in the cause array.
+      mandatory_free_shipping: ML auto-adds free_shipping for items above certain price thresholds.
+      lost_me1_by_user: destination seller doesn't have Full (me1) enrollment — we already use me2.
+    fix: |
+      1. Added handling in _adjust_payload_for_ml_error for mandatory_free_shipping:
+         sets free_shipping=true in the shipping block.
+      2. Added handling for lost_me1: confirms mode="me2" (belt and suspenders).
+      3. These adjustments prevent confusion when the warnings appear alongside real errors,
+         ensuring the retry focuses on the actual blocking issue.
+    files:
+      - app/services/item_copier.py
+    lesson: |
+      ML cause array mixes errors and warnings. mandatory_free_shipping is informational
+      (ML already applies it), but proactively setting free_shipping=true avoids edge cases.
+      Always check cause[].type — only type="error" causes are blocking.
+
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.
 patterns:
@@ -1301,8 +1357,9 @@ patterns:
       - "Always use mode: me2 (Mercado Envios standard)"
       - "Never use me1 (Full) — it's seller-specific enrollment"
       - "Brand accounts need free_shipping: true"
-      - "shipping.lost_me1_by_user is a WARNING, not an error"
-      - "item.shipping.mandatory_free_shipping is a WARNING, ML auto-handles it"
+      - "shipping.lost_me1_by_user is a WARNING, not an error — but _adjust confirms me2 mode"
+      - "item.shipping.mandatory_free_shipping is a WARNING — _adjust sets free_shipping=true proactively"
+      - "Mandatory free_shipping applies to certain categories and price thresholds"
 
   ml_api_rate_limits:
     description: "Rate limiting behavior and mitigation"

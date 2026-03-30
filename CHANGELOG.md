@@ -9,10 +9,16 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Added
+- Formulario de correcao de titulo: quando a categoria ML limita o numero de caracteres do titulo, o usuario agora pode editar o titulo manualmente antes de reenviar a copia (ERR-054)
+- Contador de caracteres no campo de titulo com limite visual e `maxLength` no input
+
 ### Changed
 - `POST /api/copy/resolve-sellers` otimizado: identifica o seller do primeiro item e usa como fast path para os demais (1+N requests em vez de N×M); fallback completo apenas para itens de sellers diferentes
+- Erro de titulo longo nao faz mais truncamento automatico — agora entra no fluxo de correcao manual (needs_correction com kind="title")
 
 ### Fixed
+- Corrigido tratamento de warnings de envio do ML: `mandatory_free_shipping` agora seta `free_shipping=true` proativamente e `lost_me1_by_user` confirma `mode=me2` no retry (ERR-055)
 - Corrigido erro "user Product ID already has locations assigned" para sellers com inventario multi-localizacao: normaliza espacamento do PART_NUMBER para criar novo user_product evitando conflito com locations do existente (ERR-053)
 - Corrigido esgotamento do pool de conexoes httpx que impedia encontrar a conta de origem apos uptime prolongado — adicionado `keepalive_expiry=30` para descartar conexoes stale, aumentado pool para 30 conexoes, e implementado auto-reciclagem do cliente HTTP em caso de `PoolTimeout` (ERR-052)
 - Corrigido `retry-corrections` falhando com "Um ou mais logs nao foram encontrados" quando org tem mais de 1000 copy_logs — query agora filtra por IDs diretamente via `.in_()` em vez de buscar todos e filtrar em Python (limite default do Supabase: 1000 rows)

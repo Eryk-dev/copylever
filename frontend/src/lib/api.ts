@@ -19,14 +19,17 @@ export interface CorrectionField {
   step?: string;
   min?: number;
   placeholder?: string;
+  maxLength?: number;
 }
 
 export interface CorrectionDetails {
-  kind: 'dimensions' | 'attributes';
+  kind: 'dimensions' | 'attributes' | 'title';
   group_key: string;
   summary: string;
   fields: CorrectionField[];
   attribute_ids?: string[];
+  original_title?: string;
+  max_length?: number;
 }
 
 export interface CopyResult {
