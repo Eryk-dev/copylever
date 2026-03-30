@@ -3,14 +3,16 @@ Photos endpoints — preview item photos, upload, search SKU, apply, logs.
 """
 import asyncio
 import logging
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile
 from pydantic import BaseModel, field_validator
 
 from app.db.supabase import get_db
 from app.routers.auth import require_active_org
 from app.services.compat_copier import search_sku_all_sellers
 from app.services.ml_api import get_item, upload_picture
+from app.services.photo_applier import apply_photos_to_targets
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/photos", tags=["photos"])
@@ -198,3 +200,127 @@ async def search_sku(req: SearchSkuRequest, user: dict = Depends(require_active_
 
     results = await search_sku_all_sellers(req.skus, allowed_sellers=allowed_sellers, org_id=org_id)
     return results
+
+
+# ---------------------------------------------------------------------------
+# Apply photos
+# ---------------------------------------------------------------------------
+
+class PictureEntry(BaseModel):
+    id: str | None = None
+    source: str | None = None
+
+
+class ApplyTarget(BaseModel):
+    seller_slug: str
+    item_id: str
+
+
+class ApplyRequest(BaseModel):
+    source_item_id: str
+    sku: str | None = None
+    pictures: list[PictureEntry]
+    targets: list[ApplyTarget]
+
+
+@router.post("/apply")
+async def apply_photos(
+    req: ApplyRequest,
+    bg: BackgroundTasks,
+    user: dict = Depends(require_active_org),
+):
+    """Queue photo application to target items — returns immediately."""
+    if not req.targets:
+        raise HTTPException(status_code=400, detail="Informe ao menos um anúncio destino")
+    if not req.pictures:
+        raise HTTPException(status_code=400, detail="Informe ao menos uma foto")
+
+    org_id = user["org_id"]
+
+    # Validate can_copy_to permissions for operators
+    if user["role"] != "admin":
+        allowed = {
+            p["seller_slug"]
+            for p in user.get("permissions", [])
+            if p.get("can_copy_to")
+        }
+        denied = [t.seller_slug for t in req.targets if t.seller_slug not in allowed]
+        if denied:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Sem permissão para copiar para: {', '.join(denied)}",
+            )
+
+    targets = [{"seller_slug": t.seller_slug, "item_id": t.item_id} for t in req.targets]
+    pictures = [p.model_dump(exclude_none=True) for p in req.pictures]
+
+    # Create photo_logs record before background task so we can return log_id
+    db = get_db()
+    pending_targets: list[dict[str, Any]] = [
+        {**t, "status": "pending", "error": None} for t in targets
+    ]
+    log_insert: dict[str, Any] = {
+        "source_item_id": req.source_item_id,
+        "sku": req.sku or "",
+        "targets": pending_targets,
+        "total_targets": len(targets),
+        "success_count": 0,
+        "error_count": 0,
+        "status": "processing",
+        "org_id": org_id,
+    }
+    if user.get("id"):
+        log_insert["user_id"] = user["id"]
+    log_row = db.table("photo_logs").insert(log_insert).execute()
+    log_id = log_row.data[0]["id"]
+
+    bg.add_task(
+        apply_photos_to_targets,
+        source_item_id=req.source_item_id,
+        sku=req.sku,
+        pictures=pictures,
+        targets=targets,
+        user_id=user.get("id"),
+        org_id=org_id,
+        log_id=log_id,
+    )
+
+    return {
+        "log_id": log_id,
+        "status": "processing",
+        "message": "Fotos sendo aplicadas...",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------------------
+
+@router.get("/logs")
+async def photo_logs(
+    limit: int = Query(20, le=200),
+    offset: int = Query(0, ge=0),
+    status: str | None = Query(None),
+    user: dict = Depends(require_active_org),
+):
+    """Get photo operation history. Operators see only their own logs; admins see all."""
+    db = get_db()
+    query = db.table("photo_logs").select("*, users(username)").order(
+        "created_at", desc=True
+    )
+    if user.get("is_super_admin"):
+        pass  # super-admin sees all logs
+    elif user["role"] == "admin":
+        query = query.eq("org_id", user["org_id"])
+    else:
+        query = query.eq("user_id", user["id"])
+    if status:
+        query = query.eq("status", status)
+    result = query.range(offset, offset + limit - 1).execute()
+    # Flatten the joined username into each log entry
+    logs = []
+    for row in result.data or []:
+        users_data = row.pop("users", None)
+        row["username"] = users_data["username"] if users_data else None
+        logs.append(row)
+    return logs

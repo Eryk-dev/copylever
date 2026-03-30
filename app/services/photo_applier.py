@@ -19,6 +19,7 @@ async def apply_photos_to_targets(
     targets: list[dict[str, str]],
     user_id: str | None = None,
     org_id: str | None = None,
+    log_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """Apply a set of photos to multiple target items via ML API.
 
@@ -34,26 +35,27 @@ async def apply_photos_to_targets(
     """
     db = get_db()
 
-    # Create photo_logs record with status 'processing'
-    log_row: dict[str, Any] = {
-        "source_item_id": source_item_id,
-        "sku": sku or "",
-        "targets": [
-            {"seller_slug": t["seller_slug"], "item_id": t["item_id"], "status": "pending", "error": None}
-            for t in targets
-        ],
-        "total_targets": len(targets),
-        "success_count": 0,
-        "error_count": 0,
-        "status": "processing",
-    }
-    if user_id:
-        log_row["user_id"] = user_id
-    if org_id:
-        log_row["org_id"] = org_id
+    # Create photo_logs record if no existing log_id was provided
+    if log_id is None:
+        log_row: dict[str, Any] = {
+            "source_item_id": source_item_id,
+            "sku": sku or "",
+            "targets": [
+                {"seller_slug": t["seller_slug"], "item_id": t["item_id"], "status": "pending", "error": None}
+                for t in targets
+            ],
+            "total_targets": len(targets),
+            "success_count": 0,
+            "error_count": 0,
+            "status": "processing",
+        }
+        if user_id:
+            log_row["user_id"] = user_id
+        if org_id:
+            log_row["org_id"] = org_id
 
-    insert_resp = db.table("photo_logs").insert(log_row).execute()
-    log_id = insert_resp.data[0]["id"] if insert_resp.data else None
+        insert_resp = db.table("photo_logs").insert(log_row).execute()
+        log_id = insert_resp.data[0]["id"] if insert_resp.data else None
 
     # Build the pictures payload for ML PUT /items/{id}
     ml_pictures = []
