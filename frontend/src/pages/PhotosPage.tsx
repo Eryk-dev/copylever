@@ -92,6 +92,15 @@ export default function PhotosPage({ sellers, headers }: Props) {
   const [searchError, setSearchError] = useState('');
   const [hasSearched, setHasSearched] = useState(false);
 
+  // Apply photos state (US-011)
+  const [applying, setApplying] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Clean up poll interval on unmount
+  useEffect(() => {
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, []);
+
   const sellerName = useCallback((slug: string) => {
     return sellers.find(s => s.slug === slug)?.name || slug;
   }, [sellers]);
@@ -260,6 +269,100 @@ export default function PhotosPage({ sellers, headers }: Props) {
       return new Set(skuSearchResults.map(r => `${r.seller_slug}:${r.item_id}`));
     });
   }, [skuSearchResults]);
+
+  // Apply photos handler (US-011)
+  const handleApply = useCallback(async () => {
+    if (!preview || selectedTargets.size === 0 || activePhotos.length === 0) return;
+
+    setApplying(true);
+    try {
+      // Step 1: Upload any 'upload' type photos to get picture_ids
+      const picturesPayload: { id?: string; source?: string }[] = [];
+      const authHeader = headers()['X-Auth-Token'];
+
+      for (const photo of activePhotos) {
+        if (photo.type === 'existing') {
+          picturesPayload.push({ id: photo.id });
+        } else if (photo.type === 'upload') {
+          const formData = new FormData();
+          formData.append('file', photo.file);
+          const uploadRes = await fetch(
+            `${API_BASE}/api/photos/upload?seller=${encodeURIComponent(preview.seller)}`,
+            {
+              method: 'POST',
+              headers: { 'X-Auth-Token': authHeader },
+              body: formData,
+            }
+          );
+          if (!uploadRes.ok) {
+            const err = await uploadRes.json().catch(() => ({ detail: 'Erro ao enviar foto' }));
+            toast(`Erro ao enviar foto: ${err.detail}`, 'error');
+            return;
+          }
+          const uploadData = await uploadRes.json();
+          picturesPayload.push({ id: uploadData.id });
+        } else if (photo.type === 'url') {
+          picturesPayload.push({ source: photo.source });
+        }
+      }
+
+      // Step 2: Build targets from selected
+      const targets = skuSearchResults
+        .filter(r => selectedTargets.has(`${r.seller_slug}:${r.item_id}`))
+        .map(r => ({ seller_slug: r.seller_slug, item_id: r.item_id }));
+
+      // Step 3: Call apply endpoint
+      const applyRes = await fetch(`${API_BASE}/api/photos/apply`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({
+          source_item_id: preview.id,
+          sku: skuInput.trim() || null,
+          pictures: picturesPayload,
+          targets,
+        }),
+      });
+
+      if (!applyRes.ok) {
+        const err = await applyRes.json().catch(() => ({ detail: 'Erro ao aplicar fotos' }));
+        toast(err.detail, 'error');
+        return;
+      }
+
+      const result = await applyRes.json();
+      const logId = result.log_id as number;
+
+      // Poll for completion to show summary toast
+      if (pollRef.current) clearInterval(pollRef.current);
+      const hdrs = headers();
+      pollRef.current = setInterval(async () => {
+        try {
+          const logsRes = await fetch(`${API_BASE}/api/photos/logs?limit=50`, { headers: hdrs });
+          if (!logsRes.ok) return;
+          const logs: Array<{ id: number; status: string; success_count: number; error_count: number }> = await logsRes.json();
+          const log = logs.find(l => l.id === logId);
+          if (log && log.status !== 'processing' && log.status !== 'pending') {
+            if (pollRef.current) clearInterval(pollRef.current);
+            pollRef.current = null;
+            const msg = `${log.success_count} sucesso, ${log.error_count} erro${log.error_count !== 1 ? 's' : ''}`;
+            toast(msg, log.error_count > 0 ? 'error' : 'success');
+          }
+        } catch { /* ignore polling errors */ }
+      }, 3000);
+
+      // Stop polling after 2 minutes
+      setTimeout(() => {
+        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      }, 120000);
+
+    } catch (e) {
+      toast(String(e), 'error');
+    } finally {
+      setApplying(false);
+    }
+  }, [preview, selectedTargets, activePhotos, skuSearchResults, skuInput, headers, toast]);
+
+  const canApply = preview && selectedTargets.size > 0 && activePhotos.length > 0 && !applying;
 
   const handleDragStart = useCallback((e: React.DragEvent, idx: number) => {
     setDragIdx(idx);
@@ -773,6 +876,30 @@ export default function PhotosPage({ sellers, headers }: Props) {
             Nenhum anuncio encontrado com esse SKU.
           </p>
         </Card>
+      )}
+
+      {/* Apply Photos Button (US-011) */}
+      {preview && hasSearched && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button
+            className="btn-primary"
+            onClick={() => void handleApply()}
+            disabled={!canApply}
+            style={{
+              padding: 'var(--space-3) var(--space-6)',
+              fontSize: 'var(--text-sm)',
+              fontWeight: 600,
+              opacity: canApply ? 1 : 0.5,
+              cursor: canApply ? 'pointer' : 'not-allowed',
+            }}
+          >
+            {applying ? (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                <span className="spinner spinner-sm" /> Aplicando...
+              </span>
+            ) : `Aplicar fotos (${selectedTargets.size})`}
+          </button>
+        </div>
       )}
     </div>
   );
