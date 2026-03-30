@@ -26,6 +26,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Adicionar fotos no PhotosPage: upload de arquivos (multiplos, JPG/PNG, max 10MB) e adicionar por URL, preview local, badge "Nova" e borda tracejada para fotos novas
 - Busca por SKU no PhotosPage: campo auto-preenchido com SKU detectado, busca via POST /api/photos/search-sku, lista de resultados com checkbox, thumbnail e seller, selecao em massa, item de origem excluido automaticamente
 - Fluxo de aplicacao de fotos no PhotosPage: upload automatico de fotos novas ao ML, chamada POST /api/photos/apply com fotos editadas, botao "Aplicar fotos" com estado de loading, polling automatico para exibir resumo (X sucesso, Y erros) via toast
+- Secao de historico de operacoes de fotos no PhotosPage: tabela com data, origem, SKU, status badge colorido, contadores sucesso/erro; linhas expandiveis com detalhes por destino; filtro por status; polling a cada 5s enquanto houver operacoes em andamento; paginacao com "Carregar mais"
 
 ### Changed
 - `POST /api/copy/resolve-sellers` otimizado: identifica o seller do primeiro item e usa como fast path para os demais (1+N requests em vez de N×M); fallback completo apenas para itens de sellers diferentes

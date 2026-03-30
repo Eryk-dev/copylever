@@ -33,6 +33,26 @@ interface SkuSearchResult {
   thumbnail: string;
 }
 
+interface PhotoLogTarget {
+  seller_slug: string;
+  item_id: string;
+  status: string;
+  error: string | null;
+}
+
+interface PhotoLog {
+  id: number;
+  source_item_id: string;
+  sku: string | null;
+  targets: PhotoLogTarget[];
+  total_targets: number;
+  success_count: number;
+  error_count: number;
+  status: string;
+  created_at: string;
+  username: string | null;
+}
+
 // Discriminated union for editable photos
 type EditablePhoto =
   | { type: 'existing'; id: string; url: string; secure_url: string; size: string }
@@ -96,10 +116,80 @@ export default function PhotosPage({ sellers, headers }: Props) {
   const [applying, setApplying] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // History state (US-012)
+  const [logs, setLogs] = useState<PhotoLog[]>([]);
+  const [logsLoaded, setLogsLoaded] = useState(false);
+  const [logsOpen, setLogsOpen] = useState(true);
+  const [statusFilter, setStatusFilter] = useState('');
+  const [hasMoreLogs, setHasMoreLogs] = useState(false);
+  const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
+  const logsAbortRef = useRef<AbortController | null>(null);
+
+  const LOGS_PAGE_SIZE = 20;
+
   // Clean up poll interval on unmount
   useEffect(() => {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
+
+  // Logs loading (US-012)
+  const loadLogs = useCallback(async () => {
+    logsAbortRef.current?.abort();
+    const controller = new AbortController();
+    logsAbortRef.current = controller;
+    const params = new URLSearchParams({ limit: String(LOGS_PAGE_SIZE), offset: '0' });
+    if (statusFilter) params.set('status', statusFilter);
+    try {
+      const res = await fetch(`${API_BASE}/api/photos/logs?${params}`, {
+        headers: headers(),
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      if (res.ok) {
+        const data: PhotoLog[] = await res.json();
+        setLogs(data);
+        setHasMoreLogs(data.length === LOGS_PAGE_SIZE);
+        setLogsLoaded(true);
+      }
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return;
+      console.error('Failed to load photo logs:', e);
+    }
+  }, [headers, statusFilter]);
+
+  const loadMoreLogs = useCallback(async () => {
+    const params = new URLSearchParams({ limit: String(LOGS_PAGE_SIZE), offset: String(logs.length) });
+    if (statusFilter) params.set('status', statusFilter);
+    try {
+      const res = await fetch(`${API_BASE}/api/photos/logs?${params}`, { headers: headers(), cache: 'no-store' });
+      if (res.ok) {
+        const data: PhotoLog[] = await res.json();
+        setLogs(prev => [...prev, ...data]);
+        setHasMoreLogs(data.length === LOGS_PAGE_SIZE);
+      }
+    } catch (e) { console.error('Failed to load more photo logs:', e); }
+  }, [headers, statusFilter, logs.length]);
+
+  // Initial load
+  useEffect(() => {
+    if (!logsLoaded) loadLogs();
+  }, [logsLoaded, loadLogs]);
+
+  // Reset logs when filter changes
+  useEffect(() => {
+    setLogs([]);
+    setLogsLoaded(false);
+  }, [statusFilter]);
+
+  // Poll while any log is processing
+  const hasProcessing = logs.some(l => l.status === 'processing' || l.status === 'pending');
+  const loadLogsRef = useRef(loadLogs);
+  useEffect(() => { loadLogsRef.current = loadLogs; }, [loadLogs]);
+  useEffect(() => {
+    if (!hasProcessing) return;
+    const id = setInterval(() => { void loadLogsRef.current(); }, 5000);
+    return () => clearInterval(id);
+  }, [hasProcessing]);
 
   const sellerName = useCallback((slug: string) => {
     return sellers.find(s => s.slug === slug)?.name || slug;
@@ -332,6 +422,9 @@ export default function PhotosPage({ sellers, headers }: Props) {
       const result = await applyRes.json();
       const logId = result.log_id as number;
 
+      // Refresh logs to show the new entry; polling effect handles updates
+      setTimeout(() => { void loadLogsRef.current(); }, 1000);
+
       // Poll for completion to show summary toast
       if (pollRef.current) clearInterval(pollRef.current);
       const hdrs = headers();
@@ -339,13 +432,14 @@ export default function PhotosPage({ sellers, headers }: Props) {
         try {
           const logsRes = await fetch(`${API_BASE}/api/photos/logs?limit=50`, { headers: hdrs });
           if (!logsRes.ok) return;
-          const logs: Array<{ id: number; status: string; success_count: number; error_count: number }> = await logsRes.json();
-          const log = logs.find(l => l.id === logId);
+          const allLogs: Array<{ id: number; status: string; success_count: number; error_count: number }> = await logsRes.json();
+          const log = allLogs.find(l => l.id === logId);
           if (log && log.status !== 'processing' && log.status !== 'pending') {
             if (pollRef.current) clearInterval(pollRef.current);
             pollRef.current = null;
             const msg = `${log.success_count} sucesso, ${log.error_count} erro${log.error_count !== 1 ? 's' : ''}`;
             toast(msg, log.error_count > 0 ? 'error' : 'success');
+            void loadLogsRef.current();
           }
         } catch { /* ignore polling errors */ }
       }, 3000);
@@ -901,6 +995,225 @@ export default function PhotosPage({ sellers, headers }: Props) {
           </button>
         </div>
       )}
+
+      {/* History (US-012) */}
+      <Card
+        title={`Historico (${logs.length}${hasMoreLogs ? '+' : ''})`}
+        collapsible
+        open={logsOpen}
+        onToggle={() => setLogsOpen(!logsOpen)}
+      >
+        {logsOpen && (
+          <>
+            {/* Status filter tabs */}
+            <div style={{
+              display: 'flex',
+              gap: 'var(--space-2)',
+              marginBottom: 'var(--space-3)',
+              flexWrap: 'wrap',
+            }}>
+              {[
+                { key: '', label: 'Todos' },
+                { key: 'processing', label: 'Em andamento' },
+                { key: 'completed', label: 'Sucesso' },
+                { key: 'error', label: 'Erro' },
+              ].map(tab => (
+                <button
+                  key={tab.key}
+                  onClick={() => setStatusFilter(tab.key)}
+                  style={{
+                    padding: '4px 12px',
+                    borderRadius: 4,
+                    fontSize: 'var(--text-xs)',
+                    fontWeight: 600,
+                    background: statusFilter === tab.key ? 'var(--ink)' : 'transparent',
+                    color: statusFilter === tab.key ? 'var(--paper)' : 'var(--ink-faint)',
+                    border: `1px solid ${statusFilter === tab.key ? 'var(--ink)' : 'var(--line)'}`,
+                    cursor: 'pointer',
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {logs.length === 0 && logsLoaded ? (
+              <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-sm)', textAlign: 'center', padding: 'var(--space-4)' }}>
+                Nenhum registro{statusFilter ? ` com status "${statusFilter}"` : ''}.
+              </p>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-sm)' }}>
+                  <thead>
+                    <tr>
+                      {['Data', 'Origem', 'SKU', 'Status', 'Destinos', 'Sucesso', 'Erros'].map(h => (
+                        <th key={h} style={{
+                          textAlign: 'left',
+                          padding: 'var(--space-2) var(--space-3)',
+                          color: 'var(--ink-faint)',
+                          fontWeight: 500,
+                          fontSize: 'var(--text-xs)',
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.05em',
+                          borderBottom: '1px solid var(--line)',
+                          whiteSpace: 'nowrap',
+                        }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {logs.map(log => (
+                      <LogRow
+                        key={log.id}
+                        log={log}
+                        expanded={expandedLogId === log.id}
+                        onToggle={() => setExpandedLogId(expandedLogId === log.id ? null : log.id)}
+                        sellerName={sellerName}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Load more */}
+            {hasMoreLogs && (
+              <button
+                onClick={() => void loadMoreLogs()}
+                style={{
+                  display: 'block',
+                  width: '100%',
+                  padding: 'var(--space-2)',
+                  marginTop: 'var(--space-3)',
+                  background: 'none',
+                  color: 'var(--ink-faint)',
+                  fontSize: 'var(--text-xs)',
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  border: '1px solid var(--line)',
+                  borderRadius: 6,
+                }}
+              >
+                Carregar mais...
+              </button>
+            )}
+          </>
+        )}
+      </Card>
     </div>
+  );
+}
+
+// --- History helpers (US-012) ---
+
+const logTd: React.CSSProperties = { padding: 'var(--space-2) var(--space-3)', color: 'var(--ink)' };
+
+function PhotoStatusBadge({ status }: { status: string }) {
+  const colors: Record<string, string> = {
+    completed: 'var(--success)',
+    error: 'var(--danger)',
+    partial: 'var(--warning)',
+    processing: 'var(--info, #3b82f6)',
+    pending: 'var(--info, #3b82f6)',
+  };
+  const bgs: Record<string, string> = {
+    completed: 'rgba(16, 185, 129, 0.08)',
+    error: 'rgba(239, 68, 68, 0.08)',
+    partial: 'rgba(245, 158, 11, 0.08)',
+    processing: 'rgba(59, 130, 246, 0.08)',
+    pending: 'rgba(59, 130, 246, 0.08)',
+  };
+  const labels: Record<string, string> = {
+    completed: 'Sucesso',
+    error: 'Erro',
+    partial: 'Parcial',
+    processing: 'Aplicando...',
+    pending: 'Aguardando...',
+  };
+  const isActive = status === 'processing' || status === 'pending';
+  return (
+    <span style={{
+      color: colors[status] || 'var(--ink-faint)',
+      fontWeight: 600,
+      fontSize: 'var(--text-xs)',
+      textTransform: 'uppercase',
+      background: bgs[status] || 'transparent',
+      padding: '2px 8px',
+      borderRadius: 4,
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 6,
+      animation: isActive ? 'pulse-badge 1.5s ease-in-out infinite' : undefined,
+    }}>
+      {isActive && <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'currentColor', animation: 'pulse-dot 1.5s ease-in-out infinite' }} />}
+      {labels[status] || status}
+    </span>
+  );
+}
+
+function LogRow({ log, expanded, onToggle, sellerName }: {
+  log: PhotoLog;
+  expanded: boolean;
+  onToggle: () => void;
+  sellerName: (slug: string) => string;
+}) {
+  return (
+    <>
+      <tr
+        onClick={onToggle}
+        style={{ borderBottom: '1px solid var(--line)', cursor: 'pointer', transition: 'background 0.1s' }}
+        onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface)')}
+        onMouseLeave={e => (e.currentTarget.style.background = '')}
+      >
+        <td style={{ ...logTd, whiteSpace: 'nowrap' }}>
+          {new Date(log.created_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
+        </td>
+        <td style={{ ...logTd, fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}>
+          {log.source_item_id}
+        </td>
+        <td style={{ ...logTd, fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}>
+          {log.sku || '-'}
+        </td>
+        <td style={logTd}><PhotoStatusBadge status={log.status} /></td>
+        <td style={logTd}>{log.total_targets}</td>
+        <td style={{ ...logTd, color: 'var(--success)', fontWeight: 600 }}>{log.success_count}</td>
+        <td style={{ ...logTd, color: log.error_count > 0 ? 'var(--danger)' : 'var(--ink-faint)', fontWeight: 600 }}>
+          {log.error_count}
+        </td>
+      </tr>
+      {expanded && log.targets && log.targets.length > 0 && (
+        <tr>
+          <td colSpan={7} style={{ padding: 0 }}>
+            <div style={{
+              padding: 'var(--space-2) var(--space-4)',
+              background: 'var(--paper)',
+              borderBottom: '1px solid var(--line)',
+            }}>
+              {log.targets.map((t, i) => (
+                <div key={i} style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 'var(--space-2)',
+                  padding: 'var(--space-1) 0',
+                  fontSize: 'var(--text-xs)',
+                }}>
+                  <span style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: '50%',
+                    background: t.status === 'ok' ? 'var(--success)' : 'var(--danger)',
+                    flexShrink: 0,
+                  }} />
+                  <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink-faint)' }}>{t.item_id}</span>
+                  <span style={{ color: 'var(--ink-muted)' }}>{sellerName(t.seller_slug)}</span>
+                  {t.error && <span style={{ color: 'var(--danger)' }}>— {t.error}</span>}
+                </div>
+              ))}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
