@@ -531,19 +531,31 @@ async def search_items_by_sku(seller_slug: str, sku: str, org_id: str = "") -> l
     token = await _get_token(seller_slug, org_id)
     item_ids: set[str] = set()
     client = _get_ml_client()
-    for params in ({"seller_sku": sku}, {"sku": sku}):
-        resp = await client.get(
-            f"{ML_API}/users/{user_id}/items/search",
-            headers={"Authorization": f"Bearer {token}"},
-            params=params,
-            timeout=30.0,
-        )
-        if resp.status_code == 404:
-            continue
-        _raise_for_status(resp, "Mercado Livre API")
-        for item_id in resp.json().get("results", []):
-            if item_id:
-                item_ids.add(item_id)
+    for base_params in ({"seller_sku": sku}, {"sku": sku}):
+        offset = 0
+        limit = 100  # ML max per page
+        while True:
+            params = {**base_params, "offset": offset, "limit": limit}
+            resp = await client.get(
+                f"{ML_API}/users/{user_id}/items/search",
+                headers={"Authorization": f"Bearer {token}"},
+                params=params,
+                timeout=30.0,
+            )
+            if resp.status_code == 404:
+                break
+            _raise_for_status(resp, "Mercado Livre API")
+            data = resp.json()
+            results = data.get("results", [])
+            for item_id in results:
+                if item_id:
+                    item_ids.add(item_id)
+            # Check if there are more pages
+            paging = data.get("paging", {})
+            total = paging.get("total", len(results))
+            if offset + len(results) >= total or not results:
+                break
+            offset += len(results)
     return list(item_ids)
 
 

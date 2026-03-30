@@ -33,6 +33,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Erro de titulo longo nao faz mais truncamento automatico — agora entra no fluxo de correcao manual (needs_correction com kind="title")
 
 ### Fixed
+- Corrigido busca por SKU (`search_items_by_sku`) retornando apenas 50 resultados — agora pagina todas as paginas da API ML (limit=100, offset incremental) para encontrar todos os anuncios com o mesmo SKU
 - Corrigido photo_logs "processing" nao limpos no restart do servidor (adicionado cleanup em `cleanup_stale_tasks`)
 - Corrigido guard contra lista de fotos vazia no `apply_photos_to_targets` — impede que PUT /items com pictures=[] apague todas as fotos de um anuncio
 - Corrigido validacao de permissao can_copy_to no endpoint POST /api/photos/upload para operadores
