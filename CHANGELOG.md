@@ -13,12 +13,33 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Formulario de correcao de titulo: quando a categoria ML limita o numero de caracteres do titulo, o usuario agora pode editar o titulo manualmente antes de reenviar a copia (ERR-054)
 - Contador de caracteres no campo de titulo com limite visual e `maxLength` no input
 - Correcoes de titulo agora sao individuais por MLB (nao agrupam por SKU) — cada anuncio precisa de um titulo proprio
+- Tabela `photo_logs` para rastrear operacoes de fotos em massa por org (migration 016)
+- `GET /api/photos/preview/{item_id}` — endpoint para visualizar fotos e SKUs de um anuncio ML antes de editar
+- `POST /api/photos/upload` — endpoint para upload de imagens ao ML (multipart, valida tipo JPG/PNG e limite 10MB)
+- `upload_picture()` em `ml_api.py` — funcao publica para upload de imagens via ML API com retry em 429
+- `POST /api/photos/search-sku` — endpoint para buscar anuncios por SKU para aplicacao de fotos em massa (reutiliza `search_sku_all_sellers` do compat)
+- `apply_photos_to_targets()` em `photo_applier.py` — servico para aplicar fotos em multiplos anuncios ML via PUT /items/{id} com retry 429, logging de erros e atualizacao de photo_logs
+- `POST /api/photos/apply` — endpoint para aplicar fotos editadas em anuncios destino (BackgroundTask, valida permissoes can_copy_to, retorna log_id imediatamente)
+- `GET /api/photos/logs` — endpoint para historico de operacoes de fotos com filtro por status e paginacao (org-scoped, operadores veem apenas seus logs)
+- `PhotosPage.tsx` — pagina frontend com aba "Fotos" para visualizar fotos de anuncios ML (input MLB, preview com grid de fotos, SKUs, seller detectado)
+- Edicao de fotos no PhotosPage: remover fotos (botao X), restaurar fotos removidas, reordenar via drag & drop (HTML5), badge "Principal" na primeira foto
+- Adicionar fotos no PhotosPage: upload de arquivos (multiplos, JPG/PNG, max 10MB) e adicionar por URL, preview local, badge "Nova" e borda tracejada para fotos novas
+- Busca por SKU no PhotosPage: campo auto-preenchido com SKU detectado, busca via POST /api/photos/search-sku, lista de resultados com checkbox, thumbnail e seller, selecao em massa, item de origem excluido automaticamente
+- Fluxo de aplicacao de fotos no PhotosPage: upload automatico de fotos novas ao ML, chamada POST /api/photos/apply com fotos editadas, botao "Aplicar fotos" com estado de loading, polling automatico para exibir resumo (X sucesso, Y erros) via toast
+- Secao de historico de operacoes de fotos no PhotosPage: tabela com data, origem, SKU, status badge colorido, contadores sucesso/erro; linhas expandiveis com detalhes por destino; filtro por status; polling a cada 5s enquanto houver operacoes em andamento; paginacao com "Carregar mais"
 
 ### Changed
 - `POST /api/copy/resolve-sellers` otimizado: identifica o seller do primeiro item e usa como fast path para os demais (1+N requests em vez de N×M); fallback completo apenas para itens de sellers diferentes
 - Erro de titulo longo nao faz mais truncamento automatico — agora entra no fluxo de correcao manual (needs_correction com kind="title")
 
 ### Fixed
+- Corrigido photo_logs "processing" nao limpos no restart do servidor (adicionado cleanup em `cleanup_stale_tasks`)
+- Corrigido guard contra lista de fotos vazia no `apply_photos_to_targets` — impede que PUT /items com pictures=[] apague todas as fotos de um anuncio
+- Corrigido validacao de permissao can_copy_to no endpoint POST /api/photos/upload para operadores
+- Corrigido validacao PictureEntry: rejeita entradas onde ambos id e source sao nulos
+- Corrigido blob URL revogado prematuramente em fotos removidas causando imagem quebrada na secao "Removidas" do PhotosPage
+- Corrigido headers stale no polling de apply do PhotosPage — agora chama headers() dentro do callback do setInterval
+- Corrigido tratamento de excecao fatal no photo_applier — targets nao processados sao marcados como erro em vez de ficar pendentes
 - Corrigido toast de correcao de grupo mostrando "nenhum anuncio copiado" quando o backend retorna status "queued" (background task) — agora mostra mensagem de sucesso correta
 - Corrigido `title_override` perdido durante retry: `_adjust_payload_for_ml_error` e safe_mode rebuild sobrescreviam o titulo corrigido com o original do source — agora o override e preservado apos cada ajuste no retry loop
 - Corrigido tratamento de warnings de envio do ML: `mandatory_free_shipping` agora seta `free_shipping=true` proativamente e `lost_me1_by_user` confirma `mode=me2` no retry (ERR-055)

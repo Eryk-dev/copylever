@@ -8,13 +8,14 @@ import CopyPage from './pages/CopyPage';
 import Admin from './pages/Admin';
 import UsersPage from './pages/UsersPage';
 import CompatPage from './pages/CompatPage';
+import PhotosPage from './pages/PhotosPage';
 import SuperAdminPage from './pages/SuperAdminPage';
 import BillingPage from './pages/BillingPage';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import { SHOPEE_ENABLED } from './lib/features';
 
-type View = 'copy' | 'admin' | 'compat' | 'super';
+type View = 'copy' | 'photos' | 'admin' | 'compat' | 'super';
 type AdminSubView = 'sellers' | 'users' | 'billing';
 type AuthView = 'landing' | 'login' | 'signup' | 'forgot' | 'reset';
 
@@ -136,6 +137,9 @@ export default function App() {
         (u.permissions.some(p => p.can_copy_from) && u.permissions.some(p => p.can_copy_to))) {
       tabs.push('copy');
     }
+
+    // Show Fotos tab for all authenticated users
+    tabs.push('photos');
 
     // Show Compat tab if admin or can_run_compat
     if (u.role === 'admin' || u.can_run_compat) {
@@ -623,6 +627,11 @@ export default function App() {
                 Cópia
               </ViewTab>
             )}
+            {visibleTabs.includes('photos') && (
+              <ViewTab active={activeView === 'photos'} onClick={() => setView('photos')}>
+                Fotos
+              </ViewTab>
+            )}
             {visibleTabs.includes('compat') && (
               <ViewTab active={activeView === 'compat'} onClick={() => setView('compat')}>
                 Compatibilidade
@@ -788,6 +797,9 @@ export default function App() {
               <BillingPage headers={auth.headers} />
             )}
           </div>
+        )}
+        {activeView === 'photos' && (
+          <PhotosPage sellers={auth.sellers} headers={auth.headers} />
         )}
         {activeView === 'compat' && (
           <CompatPage sellers={auth.sellers} headers={auth.headers} />

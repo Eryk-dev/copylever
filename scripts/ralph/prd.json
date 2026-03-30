@@ -1,372 +1,223 @@
 {
-  "project": "COPY ANUNCIOS — Shopee Integration Fixes",
-  "branchName": "ralph/shopee-fixes",
-  "description": "Comprehensive fix of all bugs, security gaps, DB schema issues, performance bottlenecks, missing features (variations), and dead code cleanup in the Shopee integration. Diagnosed by 5 parallel audit agents on 2026-03-06.",
+  "project": "Bulk Photo Manager",
+  "branchName": "ralph/bulk-photo-manager",
+  "description": "Sistema para edição e replicação de fotos de anúncios ML em massa. Usuário informa MLB, edita fotos (excluir/adicionar/reordenar), busca por SKU e aplica o conjunto editado em todos os anúncios com mesmo SKU.",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Fix _get_shop_lock TOCTOU race condition",
-      "description": "As a system, I want the per-shop token lock to be atomically created so that concurrent coroutines cannot create duplicate locks.",
+      "title": "Database migration — photo_logs table",
+      "description": "As a developer, I want a photo_logs table so that photo operations are tracked per org.",
       "acceptanceCriteria": [
-        "In `app/services/shopee_api.py`, replace the `_get_shop_lock` function body with a single line: `return _token_locks.setdefault(shop_id, asyncio.Lock())`",
-        "The function still returns an `asyncio.Lock` for the given shop_id",
-        "No other changes to the file in this story",
+        "Create migration file app/db/migrations/016_photo_logs.sql",
+        "Table photo_logs has columns: id (bigserial PK), user_id (uuid FK→users), org_id (uuid FK→orgs), source_item_id (text), sku (text), targets (jsonb), total_targets (int default 0), success_count (int default 0), error_count (int default 0), status (text default 'pending'), created_at (timestamptz default now())",
+        "targets JSONB stores array of objects: {seller_slug, item_id, status, error}",
+        "Add index on org_id and created_at",
+        "FK org_id ON DELETE SET NULL (nullable), FK user_id ON DELETE SET NULL (nullable) — same pattern as compat_logs",
         "Typecheck passes"
       ],
       "priority": 1,
       "passes": true,
-      "notes": "One-line fix. Current code at lines 30-33 has if/set pattern that two coroutines can race through. dict.setdefault is atomic in CPython."
+      "notes": "Follow the same pattern as compat_logs (migration 001). Next migration number is 016. Apply via Supabase MCP. Project ID: wrbrbhuhsaaupqsimkqz."
     },
     {
       "id": "US-002",
-      "title": "Abort copy when zero images uploaded",
-      "description": "As a system, I want to fail fast when no images were uploaded successfully, instead of calling add_item 3 times with an empty image list.",
+      "title": "Backend — photo preview endpoint",
+      "description": "As a user, I want an endpoint to fetch photos and SKUs from an MLB item so I can see them before editing.",
       "acceptanceCriteria": [
-        "In `app/services/shopee_copier.py`, in `copy_single_item`, after `_upload_images()` returns, check if `image_ids` is empty",
-        "If empty, return an error result immediately with message: 'Falha no upload de todas as imagens — nao e possivel criar o anuncio'",
-        "The error is recorded in the result dict with status 'error'",
-        "No `add_item` call is made when image_ids is empty",
-        "Debug log entry is written via `_log_debug` with action 'shopee_image_upload_failed'",
+        "Create app/routers/photos.py with APIRouter(prefix='/api/photos', tags=['photos'])",
+        "GET /api/photos/preview/{item_id} endpoint with optional query param 'seller'",
+        "Uses require_active_org dependency for auth",
+        "If no seller provided, tries all connected sellers in parallel (reuse _resolve_item_seller pattern from compat.py)",
+        "Returns JSON: {id, title, thumbnail, pictures: [{id, url, secure_url, size}], skus: [string], seller: string}",
+        "Pictures extracted from item.pictures array, each with id/url/secure_url/size fields",
+        "SKUs extracted from seller_custom_field + SELLER_SKU attributes + variation-level (same logic as compat preview)",
+        "Register router in app/main.py",
         "Typecheck passes"
       ],
       "priority": 2,
       "passes": true,
-      "notes": "Currently at shopee_copier.py:351-352 it logs a warning but proceeds. add_item requires at least 1 image_id. The 3 retry attempts all fail with empty images — waste of API calls. Check the return dict format used by other error paths in the same function for consistency."
+      "notes": "Follow the exact same pattern as compat.py preview_item endpoint. Import get_item from ml_api. The _resolve_item_seller helper can be copied/adapted from compat.py."
     },
     {
       "id": "US-003",
-      "title": "Fix _strip_attributes to use exclusion list instead of is_mandatory",
-      "description": "As a system, I want retry attempt 2 to remove only known-problematic attributes (brand, etc.) instead of all attributes, so items keep their required category attributes.",
+      "title": "Backend — photo upload endpoint",
+      "description": "As a user, I want to upload images to the ML API so they get a permanent picture_id for use across items.",
       "acceptanceCriteria": [
-        "In `app/services/shopee_copier.py`, modify `_strip_attributes` to define a set of attribute IDs to exclude (brand-related), e.g. `STRIP_ATTR_IDS = set()` — or filter by known problematic attribute names/patterns",
-        "Instead of filtering `a.get('is_mandatory')` (which is never present), filter OUT attributes whose `attribute_id` is in the exclusion set, or whose value contains brand-related data",
-        "As a simple heuristic: remove attributes where the attribute value list is empty or where the attribute appears to be brand (check common Shopee brand attribute IDs or names)",
-        "If after filtering the list is empty, delete the `attribute_list` key (preserve current fallback behavior)",
-        "Attributes NOT in the exclusion criteria are KEPT in the payload",
+        "POST /api/photos/upload endpoint in photos.py",
+        "Accepts multipart/form-data with field 'file' (UploadFile)",
+        "Requires a 'seller' query param to determine which access_token to use",
+        "Validates file type is JPG/JPEG/PNG (reject others with 400)",
+        "Validates file size <= 10MB (reject with 400)",
+        "Forwards file to ML API: POST https://api.mercadolibre.com/pictures/items/upload with Authorization Bearer token",
+        "Returns the ML response: {id: picture_id, variations: [{size, url, secure_url}]}",
+        "Uses require_active_org dependency",
         "Typecheck passes"
       ],
       "priority": 3,
       "passes": true,
-      "notes": "Current code at lines 286-297 filters `a.get('is_mandatory')` but this field comes from get_attributes (category API), NOT from get_item_base_info. It's never present in the source item's attribute data, so the filter always returns empty list — removing ALL attributes. A pragmatic fix: instead of trying to detect mandatory, just remove the ones known to cause issues (brand). The Shopee brand attribute has no universal ID, so the safest approach is: keep all attributes but strip attribute_list entries with empty attribute_value_list."
+      "notes": "Use httpx to forward the multipart upload to ML. Get the seller's access token via _get_token from ml_api.py. The ML endpoint is POST /pictures/items/upload with Content-Type: multipart/form-data."
     },
     {
       "id": "US-004",
-      "title": "Fix updated_at on token refresh + condition from source + dead import",
-      "description": "As a system, I want shopee_sellers.updated_at to be current after token refresh, item condition to come from the source, and dead imports removed.",
+      "title": "Backend — search SKU endpoint for photos",
+      "description": "As a user, I want to search items by SKU so I can find target items to apply photos to.",
       "acceptanceCriteria": [
-        "In `app/services/shopee_api.py`, in the `_get_token` refresh path where token is updated in DB, add `updated_at` to the update dict with value `datetime.now(timezone.utc).isoformat()`",
-        "In `app/services/shopee_copier.py`, in `_build_shopee_payload`, use `base.get('condition', 'NEW')` from source data instead of hardcoded `'NEW'`",
-        "In `app/routers/auth_shopee.py`, remove the unused `from urllib.parse import urlencode` import",
+        "POST /api/photos/search-sku endpoint in photos.py",
+        "Request body: {skus: string[]} with max 50 SKUs validation",
+        "Reuses search_sku_all_sellers from app/services/compat_copier.py",
+        "Filters sellers by can_copy_to permission (admins get all)",
+        "Returns list of {seller_slug, seller_name, item_id, sku, title, thumbnail}",
+        "Uses require_active_org dependency",
         "Typecheck passes"
       ],
       "priority": 4,
       "passes": true,
-      "notes": "Three small fixes in three files. For updated_at: the refresh path in _get_token does db.table('shopee_sellers').update({...}) — just add 'updated_at' to that dict. For condition: line ~166 or ~311 in shopee_copier.py has condition='NEW' hardcoded. For urlencode: line 7 in auth_shopee.py."
+      "notes": "This is almost identical to compat.py search_sku endpoint. Import and reuse search_sku_all_sellers from compat_copier."
     },
     {
       "id": "US-005",
-      "title": "Wrap logistics fetch in try/except + add platform to debug logs",
-      "description": "As a system, I want logistics fetch failures to produce specific error messages, and Shopee debug logs to be distinguishable from ML debug logs.",
+      "title": "Backend — apply photos service logic",
+      "description": "As a user, I want to apply a set of photos to multiple items so they all have the same images.",
       "acceptanceCriteria": [
-        "In `app/services/shopee_copier.py` `copy_single_item`, wrap `_fetch_dest_logistics()` call in try/except with a specific error message: 'Falha ao buscar canais logisticos da loja destino'",
-        "On logistics fetch failure, return error result immediately (do not proceed to add_item)",
-        "In `_log_debug()`, add field `platform: 'shopee'` to the insert dict for `api_debug_logs`",
-        "Existing debug log entries from ML (in item_copier.py) are not affected",
+        "Create app/services/photo_applier.py with async function apply_photos_to_targets()",
+        "Parameters: source_item_id, sku, pictures list [{id?, source?}], targets list [{seller_slug, item_id}], user_id, org_id",
+        "Creates photo_logs record with status 'processing' before starting",
+        "For each target: calls ML API PUT /items/{item_id} with {pictures: [{id: ...} or {source: ...}]} using target seller's access token",
+        "Updates photo_logs target entry with 'ok' or error message after each item",
+        "Updates photo_logs success_count, error_count, and status ('completed'/'error') when done",
+        "Retry on 429 with exponential backoff (3s base, max 5 retries)",
+        "Logs errors to api_debug_logs on failure (reuse _log_api_debug pattern from item_copier)",
         "Typecheck passes"
       ],
       "priority": 5,
       "passes": true,
-      "notes": "Currently _fetch_dest_logistics is called without try/except in copy_single_item. Any exception bubbles up to the generic except handler. Adding specific handling gives better error messages. For _log_debug: check the existing api_debug_logs schema — it uses JSONB columns, so adding platform is safe. The ML copier (item_copier.py) has its own _log_debug that won't be affected."
+      "notes": "Use ml_api._get_token to get access token for each target seller. PUT /items/{item_id} with pictures payload. Follow compat_copier pattern for log updates. Use httpx for the PUT call. The pictures array order defines display order (first = main photo)."
     },
     {
       "id": "US-006",
-      "title": "Use refresh_token_expire_in from Shopee API response",
-      "description": "As a system, I want to compute refresh_token_expires_at from the actual API response instead of hardcoding 30 days.",
+      "title": "Backend — apply photos endpoint + logs endpoint",
+      "description": "As a user, I want API endpoints to trigger photo application and view history.",
       "acceptanceCriteria": [
-        "In `app/routers/auth_shopee.py` callback: use `token_data.get('refresh_token_expire_in')` if present to compute `refresh_expires_at`; fallback to 30 days if absent",
-        "In `app/services/shopee_api.py` `_get_token` refresh path: if refresh response returns a new `refresh_token`, also update `refresh_token_expires_at` in the DB — compute from `refresh_token_expire_in` if present, fallback to 30 days from now",
-        "Log a warning if `refresh_token_expire_in` is not present in the response",
+        "POST /api/photos/apply endpoint in photos.py — receives {source_item_id, sku, pictures: [{id?, source?}], targets: [{seller_slug, item_id}]}",
+        "Executes apply_photos_to_targets as BackgroundTask",
+        "Returns {log_id, status: 'processing', message: 'Fotos sendo aplicadas...'} immediately",
+        "GET /api/photos/logs endpoint with query params: limit (default 20), offset (default 0), status (optional filter)",
+        "Returns photo_logs rows filtered by org_id, ordered by created_at DESC",
+        "Both endpoints use require_active_org dependency",
         "Typecheck passes"
       ],
       "priority": 6,
       "passes": true,
-      "notes": "auth_shopee.py line 72 hardcodes `timedelta(days=30)`. The Shopee token exchange response may include `refresh_token_expire_in` (seconds). In _get_token refresh path (shopee_api.py ~line 286+), only access_token expiry is updated — refresh_token_expires_at is never recalculated even when a new refresh_token is returned."
+      "notes": "Same pattern as compat.py copy and logs endpoints. The apply endpoint validates permissions (can_copy_to for each target seller). Use BackgroundTasks from FastAPI."
     },
     {
       "id": "US-007",
-      "title": "Sanitize Shopee shop slugs",
-      "description": "As a system, I want Shopee shop slugs to contain only safe characters [a-z0-9-] to prevent routing conflicts and injection.",
+      "title": "Frontend — PhotosPage scaffold with preview section",
+      "description": "As a user, I want a Photos tab where I can enter an MLB and see the item's photos.",
       "acceptanceCriteria": [
-        "In `app/routers/auth_shopee.py`, after generating the slug from shop_name, apply `re.sub(r'[^a-z0-9-]', '', slug)` to strip unsafe characters",
-        "If slug is empty after sanitization, fallback to `f'shop-{shop_id}'`",
-        "If slug already exists for the same org_id (UNIQUE constraint), append `-2`, `-3`, etc.",
-        "Import `re` at top of file if not already imported",
+        "Create frontend/src/pages/PhotosPage.tsx",
+        "Add 'Fotos' tab to App.tsx navigation (visible to all authenticated users), add 'photos' to View type",
+        "PhotosPage receives {sellers, headers} props (same as CompatPage)",
+        "Input field for MLB ID with parseItemId helper (same format as CompatPage)",
+        "Button 'Buscar' triggers GET /api/photos/preview/{item_id}",
+        "On success: displays item title, seller, detected SKUs in a Card component",
+        "Displays photos in a CSS grid (thumbnails using secure_url, ~150x150px)",
+        "Loading spinner while fetching, error message on failure",
         "Typecheck passes"
       ],
       "priority": 7,
       "passes": true,
-      "notes": "Current code at line 83: `slug = shop_name.lower().replace(' ', '-')[:50]` — allows slashes, dots, unicode. The slug is used in URL paths and DB lookups. The duplicate-suffix logic should query shopee_sellers for existing slugs in the org before inserting."
+      "notes": "Follow CompatPage.tsx structure closely. Import API_BASE and Seller type from lib/api.ts. Add 'photos' to the View union type in App.tsx and add tab button. Use the Card component from CopyPage."
     },
     {
       "id": "US-008",
-      "title": "Create migration 013 — fix Shopee schema (FKs, indexes, unique constraints)",
-      "description": "As a DBA, I want the Shopee DB schema to follow the same patterns as the ML schema for consistency and correct referential integrity.",
+      "title": "Frontend — photo delete, restore, and reorder",
+      "description": "As a user, I want to delete, restore, and reorder photos in the grid before applying.",
       "acceptanceCriteria": [
-        "Create file `app/db/migrations/013_shopee_schema_fixes.sql`",
-        "ALTER shopee_sellers FK org_id to ON DELETE CASCADE (drop and recreate FK)",
-        "ALTER shopee_copy_logs column org_id to be nullable (ALTER COLUMN org_id DROP NOT NULL)",
-        "ALTER shopee_copy_logs FK org_id to ON DELETE SET NULL (drop and recreate FK)",
-        "ALTER shopee_copy_logs FK user_id to ON DELETE SET NULL (drop and recreate FK)",
-        "DROP INDEX idx_shopee_sellers_slug_org and CREATE UNIQUE INDEX uq_shopee_sellers_slug_org ON shopee_sellers(slug, org_id)",
-        "CREATE INDEX idx_shopee_copy_logs_created_at ON shopee_copy_logs(created_at DESC)",
-        "CREATE INDEX idx_shopee_copy_logs_source_seller ON shopee_copy_logs(source_seller)",
-        "Migration file has a comment header with description and rollback instructions",
+        "Each photo in the grid has an X button overlay to remove it",
+        "Removed photos appear in a 'Removidas' section below with a 'Restaurar' button each",
+        "Cannot remove the last remaining photo (X button disabled/hidden when only 1 left)",
+        "Photos are reorderable via drag & drop (HTML5 drag events: onDragStart, onDragOver, onDrop)",
+        "First photo has a 'Principal' badge overlay",
+        "Dragging a photo swaps positions visually in real time",
+        "All edits are local state only (no API calls until apply step)",
         "Typecheck passes"
       ],
       "priority": 8,
       "passes": true,
-      "notes": "Both tables are currently empty (0 rows confirmed). Reference ML patterns: copy_sellers.org_id uses CASCADE, copy_logs.org_id uses SET NULL, copy_logs.user_id uses SET NULL. To find existing FK constraint names, the migration should use: ALTER TABLE ... DROP CONSTRAINT IF EXISTS ... then ADD CONSTRAINT. Check migration 007_multi_tenant.sql and 008_backfill_org_data.sql for ML FK patterns. Apply via mcp__supabase__apply_migration. Supabase project ID: wrbrbhuhsaaupqsimkqz."
+      "notes": "Use HTML5 Drag and Drop API — no external library needed. Track active photos as array (ordered), removed photos as separate array. onDragStart: store source index in dataTransfer. onDragOver: preventDefault. onDrop: reorder array by moving source to drop position."
     },
     {
       "id": "US-009",
-      "title": "Implement rate limiting with exponential backoff in Shopee API client",
-      "description": "As a system, I want Shopee API calls to automatically retry with backoff on error.too_fast, so bulk copy operations don't fail from rate limiting.",
+      "title": "Frontend — add photos by upload and URL",
+      "description": "As a user, I want to add new photos by uploading files from my computer or pasting image URLs.",
       "acceptanceCriteria": [
-        "In `app/services/shopee_api.py`, implement retry logic in `_shop_get()` and `_shop_post()` that detects `error` field containing 'too_fast' in the response",
-        "Retry with exponential backoff using existing constants: `_RATE_LIMIT_RETRIES=5` and `_RATE_LIMIT_BASE_WAIT=2` — waits: 2s, 4s, 8s, 16s, 32s",
-        "Log a warning on each retry with attempt number and wait time",
-        "After exhausting retries, raise `ShopeeApiError` as normal",
-        "Also apply the same retry logic in `upload_image()`",
-        "The `_raise_for_shopee` check must happen AFTER the retry loop (only on final failure)",
+        "Button 'Adicionar foto' opens file picker (accept='.jpg,.jpeg,.png')",
+        "Supports selecting multiple files at once via file picker",
+        "Selected files show local preview in the grid via URL.createObjectURL",
+        "Files over 10MB show toast error and are not added",
+        "Input field for image URL with 'Adicionar' button",
+        "URL images show preview in the grid using the URL as img src",
+        "New photos have visual distinction from existing ones (e.g. dashed border or 'Nova' badge)",
+        "New photos can be reordered and deleted like existing photos",
         "Typecheck passes"
       ],
       "priority": 9,
       "passes": true,
-      "notes": "Constants at lines 26-27 are already defined but never used. The pattern should be: call API -> check if response has error.too_fast -> if yes, sleep and retry -> if no, proceed to _raise_for_shopee or return. Don't retry on non-rate-limit errors. Match the pattern from ML's item_copier.py exponential backoff on 429s."
+      "notes": "Store File objects and URL strings alongside existing ML photo objects in the same photos array. Each photo entry needs a type discriminator: {type: 'existing', id, url} | {type: 'upload', file, previewUrl} | {type: 'url', source}. The actual ML upload happens during the apply step (US-011), not here."
     },
     {
       "id": "US-010",
-      "title": "Create reusable httpx.AsyncClient for Shopee API",
-      "description": "As a system, I want to reuse HTTP connections across Shopee API calls to reduce latency from TCP handshake overhead.",
+      "title": "Frontend — SKU search and target selection",
+      "description": "As a user, I want to search by SKU and select which items will receive the edited photos.",
       "acceptanceCriteria": [
-        "In `app/services/shopee_api.py`, create a module-level lazy singleton `_http_client: httpx.AsyncClient | None = None`",
-        "Create `_get_client() -> httpx.AsyncClient` that initializes the client on first call with `limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)` and `timeout=60.0`",
-        "Replace all `async with httpx.AsyncClient(...) as client:` blocks in `_shop_get`, `_shop_post`, and `upload_image` to use `_get_client()` instead",
-        "Add `async def close_client()` function that closes the client if it exists (for graceful shutdown)",
-        "In `app/main.py`, register `close_client` as a shutdown event handler: `@app.on_event('shutdown')` or via lifespan",
+        "SKU input field auto-populates with the first SKU detected from preview",
+        "Button 'Buscar por SKU' triggers POST /api/photos/search-sku with {skus: [sku]}",
+        "Results displayed as list with checkbox, item_id, title, seller name, current thumbnail",
+        "All results selected by default (checkbox checked)",
+        "Source item (from preview) is excluded from results automatically (filter by item_id)",
+        "Counter shows 'X de Y anúncios selecionados'",
+        "Loading state while searching, empty state message if no results",
         "Typecheck passes"
       ],
       "priority": 10,
       "passes": true,
-      "notes": "Currently every API call creates and destroys an httpx.AsyncClient (lines 167, 194, 326, 354, 450). This means no connection pooling. A singleton client will reuse TCP connections. Check how main.py handles lifecycle events — it may use lifespan context manager. Keep timeout=60.0 for upload_image specifically (can be overridden per-call)."
+      "notes": "Reuse the search_sku_all_sellers backend which returns {seller_slug, seller_name, item_id, sku, title, thumbnail}. Filter out sourceItemId on the frontend side."
     },
     {
       "id": "US-011",
-      "title": "Parallelize Shopee image uploads with semaphore",
-      "description": "As a system, I want to upload images concurrently (max 3 at a time) to reduce copy time for items with many images.",
+      "title": "Frontend — apply photos flow with upload and progress",
+      "description": "As a user, I want to apply the edited photos to selected targets and see the result.",
       "acceptanceCriteria": [
-        "In `app/services/shopee_copier.py`, modify `_upload_images()` to use `asyncio.gather()` with `asyncio.Semaphore(3)` for concurrent uploads",
-        "Each image still has 1 retry on failure (existing behavior preserved)",
-        "The ORDER of returned image_ids matches the order of input URLs (first image = cover photo)",
-        "Failed individual uploads return None and are filtered out (existing behavior)",
-        "Log line indicates how many images uploaded successfully vs total attempted",
+        "'Aplicar fotos' button enabled only when there are selected targets AND at least 1 photo in the grid",
+        "On click: first uploads any 'upload' type photos to POST /api/photos/upload (multipart) to get picture_id",
+        "Then calls POST /api/photos/apply with final pictures array: existing as {id}, uploaded as {id: uploaded_picture_id}, URLs as {source}",
+        "Button shows 'Aplicando...' and is disabled during operation",
+        "On completion: shows summary toast 'X sucesso, Y erros'",
+        "Refreshes the logs section after apply completes",
         "Typecheck passes"
       ],
       "priority": 11,
       "passes": true,
-      "notes": "Current code at lines 60-92 uploads sequentially in a for loop. For 9 images at ~2s each = 18s. With semaphore(3) = ~6s. Use asyncio.gather with return_exceptions=False. Create a helper `_upload_one(sem, shop_id, url, org_id)` that acquires semaphore, calls _upload_single_image, returns image_id or None. Then gather all helpers and filter None values. CRITICAL: preserve order — asyncio.gather preserves input order."
+      "notes": "Upload flow: for each File in photos array, FormData with 'file' field → POST /api/photos/upload?seller={seller} → get picture_id from response. Build final pictures array mixing {id} and {source} entries. The seller for upload should be the source seller from the preview step."
     },
     {
       "id": "US-012",
-      "title": "Add CSRF protection to Shopee OAuth flow",
-      "description": "As a system, I want the OAuth state parameter to be cryptographically signed and single-use, preventing attackers from connecting shops to arbitrary orgs.",
+      "title": "Frontend — photo operation history section",
+      "description": "As a user, I want to see the history of photo operations with status and details.",
       "acceptanceCriteria": [
-        "In `app/routers/auth_shopee.py` install endpoint: generate a CSRF token using `hmac.new(settings.shopee_partner_key.encode(), f'{org_id}:{ts}'.encode(), 'sha256').hexdigest()[:16]`",
-        "Encode state as `org_{org_id}_{token}_{ts}` in the redirect URI",
-        "In callback: parse state to extract org_id, token, and timestamp",
-        "Validate token by recomputing HMAC and comparing",
-        "Reject if timestamp is older than 600 seconds (10 minutes)",
-        "Return HTTP 400 with clear error message on invalid/expired state",
-        "Import `hmac` and `time` at top of file",
+        "History section below the main form, collapsible, open by default",
+        "Fetches GET /api/photos/logs on page mount",
+        "Each log row shows: date (formatted), source_item_id, SKU, total/success/error counts, status badge (colored)",
+        "Clicking a row expands to show per-target results (item_id, seller, ok/error message)",
+        "Status filter dropdown: Todos, Sucesso, Erro, Em andamento",
+        "Polls GET /api/photos/logs every 5s while any log has status 'processing'",
+        "'Carregar mais' button for pagination (offset += 20)",
         "Typecheck passes"
       ],
       "priority": 12,
       "passes": true,
-      "notes": "Current code at lines 33-36 encodes state as `org_{org_id}` with no signing. The callback at lines 49-52 trusts it blindly. Using HMAC with the partner_key (already available) avoids needing a DB table or cache for state storage. The timestamp in the state enables expiry validation. The token is truncated to 16 chars for URL friendliness. This is stateless CSRF protection — no server-side storage needed."
-    },
-    {
-      "id": "US-013",
-      "title": "Cache logistics per destination shop in copy operations",
-      "description": "As a system, I want to fetch logistics channels once per destination shop per copy operation, not once per (item, destination) pair.",
-      "acceptanceCriteria": [
-        "In `app/services/shopee_copier.py`, in `copy_items()`, before the item loop: pre-fetch logistics for each unique dest_shop_id and store in a dict `logistics_cache: dict[int, list]`",
-        "Pass the pre-fetched logistics to `copy_single_item()` via a new optional parameter `logistics: list[dict] | None = None`",
-        "In `copy_single_item()`: if `logistics` is provided, skip `_fetch_dest_logistics()` call; otherwise fetch (backward compat)",
-        "Apply same change in `copy_with_dimensions()`",
-        "Net reduction: N items x M destinations goes from N*M logistics calls to M calls",
-        "Typecheck passes"
-      ],
-      "priority": 13,
-      "passes": true,
-      "notes": "Currently _fetch_dest_logistics is called inside copy_single_item for every (item, dest) pair. For 10 items x 3 dests = 30 calls, but only 3 are unique. Pre-fetch before the loop. Use try/except on pre-fetch — if logistics fetch fails for a dest, log error and skip that dest entirely."
-    },
-    {
-      "id": "US-014",
-      "title": "Reuse source item data across destination shops",
-      "description": "As a system, I want to fetch source item data once per item and reuse it for all destination shops, instead of re-fetching for each destination.",
-      "acceptanceCriteria": [
-        "In `app/services/shopee_copier.py`, in `copy_items()`, before the dest-shop inner loop: pre-fetch source item via `_fetch_source_item()` and store result",
-        "Pass pre-fetched source data to `copy_single_item()` via a new optional parameter `source_data: dict | None = None`",
-        "In `copy_single_item()`: if `source_data` is provided, skip `_fetch_source_item()` call; otherwise fetch (backward compat)",
-        "Apply same change in `copy_with_dimensions()`",
-        "Net reduction: 1 item x N destinations goes from 3*N API calls to 3 calls",
-        "If source fetch fails, skip all destinations for that item with error logged",
-        "Typecheck passes"
-      ],
-      "priority": 14,
-      "passes": true,
-      "notes": "Currently copy_single_item fetches source data (base_info + extra_info + models = 3 API calls) every time it's called. For 1 item copied to 3 destinations = 9 redundant calls. Pre-fetch in the outer loop of copy_items. The source_data dict contains keys like item_name, description, images, etc. — check _fetch_source_item return format."
-    },
-    {
-      "id": "US-015",
-      "title": "DRY refactor — unify copy_items and copy_with_dimensions",
-      "description": "As a developer, I want to eliminate the ~90% code duplication between the two copy functions by extracting shared logic.",
-      "acceptanceCriteria": [
-        "Create internal function `async _run_copy_job(source_shop_id, item_ids, dest_shop_ids, org_id, user_id, log_id, dimensions=None, logistics_cache=None, source_data_cache=None) -> list[dict]` that contains the shared copy loop logic",
-        "`copy_items()` becomes a thin wrapper that resolves slugs, creates log entry, calls `_run_copy_job`, updates log",
-        "`copy_with_dimensions()` becomes a thin wrapper that resolves slugs, creates log entry, calls `_run_copy_job` with dimensions, updates log",
-        "Trial accounting uses the same pattern in both wrappers (pre-increment + refund)",
-        "All existing behavior preserved — no functional regression",
-        "Typecheck passes"
-      ],
-      "priority": 15,
-      "passes": true,
-      "notes": "copy_items and copy_with_dimensions are ~90% identical. The differences: copy_items handles multiple item_ids, copy_with_dimensions passes dimensions. Both do: resolve slugs -> create log -> loop items x dests -> update log. After US-013 and US-014 added the caching params, the refactor is even cleaner. Careful: the trial accounting differs — copy_items pre-increments, copy_with_dimensions doesn't. Unify to pre-increment pattern."
-    },
-    {
-      "id": "US-016",
-      "title": "Add init_tier_variation and add_model API methods",
-      "description": "As a developer, I want Shopee API wrapper functions for tier variation initialization and model creation so the copier can create products with variations.",
-      "acceptanceCriteria": [
-        "In `app/services/shopee_api.py`, add `async def init_tier_variation(shop_id: int, item_id: int, tier_variation: list[dict], org_id: str) -> dict` that POSTs to `/api/v2/product/init_tier_variation`",
-        "Add `async def add_model(shop_id: int, item_id: int, model_list: list[dict], org_id: str) -> dict` that POSTs to `/api/v2/product/add_model`",
-        "Both functions use the existing `_shop_post` helper for signing and auth",
-        "Both functions include proper docstrings describing the payload format",
-        "Typecheck passes"
-      ],
-      "priority": 16,
-      "passes": true,
-      "notes": "These are the two API calls needed after add_item to set up variations. init_tier_variation defines the tier structure (e.g., Color, Size). add_model defines the specific combinations with prices and stock. Payload formats: init_tier_variation body: {item_id, tier_variation: [{name: 'Color', option_list: [{option: 'Red', image: {image_id: '...'}}]}]}. add_model body: {item_id, model_list: [{tier_index: [0, 0], normal_stock: 10, original_price: 99.9, model_sku: 'SKU-RED-S'}]}. Use _shop_post which handles HMAC signing."
-    },
-    {
-      "id": "US-017",
-      "title": "Implement variation copy flow in shopee_copier",
-      "description": "As an operator, I want products with variations (size, color) to be copied with all their models, prices, and individual stock.",
-      "acceptanceCriteria": [
-        "In `app/services/shopee_copier.py`, in `_build_shopee_payload`: if source has `has_model: True`, exclude `normal_stock` from the add_item payload",
-        "After successful `add_item` in `copy_single_item`: if source has models data (from `_fetch_source_item`), call `init_tier_variation` with tier names and options extracted from source models",
-        "After `init_tier_variation`: call `add_model` with model list containing per-model prices, stock, and SKUs",
-        "If tier variation images exist, upload them before calling init_tier_variation and include image_ids",
-        "If `init_tier_variation` or `add_model` fails, the item is still created (mark as 'partial' in result, log the variation error)",
-        "Result dict includes `models_copied: int` and `models_total: int` fields",
-        "Items without models (has_model: False) continue to work exactly as before",
-        "Typecheck passes"
-      ],
-      "priority": 17,
-      "passes": true,
-      "notes": "This is the core variation feature. The source data from _fetch_source_item already includes 'models' key from get_model_list. Structure: models response has 'tier_variation' (tier definitions) and 'model' (specific combinations). Steps: (1) check has_model from base_info, (2) extract tier_variation from models data — each tier has name + option_list, (3) upload tier images if present, (4) call init_tier_variation, (5) build model_list from models data — each model has tier_index, price, stock, sku, (6) call add_model. Handle the case where models data is empty/None (fallback to simple item). Mark result as 'partial' if item created but variations failed."
-    },
-    {
-      "id": "US-018",
-      "title": "Fix Shopee retry-dimensions payload in CopyPage frontend",
-      "description": "As an operator, I want the 'Informar dimensoes' retry button to work correctly for Shopee copies, sending the required source/destinations/item_id fields.",
-      "acceptanceCriteria": [
-        "In `frontend/src/pages/CopyPage.tsx`, modify `handleLogRetry` for platform 'shopee' to send `{ source: log.source_seller, destinations: log.dest_sellers, item_id: String(log.source_item_id), dimensions: dims }` instead of `{ log_id, dimensions }`",
-        "The `onRetrySubmit` callback receives the full log object (not just logId) to access source_seller, dest_sellers, source_item_id",
-        "ML retry continues to send `{ log_id, dimensions }` unchanged",
-        "The CopyLog type in `frontend/src/lib/api.ts` includes `source_seller: string`, `dest_sellers: string[]`, `source_item_id: string | number` fields",
-        "Typecheck passes"
-      ],
-      "priority": 18,
-      "passes": true,
-      "notes": "Critical frontend bug. Line 192 sends { log_id, dimensions } for Shopee but the backend ShopeeCopyWithDimensionsRequest expects { source, destinations, item_id, dimensions }. The orphaned ShopeeCopyPage.tsx (lines 315-329) has the correct implementation — use it as reference. The log object from /api/shopee/copy/logs contains source_seller, dest_sellers, and source_item_id. The onRetrySubmit callback chain passes through LogCard — may need to pass the full log object instead of just logId."
-    },
-    {
-      "id": "US-019",
-      "title": "Show weight and description status in Shopee preview",
-      "description": "As an operator, I want to see the item weight and whether it has a description in the preview, so I know before copying if dimensions will be needed.",
-      "acceptanceCriteria": [
-        "In `frontend/src/lib/api.ts`, extend `ItemPreview` type with optional fields: `weight?: number`, `has_description?: boolean`, `stock?: number`",
-        "In `frontend/src/pages/CopyPage.tsx` `handlePreview`, when normalizing Shopee preview data, include `weight`, `has_description`, and `stock` from the Shopee response",
-        "In the preview card rendering section, show weight (in kg) when available",
-        "Show a warning indicator when `has_description` is false (Shopee requires description)",
-        "ML preview is not affected (fields are optional)",
-        "Typecheck passes"
-      ],
-      "priority": 19,
-      "passes": true,
-      "notes": "CopyPage.handlePreview (lines 154-162) normalizes Shopee data but drops weight, has_description, stock. The orphaned ShopeeCopyPage (lines 665-683) shows weight correctly as '{p.weight}kg' — use as reference. The backend /api/shopee/copy/preview/{item_id} already returns these fields."
-    },
-    {
-      "id": "US-020",
-      "title": "Fix resolve-sellers error handling for Shopee in CopyForm",
-      "description": "As an operator, I want to see error messages when Shopee seller resolution fails, instead of silent failure.",
-      "acceptanceCriteria": [
-        "In `frontend/src/components/CopyForm.tsx`, in the Shopee resolve-sellers path: if `!res.ok`, parse the error response and show it via toast",
-        "If the user has no Shopee sellers connected but pasted a Shopee URL, show specific message: 'Nenhuma loja Shopee conectada'",
-        "Loading state is properly reset on error (setResolving(false) or equivalent)",
-        "ML resolve path is not affected",
-        "Typecheck passes"
-      ],
-      "priority": 20,
-      "passes": true,
-      "notes": "CopyForm.tsx line ~198: `if (!res.ok) return;` silently ignores Shopee resolve errors. The ML path shows errors properly. Add toast(err.detail, 'error') matching the ML pattern. For the 'no Shopee sellers' case: check if shopeeSellers array is empty before even calling resolve."
-    },
-    {
-      "id": "US-021",
-      "title": "Add Shopee connect option to empty state and QuickStartGuide",
-      "description": "As an admin of a new org, I want to see the option to connect Shopee on the onboarding screen, so Shopee-only orgs have a guided path.",
-      "acceptanceCriteria": [
-        "In `frontend/src/App.tsx`, in the empty state section (where 'Conectar conta do Mercado Livre' button is shown): add a 'Conectar loja Shopee' button that calls `/api/shopee/install`",
-        "The Shopee button has consistent visual styling with the ML button (side by side or stacked)",
-        "QuickStartGuide section mentions Shopee as a connection option alongside ML",
-        "Paywall feature list (lines ~308-323) includes a Shopee-related feature mention",
-        "Typecheck passes"
-      ],
-      "priority": 21,
-      "passes": true,
-      "notes": "App.tsx lines 418-491 show the empty state with only ML connect button. Lines 748-833 show QuickStartGuide mentioning only ML. The Shopee install flow uses the same pattern as ML: fetch /api/shopee/install, get redirect_url, window.location.href = redirect_url. Look at how the ML connect button works and replicate the pattern."
-    },
-    {
-      "id": "US-022",
-      "title": "Delete ShopeeCopyPage.tsx (dead code)",
-      "description": "As a developer, I want to remove the orphaned ShopeeCopyPage that is never imported or rendered, to reduce codebase size and confusion.",
-      "acceptanceCriteria": [
-        "Delete file `frontend/src/pages/ShopeeCopyPage.tsx`",
-        "Verify no file in `frontend/src/` imports ShopeeCopyPage (grep for 'ShopeeCopyPage')",
-        "Build passes: `cd frontend && npm run build` (or typecheck equivalent)",
-        "Typecheck passes"
-      ],
-      "priority": 22,
-      "passes": true,
-      "notes": "This file is ~950 lines that are never rendered. All useful logic has been extracted to CopyPage in previous stories (US-018 for retry payload, US-019 for preview weight). App.tsx never imports ShopeeCopyPage. Safe to delete. Run grep to triple-check no references exist."
-    },
-    {
-      "id": "US-023",
-      "title": "Extract shared components — StatusBadge, isDimensionError",
-      "description": "As a developer, I want duplicated frontend components and helpers extracted to shared files for maintainability.",
-      "acceptanceCriteria": [
-        "Create `frontend/src/components/StatusBadge.tsx` with the StatusBadge component extracted from CopyPage (consolidating the identical implementations)",
-        "Create `frontend/src/lib/helpers.ts` with `isDimensionError(error: string): boolean` that includes both ML dimension keywords AND Shopee 'weight' keyword check",
-        "Update `frontend/src/pages/CopyPage.tsx` to import StatusBadge from the shared component and isDimensionError from helpers",
-        "Remove the local StatusBadge and isDimensionError definitions from CopyPage",
-        "Remove dead types from `frontend/src/lib/api.ts`: `ShopeeCopyResponse`, `ShopeeCopyResult` (never imported anywhere)",
-        "Build passes without errors",
-        "Typecheck passes"
-      ],
-      "priority": 23,
-      "passes": true,
-      "notes": "StatusBadge is duplicated in CopyPage (lines ~563-578). isDimensionError is in CopyPage (lines ~19-27) missing the 'weight' check that the orphaned ShopeeCopyPage had. ShopeeCopyResponse/ShopeeCopyResult in api.ts (lines 117-132) are defined but never imported. After US-022 deletes ShopeeCopyPage, only CopyPage remains as the consumer."
+      "notes": "Follow the exact same pattern as CompatPage history section. Use setInterval(5000) for polling, clearInterval when no processing items. Status badges: 'completed' = green, 'processing' = yellow/blue, 'error' = red."
     }
   ]
 }

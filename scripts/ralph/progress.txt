@@ -1,300 +1,192 @@
 # Ralph Progress Log
-Started: Fri Mar  6 01:48:38 -03 2026
+Started: Mon Mar 30 09:56:48 -03 2026
 ---
 
 ## Codebase Patterns
-- Python executable is `python3` (not `python`) on this machine
-- Frontend typecheck: `cd frontend && npx tsc --noEmit` (silent on success)
-- Backend compile check: `python3 -m py_compile app/path/to/file.py`
-- CHANGELOG.md entries must be in Portuguese
-- `dict.setdefault()` is atomic in CPython — use for lock-per-key patterns instead of if/set
+- Migrations use `IF NOT EXISTS` for idempotency
+- Log tables (copy_logs, compat_logs, shopee_copy_logs) use FK `ON DELETE SET NULL` for user_id and org_id
+- Log tables use `ON DELETE CASCADE` for core entity tables (users, copy_sellers)
+- Next migration number is 017
+- Supabase project ID: `wrbrbhuhsaaupqsimkqz`
+- TypeScript typecheck: `cd frontend && npx tsc --noEmit`
+- Python syntax check: `python3 -c "import py_compile; py_compile.compile('file.py', doraise=True)"`
+- ML API functions in `ml_api.py` should be public wrappers around `_get_token` + `_ml_request`/direct httpx calls
+- For multipart uploads, use `client.post(..., files={...})` directly (not `_ml_request` which only supports JSON)
+- `EditablePhoto` discriminated union in PhotosPage: `existing` (ML photo), `upload` (File + blob URL), `url` (source URL) — used by US-009/010/011
+- Blob URLs from `URL.createObjectURL` must be revoked on removal and re-created on restore to avoid memory leaks
 
+## 2026-03-30 - US-001
+- Created `app/db/migrations/016_photo_logs.sql` with photo_logs table
+- Applied migration to Supabase via MCP
+- Updated CHANGELOG.md
+- Files changed: `app/db/migrations/016_photo_logs.sql`, `CHANGELOG.md`
+- **Learnings for future iterations:**
+  - compat_logs was the reference pattern for log tables (bigserial PK, user_id/org_id FKs with SET NULL, JSONB targets, status/counts)
+  - shopee_copy_logs (migration 011) shows the newer pattern with `NOT NULL DEFAULT now()` on created_at
+  - Indexes: always add org_id index + composite org_id+created_at for log queries
 ---
 
-## 2026-03-06 - US-001
-- Replaced TOCTOU `if shop_id not in _token_locks` pattern with atomic `_token_locks.setdefault(shop_id, asyncio.Lock())`
-- Files changed: `app/services/shopee_api.py` (line 30-31), `CHANGELOG.md`
+## 2026-03-30 - US-002
+- Created `app/routers/photos.py` with `GET /api/photos/preview/{item_id}` endpoint
+- Registered photos router in `app/main.py`
+- Reused `_resolve_item_seller` pattern from compat.py for auto-detecting seller
+- Reused SKU extraction logic (seller_custom_field + SELLER_SKU attrs + variation-level)
+- Files changed: `app/routers/photos.py` (new), `app/main.py`, `CHANGELOG.md`
 - **Learnings for future iterations:**
-  - `_get_shop_lock` is at line 30 in shopee_api.py
-  - The `_token_locks` dict is module-level at line 24
-  - Rate limit constants `_RATE_LIMIT_RETRIES=5` and `_RATE_LIMIT_BASE_WAIT=2` exist at lines 26-27 but are unused (US-009 will use them)
+  - photos.py router follows same structure as compat.py — preview, search-sku, apply, logs
+  - _resolve_item_seller is duplicated from compat.py (could be extracted to shared utility later)
+  - ML item pictures array has id, url, secure_url, size fields
+  - Router registration in main.py: keep imports alphabetical, add `app.include_router()` near the others
 ---
 
-## 2026-03-06 - US-002
-- Added early abort in `copy_single_item` when `_upload_images()` returns empty list — sets status='error', logs via `_log_debug` with action `shopee_image_upload_failed`, returns immediately before any `add_item` call
-- Files changed: `app/services/shopee_copier.py` (lines 351-363), `CHANGELOG.md`
+## 2026-03-30 - US-003
+- Added `POST /api/photos/upload` endpoint in `photos.py` — accepts multipart file, validates JPG/PNG and <=10MB
+- Added `upload_picture()` public function in `ml_api.py` — forwards file to ML API with 429 retry
+- Files changed: `app/routers/photos.py`, `app/services/ml_api.py`, `CHANGELOG.md`
 - **Learnings for future iterations:**
-  - The result dict pattern in `copy_single_item` uses keys: `source_item_id`, `dest_seller`, `status`, `dest_item_id`, `error`, `sku` — plus internal `_title` and `_thumbnail`
-  - `_log_debug` accepts `action`, `source_item_id`, `dest_seller`, `error_message`, `request_payload`, `user_id`, `org_id` and more — see lines 241-277
-  - Image upload early abort is at lines 351-363 now (shifted down by ~10 lines from original)
+  - ML picture upload endpoint: `POST /pictures/items/upload` with multipart `file` field and Bearer auth
+  - `_get_token` is private in ml_api.py — create public wrapper functions (like `upload_picture`) instead of importing private methods
+  - httpx `client.post(..., files={"file": (filename, bytes, content_type)})` for multipart uploads
+  - `_ml_request` helper doesn't support multipart — upload_picture uses `client.post` directly with manual 429 retry loop
+  - `_REQUEST_RATE_RETRIES` and `_REQUEST_RATE_BASE_WAIT` are the standard retry constants in ml_api.py
 ---
 
-## 2026-03-06 - US-003
-- Fixed `_strip_attributes` to filter by `attribute_value_list` presence instead of `is_mandatory` (which was never present in source item data)
-- Old behavior: removed ALL attributes (is_mandatory always falsy → empty list). New behavior: keeps attributes with non-empty values, removes only those with empty attribute_value_list
-- Files changed: `app/services/shopee_copier.py` (lines 286-297), `CHANGELOG.md`
+## 2026-03-30 - US-004
+- Added `POST /api/photos/search-sku` endpoint in `photos.py` — reuses `search_sku_all_sellers` from compat_copier
+- Added `thumbnail` field to `search_sku_all_sellers` return data (non-breaking addition for compat endpoint)
+- Filters by `can_copy_to` permission for operators, admins get all sellers
+- Validates max 50 SKUs per request using Pydantic field_validator
+- Files changed: `app/routers/photos.py`, `app/services/compat_copier.py`, `CHANGELOG.md`
 - **Learnings for future iterations:**
-  - Shopee item attribute data from `get_item_base_info` does NOT include `is_mandatory` — that field only comes from the category attributes API (`get_attributes`)
-  - `attribute_value_list` is the key that contains actual values; empty list means the attribute has no value set (often brand or optional attrs)
-  - `_strip_attributes` is called on retry attempt 2; `_minimal_payload` on attempt 3 (lines 300-312)
+  - `search_sku_all_sellers` is shared between compat and photos — changes to it affect both endpoints
+  - The function already fetches item data via `get_item`, so adding extra fields (thumbnail) is free
+  - Permission filtering pattern: `user["role"] != "admin"` → filter by `can_copy_to` from `user.get("permissions", [])`
+  - Pydantic `SearchSkuRequest` model with `field_validator` for max SKU count — same pattern used in compat.py
 ---
 
-## 2026-03-06 - US-004
-- Added `updated_at` field to token refresh DB update in `shopee_api.py` `_get_token` (line ~287)
-- Changed `condition` in `_build_shopee_payload` from hardcoded `"NEW"` to `base.get("condition", "NEW")` (line ~166)
-- Removed unused `from urllib.parse import urlencode` import from `auth_shopee.py`
-- Files changed: `app/services/shopee_api.py`, `app/services/shopee_copier.py`, `app/routers/auth_shopee.py`, `CHANGELOG.md`
+## 2026-03-30 - US-005
+- Created `app/services/photo_applier.py` with `apply_photos_to_targets()` function
+- Creates photo_logs record with status 'processing' before starting
+- For each target: calls `update_item()` (PUT /items/{id}) with `{pictures: [...]}` payload
+- Updates photo_logs with per-target results, success/error counts, and final status
+- Retry on 429 handled by `update_item()` which uses `_ml_request` internally
+- Logs errors to `api_debug_logs` via `_log_api_debug` from item_copier
+- 1-second pacing between targets to respect ML rate limits
+- Files changed: `app/services/photo_applier.py` (new), `CHANGELOG.md`
 - **Learnings for future iterations:**
-  - The token refresh path in `_get_token` is at lines ~284-294 in shopee_api.py
-  - `_build_shopee_payload` builds the add_item payload at lines ~102-222 in shopee_copier.py
-  - `_minimal_payload` at line ~304 also has hardcoded `condition: "NEW"` — left as-is since it's the minimal fallback (retry attempt 3)
-  - `datetime` and `timezone` are already imported in shopee_api.py — no new imports needed
+  - `update_item()` in ml_api.py already has 429 retry via `_ml_request` — no need to add retry logic in the service layer
+  - ML API updates item photos via `PUT /items/{id}` with `{pictures: [{id: ...}]}` for existing or `{pictures: [{source: url}]}` for URL-based
+  - Photo order in the pictures array = display order (first = main photo)
+  - `_log_api_debug` from item_copier is reused across services (compat_copier, photo_applier) — it's the standard debug logging pattern
+  - Final status values for photo_logs: 'completed' (all ok), 'error' (all failed), 'partial' (mixed)
 ---
 
-## 2026-03-06 - US-005
-- Wrapped `_fetch_dest_logistics()` call in `copy_single_item` with try/except, returns error result immediately with message 'Falha ao buscar canais logisticos da loja destino'
-- Added `platform: 'shopee'` field to `_log_debug()` insert dict for `api_debug_logs`
-- Applied Supabase migration to add `platform TEXT` column to `api_debug_logs` table
-- Files changed: `app/services/shopee_copier.py` (lines 372-385 for logistics try/except, line 271 for platform field), `CHANGELOG.md`
+## 2026-03-30 - US-006
+- Added `POST /api/photos/apply` endpoint — validates can_copy_to permissions, creates photo_logs record, runs `apply_photos_to_targets` as BackgroundTask, returns log_id immediately
+- Added `GET /api/photos/logs` endpoint — returns photo_logs filtered by org_id with username join, status filter, and pagination (default limit=20)
+- Refactored `apply_photos_to_targets()` to accept optional `log_id` parameter — when provided (from router), skips creating a duplicate log record
+- Pydantic models: `PictureEntry` (id/source), `ApplyTarget` (seller_slug/item_id), `ApplyRequest`
+- Files changed: `app/routers/photos.py`, `app/services/photo_applier.py`, `CHANGELOG.md`
 - **Learnings for future iterations:**
-  - `api_debug_logs` table now has a `platform` column (TEXT, nullable, default NULL) — ML logs have NULL, Shopee logs have 'shopee'
-  - The `_log_debug` function in shopee_copier.py is separate from the one in item_copier.py (ML) — they don't share code
-  - Supabase migration was applied via MCP tool (not via migration file) to avoid conflicting with US-008's planned `013_shopee_schema_fixes.sql`
-  - The logistics try/except catches all Exception types (not just ShopeeApiError) since _fetch_dest_logistics could fail for network or parsing reasons
+  - Log creation in router vs service: when endpoint needs to return log_id immediately, create the log in the router and pass log_id to the background task (same pattern as compat.py)
+  - `photo_applier.apply_photos_to_targets` now supports both modes: create own log (log_id=None) or use existing log (log_id=N)
+  - Permission validation for operators: check `can_copy_to` per target seller_slug, admins bypass
+  - Logs endpoint pattern: join `users(username)`, flatten the nested users_data into `row["username"]`, filter by role (super_admin=all, admin=org, operator=own)
+  - `model_dump(exclude_none=True)` on Pydantic models to convert PictureEntry to dict with only set fields
 ---
 
-## 2026-03-06 - US-006
-- Used `refresh_token_expire_in` from Shopee API response to compute `refresh_expires_at` in both auth callback and token refresh path, with 30-day fallback
-- In `_get_token` refresh path: when a new `refresh_token` is returned, now also updates `refresh_token_expires_at` in the DB (previously only access token expiry was updated)
-- Added warning logs when `refresh_token_expire_in` is missing from Shopee response
-- Files changed: `app/routers/auth_shopee.py` (lines 70-76), `app/services/shopee_api.py` (lines 284-300), `CHANGELOG.md`
+## 2026-03-30 - US-007
+- Created `frontend/src/pages/PhotosPage.tsx` — full page with MLB input, auto-preview (debounced 600ms), photo grid (~150px CSS grid), SKU badges, seller detection
+- Updated `frontend/src/App.tsx` — added 'photos' to View type, imported PhotosPage, added 'Fotos' tab visible to all authenticated users, renders PhotosPage with sellers + headers props
+- Updated `CHANGELOG.md`
+- Files changed: `frontend/src/pages/PhotosPage.tsx` (new), `frontend/src/App.tsx`, `CHANGELOG.md`
 - **Learnings for future iterations:**
-  - The Shopee token exchange response may include `refresh_token_expire_in` (seconds) — not always present
-  - The refresh path in `_get_token` is at lines ~284-300 in shopee_api.py; the `data` variable holds the full refresh response dict
-  - When updating `refresh_token_expires_at`, it must be nested inside the `if new_refresh:` block since the field only makes sense when a new refresh token is actually returned
+  - `useRef<T>(null)` is required in React 19 strict mode — `useRef<T>()` (no arg) causes TS2554 error
+  - PhotosPage follows CompatPage pattern: Props = `{sellers, headers}`, uses `Card` from CopyPage, `useToast`, `parseItemId`
+  - Photos preview endpoint returns `{id, title, thumbnail, pictures: [{id, url, secure_url, size}], skus: [], seller}`
+  - CSS grid with `gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))'` + `aspectRatio: '1'` for photo thumbnails
+  - Tab visibility: 'photos' is pushed unconditionally (all authenticated users), unlike 'copy' (needs permissions) or 'compat' (needs can_run_compat)
+  - `handlePreviewRef` pattern: store latest callback in ref to avoid stale closure in debounced useEffect
 ---
 
-## 2026-03-06 - US-007
-- Sanitized Shopee shop slugs: `re.sub(r'[^a-z0-9-]', '', ...)` strips unsafe chars, fallback to `shop-{shop_id}` if empty, `-2`/`-3` suffix for duplicates within same org
-- Files changed: `app/routers/auth_shopee.py` (lines 88-91 for sanitization, 123-132 for dedup), `CHANGELOG.md`
+## 2026-03-30 - US-008
+- Added photo delete (X button overlay), restore (Removidas section), and drag & drop reorder to PhotosPage
+- `activePhotos` and `removedPhotos` state arrays initialized from `preview.pictures` on preview load
+- HTML5 Drag and Drop: `onDragStart` stores index in `dataTransfer`, `onDrop` splices and reinserts in array
+- Remove button hidden when only 1 photo left (cannot remove last photo)
+- Removed photos shown in separate grid with dashed border, opacity 0.5, and "Restaurar" button
+- Visual feedback: dragged item at 0.4 opacity, drop target gets accent border
+- Files changed: `frontend/src/pages/PhotosPage.tsx`, `CHANGELOG.md`
 - **Learnings for future iterations:**
-  - Slug generation is at line 88-91 in auth_shopee.py; dedup query at lines 123-132
-  - The dedup uses `.like("slug", f"{slug}%")` to fetch all potential conflicts in one query, then iterates suffixes in Python
-  - Existing shops (same shop_id + org_id) take the update path and skip slug generation entirely — dedup only runs for new inserts
-  - `re` module is now imported in auth_shopee.py
+  - HTML5 DnD on images: set `draggable={false}` on `<img>` and `pointerEvents: 'none'` to prevent browser default image drag
+  - `setActivePhotos` inside `handleRemovePhoto` uses functional update to avoid stale closures — calling `setRemovedPhotos` inside the updater is fine since React batches state
+  - Drag & drop: store source index via `dataTransfer.setData('text/plain', ...)`, read in `onDrop` via `getData`
+  - Photos grid uses `activePhotos` state (not `preview.pictures` directly) — future stories (US-009, US-011) will add to this array
 ---
 
-## 2026-03-06 - US-008
-- Created `app/db/migrations/013_shopee_schema_fixes.sql` with FK, index, and constraint fixes
-- Applied migration via Supabase MCP tool
-- Changes: shopee_sellers.org_id → ON DELETE CASCADE; shopee_copy_logs.org_id → nullable + ON DELETE SET NULL; shopee_copy_logs.user_id → ON DELETE SET NULL; slug+org_id index → UNIQUE; added created_at DESC and source_seller indexes
-- Files changed: `app/db/migrations/013_shopee_schema_fixes.sql` (new), `CHANGELOG.md`
+## 2026-03-30 - US-009
+- Added `EditablePhoto` discriminated union type: `existing` | `upload` | `url` — replaces raw `PhotoPicture` in activePhotos/removedPhotos state
+- Added "Adicionar foto" button → file picker (multiple, accept JPG/PNG, validates 10MB max)
+- Added URL input field with "Adicionar" button (Enter key support)
+- Upload files get local preview via `URL.createObjectURL`, properly revoked on remove, re-created on restore
+- New photos have dashed accent border and "Nova" badge overlay
+- Helper functions: `getPhotoKey()`, `getPhotoSrc()`, `isNewPhoto()`, `nextTempId()`
+- Files changed: `frontend/src/pages/PhotosPage.tsx`, `CHANGELOG.md`
 - **Learnings for future iterations:**
-  - PostgreSQL auto-names inline FK constraints as `{table}_{column}_fkey` — use `DROP CONSTRAINT IF EXISTS` with this pattern
-  - Migration files should include rollback instructions in comments
-  - Apply migrations via `mcp__supabase__apply_migration` with project ID `wrbrbhuhsaaupqsimkqz`
-  - The `IF NOT EXISTS` clause works for CREATE INDEX but not for ALTER TABLE constraint operations — use `DROP ... IF EXISTS` + re-add pattern instead
+  - `EditablePhoto` type is the central type for US-011 (apply flow) — upload type has `file: File` for FormData upload, url type has `source` for ML `{source: url}` payload
+  - `URL.createObjectURL` creates blob URLs that must be revoked to prevent memory leaks — revoke on remove, re-create on restore
+  - `nextTempId()` uses module-level counter + Date.now() for uniqueness — needed because React keys must be stable
+  - File input `e.target.value = ''` after read is needed to allow re-selecting the same file
+  - The `handleRestorePhoto` must not mutate state — spread operator `{...item, previewUrl: ...}` creates a new object
 ---
 
-## 2026-03-06 - US-009
-- Implemented rate limiting with exponential backoff in Shopee API client (`_shop_get`, `_shop_post`, `upload_image`)
-- Added `_is_rate_limited()` helper that checks for `too_fast` in Shopee error response
-- Retry loop: up to 5 retries with exponential backoff (2s, 4s, 8s, 16s, 32s) — re-signs requests with fresh timestamps on each attempt
-- Files changed: `app/services/shopee_api.py`, `CHANGELOG.md`
+## 2026-03-30 - US-010
+- Added SKU search and target selection to PhotosPage
+- SKU input auto-populates with first detected SKU from preview
+- POST /api/photos/search-sku with {skus: [sku]} — source item excluded from results
+- Results displayed as list with checkbox, thumbnail, item_id, title, seller name
+- All results selected by default, "Selecionar todos" toggle, counter "X de Y anuncios selecionados"
+- Empty state message when search returns no results, error display on API failure
+- Added `SkuSearchResult` interface with thumbnail field
+- Files changed: `frontend/src/pages/PhotosPage.tsx`, `CHANGELOG.md`
 - **Learnings for future iterations:**
-  - Shopee rate limit errors come as HTTP 200 with `"error": "error.too_fast"` in JSON body — must check before `_raise_for_shopee`
-  - When retrying with new timestamps, must re-sign the request (HMAC includes timestamp) — move `ts`/`sign` computation inside the retry loop
-  - `_RATE_LIMIT_RETRIES=5` and `_RATE_LIMIT_BASE_WAIT=2` constants were at lines 26-27 and are now used
-  - The `# type: ignore[possibly-undefined]` comment is needed on the post-loop `_raise_for_shopee(resp)` call since mypy can't prove the loop body always executes
-  - `upload_image` has its own request pattern (uses `data=` for form data, not `json=`) — keep that distinction when adding retry logic
+  - `selectedTargets` uses `Set<string>` with composite key `seller_slug:item_id` for O(1) lookups — needed because same item_id could appear in multiple sellers
+  - `hasSearched` boolean flag distinguishes "no search performed yet" from "search returned 0 results" for empty state rendering
+  - Source item exclusion is done client-side by filtering `r.item_id !== preview?.id` — simpler than server-side and handles edge cases where item appears in multiple sellers
+  - Search results include `thumbnail` field (added in US-004 to `search_sku_all_sellers`) — displayed as 40x40 image in result rows
+  - For US-011: `selectedTargets` Set + `skuSearchResults` array provide the data needed to build the `targets` array for POST /api/photos/apply
 ---
 
-## 2026-03-06 - US-010
-- Created lazy singleton `httpx.AsyncClient` with connection pooling (max 20 connections, 10 keep-alive, 60s default timeout)
-- Added `_get_client()` function and `close_client()` for graceful shutdown
-- Replaced per-request `async with httpx.AsyncClient(...)` in `_shop_get`, `_shop_post`, and `upload_image` with `_get_client()`
-- Per-request timeout overrides: `_shop_get` uses 30s, `_shop_post` uses its `timeout` parameter, `upload_image` uses 60s default
-- Registered shutdown handler in `main.py` via `@app.on_event("shutdown")`
-- Files changed: `app/services/shopee_api.py` (lines 29-49 new, lines 365-367/405-407/514-519 modified), `app/main.py` (lines 48-51 new), `CHANGELOG.md`
+## 2026-03-30 - US-011
+- Added apply photos flow to PhotosPage: uploads new photos (type 'upload') via POST /api/photos/upload, builds pictures payload, calls POST /api/photos/apply
+- 'Aplicar fotos' button enabled only when targets are selected AND at least 1 photo exists
+- Button shows 'Aplicando...' with spinner during upload+apply, disabled during operation
+- After apply: polls GET /api/photos/logs every 3s for the created log_id, shows summary toast 'X sucesso, Y erros' when complete
+- Poll interval cleaned up on component unmount via ref
+- Files changed: `frontend/src/pages/PhotosPage.tsx`, `CHANGELOG.md`
 - **Learnings for future iterations:**
-  - `exchange_code` and `refresh_access_token` still use their own `async with httpx.AsyncClient` — they're auth-level calls used rarely, not in hot paths
-  - `main.py` uses `@app.on_event("startup"/"shutdown")` pattern (not lifespan context manager)
-  - Per-request `timeout=` parameter on `client.get()`/`client.post()` overrides the client-level default
-  - The `_http_client` global + `_get_client()` pattern is NOT thread-safe but is fine for single-process asyncio (CPython GIL protects the None check)
+  - `headers()` from useAuth includes `Content-Type: application/json` — for multipart uploads, extract only `X-Auth-Token` header to let browser set correct Content-Type with boundary
+  - Apply endpoint returns `{log_id, status, message}` immediately (BackgroundTask) — need polling to get final results
+  - `pollRef` pattern: store `setInterval` return value in a ref, clear on unmount via useEffect cleanup, also clear before starting new poll
+  - `canApply` derived value (not state): `preview && selectedTargets.size > 0 && activePhotos.length > 0 && !applying`
+  - US-012 (logs section) will need its own polling mechanism — US-011 only polls to show the summary toast after apply, not for the logs UI
 ---
 
-## 2026-03-06 - US-011
-- Parallelized `_upload_images` using `asyncio.gather` with `asyncio.Semaphore(3)` — max 3 concurrent uploads
-- Created `_guarded_upload` inner async function that acquires semaphore before calling `_upload_single_image`
-- Added `_UPLOAD_CONCURRENCY = 3` constant at module level
-- Added log line showing successful/total upload count per shop
-- `asyncio.gather` preserves input order, so first image remains cover photo
-- Files changed: `app/services/shopee_copier.py` (lines 62-92), `CHANGELOG.md`
+## 2026-03-30 - US-012
+- Added photo operation history section to PhotosPage with collapsible Card, table view, expandable rows, status filter, polling, and pagination
+- `PhotoLog` interface with `PhotoLogTarget` for per-target details
+- `loadLogs` with AbortController pattern (same as CompatPage), `loadMoreLogs` for pagination (20 per page)
+- Status filter tabs: Todos, Em andamento, Sucesso, Erro
+- Polling every 5s while any log has status 'processing' or 'pending' (uses `loadLogsRef` pattern to avoid stale closures)
+- Expandable rows: click a row to see per-target results (item_id, seller name, ok/error indicator)
+- `PhotoStatusBadge` component: colored badges for completed/error/partial/processing/pending with pulse animation for active statuses
+- `LogRow` component: handles row + expanded detail rendering
+- Integrated with apply flow: logs refresh after apply call + after apply completes
+- Files changed: `frontend/src/pages/PhotosPage.tsx`, `CHANGELOG.md`
 - **Learnings for future iterations:**
-  - `asyncio.gather` preserves input order — no need to manually track positions
-  - `_upload_single_image` already handles retries (1 retry on failure) — no change needed there
-  - The semaphore pattern: create `Semaphore(N)`, wrap each coroutine in `async with sem:`, gather all wrappers
-  - `_UPLOAD_CONCURRENCY` constant is at line 62 in shopee_copier.py
----
-
-## 2026-03-06 - US-012
-- Added CSRF protection to Shopee OAuth flow: state parameter now HMAC-signed with `partner_key` and includes timestamp
-- Install endpoint generates state as `org_{org_id}_{hmac16}_{timestamp}`
-- Callback validates HMAC signature using `hmac.compare_digest` and rejects states older than 10 minutes
-- Files changed: `app/routers/auth_shopee.py` (imports + install lines 33-40 + callback lines 60-91), `CHANGELOG.md`
-- **Learnings for future iterations:**
-  - State format: `org_{org_id}_{16-char-hmac}_{unix-ts}` — parse with `rsplit("_", 2)` from the end since org_id (UUID) contains hyphens but not underscores
-  - `hmac` imported as `_hmac` to avoid shadowing with the local `token` variable name
-  - `settings.shopee_partner_key` is available via lazy `from app.config import settings` inside the function (already used in install, added to callback)
-  - Stateless CSRF: no DB/cache needed — HMAC + timestamp gives both authenticity and expiry
----
-
-## 2026-03-06 - US-013
-- Pre-fetch logistics channels per destination shop before item loop in `copy_items()` and `copy_with_dimensions()`
-- Added `logistics: list[dict] | None = None` parameter to `copy_single_item()` — skips `_fetch_dest_logistics()` when provided
-- Failed logistics pre-fetches skip that destination for all items with a clear error result
-- Net reduction: N items x M destinations goes from N*M logistics API calls to M calls
-- Files changed: `app/services/shopee_copier.py` (lines 340-347 signature, 390-409 conditional fetch, 554-562 + 706-715 pre-fetch loops, 587-606 + 729-744 skip-failed logic), `CHANGELOG.md`
-- **Learnings for future iterations:**
-  - `copy_single_item` now accepts optional `logistics` param — when provided, the internal `_fetch_dest_logistics` call is skipped entirely
-  - The `logistics_cache: dict[int, list[dict]]` and `failed_dests: set[int]` pattern is used in both `copy_items` and `copy_with_dimensions`
-  - When a dest fails logistics pre-fetch, it generates a synthetic error result dict matching the standard format (source_item_id, dest_seller, status, dest_item_id, error, sku)
-  - This caching pattern should also be applied to source item data (US-014) for similar N-to-1 reduction
----
-
-## 2026-03-06 - US-014
-- Pre-fetch source item data once per item in `copy_items()` and `copy_with_dimensions()`, then pass to `copy_single_item()` via new `source_data` parameter
-- Added `source_data: dict | None = None` parameter to `copy_single_item()` — when provided, skips `_fetch_source_item()` call
-- If source fetch fails in outer loop, all destinations for that item get error results and the item is skipped
-- In `copy_with_dimensions()`, source fetch failure returns early with error results
-- Files changed: `app/services/shopee_copier.py`, `CHANGELOG.md`
-- **Learnings for future iterations:**
-  - `copy_single_item` now accepts both `logistics` and `source_data` optional params — both skip their respective fetch when provided
-  - The pre-fetch pattern in `copy_items` uses `continue` to skip to next item on source fetch failure (with log update); `copy_with_dimensions` uses early `return` since it only handles one item
-  - Variable name `update_data_err` used in `copy_with_dimensions` source-fetch error path to avoid shadowing the later `update_data` in the normal flow
-  - Both `copy_items` and `copy_with_dimensions` now follow the same caching pattern: logistics_cache + prefetched_source before dest loop
----
-
-## 2026-03-06 - US-015
-- Extracted shared copy loop logic from `copy_items` and `copy_with_dimensions` into internal `_run_copy_job` function
-- `_run_copy_job` handles: logistics pre-fetch, source data pre-fetch, item x dest loop, log creation/update, result tracking (including needs_dimensions)
-- `copy_items` is now a 4-line wrapper: resolve slugs → call `_run_copy_job`
-- `copy_with_dimensions` is now a 5-line wrapper: resolve slugs → call `_run_copy_job` with dimensions, wrapping single item_id in list
-- Net reduction: 179 lines deleted, 46 added (-133 lines)
-- Files changed: `app/services/shopee_copier.py`, `CHANGELOG.md`
-- **Learnings for future iterations:**
-  - `_run_copy_job` accepts `item_ids: list[int]` — `copy_with_dimensions` wraps its single `item_id` as `[item_id]`
-  - `_run_copy_job` always tracks `needs_dimensions` count — when dimensions are provided, it's simply 0
-  - `_run_copy_job` always stores `source_item_title` and `source_item_thumbnail` in log updates (previously only `copy_items` did this)
-  - The unified function uses `d_slug`/`d_shop_id` in pre-fetch loops and `dest_slug`/`dest_shop_id` in the inner copy loop to avoid variable shadowing
-  - `dest_slug_list` is computed once before the item loop to avoid repeated list comprehension
----
-
-## 2026-03-06 - US-016
-- Added `init_tier_variation` and `add_model` async functions to `app/services/shopee_api.py`
-- Both use `_shop_post` helper for HMAC signing and token management
-- `init_tier_variation` POSTs to `/api/v2/product/init_tier_variation` with `{item_id, tier_variation}`
-- `add_model` POSTs to `/api/v2/product/add_model` with `{item_id, model_list}`
-- Files changed: `app/services/shopee_api.py` (lines 552-596), `CHANGELOG.md`
-- **Learnings for future iterations:**
-  - New API wrappers follow the same pattern: `_get_token` → `_shop_post` with path, token, shop_id, body
-  - `init_tier_variation` must be called BEFORE `add_model` — tiers define the structure, models define the combinations
-  - Tier variation payload: `[{name, option_list: [{option, image?}]}]`; model payload: `[{tier_index: [i, j], normal_stock, original_price, model_sku?}]`
-  - These functions are prerequisites for US-017 (variation copy flow in shopee_copier)
----
-
-## 2026-03-06 - US-017
-- Implemented variation copy flow in `shopee_copier.py`: products with variations (size, color) now have their models, per-model prices, stock, and SKUs copied
-- Modified `_fetch_source_item` to also capture `tier_variation` from Shopee `get_model_list` response
-- Modified `_build_shopee_payload` to exclude `normal_stock` when source has `has_model: True` (stock managed per-model)
-- Added `_copy_variations` async function: uploads tier images, calls `init_tier_variation`, builds `model_list` with price/stock/sku, calls `add_model`
-- Added `models_copied` and `models_total` fields to result dict in `copy_single_item`
-- After successful `add_item`, if `has_model`, calls `_copy_variations`; on failure marks as 'partial'
-- Items without models (`has_model: False`) continue to work exactly as before
-- Files changed: `app/services/shopee_copier.py`, `CHANGELOG.md`
-- **Learnings for future iterations:**
-  - Shopee `get_model_list` response has two key sections: `response.tier_variation` (tier definitions) and `response.model` (SKU combinations) — both need to be captured
-  - Model stock extraction follows same pattern as item stock: check `stock_info_v2.summary_info.total_available_stock` first, then fallback to `stock_info` array
-  - Model price is in `price_info[0].original_price` (price_info is a list, not a dict)
-  - Tier variation images use `image.image_url` (not `image_url_list` like item images) — each option can have at most 1 image
-  - `init_tier_variation` must be called BEFORE `add_model` — if init fails, skip add_model entirely
-  - When `has_model` is True, `normal_stock` must NOT be in the `add_item` payload — Shopee rejects it
-
----
-
-## 2026-03-06 - US-018
-- Fixed `handleLogRetry` in CopyPage.tsx: Shopee retry-dimensions now sends `{ source, destinations, item_id, dimensions }` instead of `{ log_id, dimensions }`
-- Changed `handleLogRetry` signature from `(logId, dims, platform)` to `(log: UnifiedLog, dims)` — passes full log object to access `source_seller`, `dest_sellers`, `source_item_id`
-- ML retry path unchanged: still sends `{ log_id, dimensions }`
-- Files changed: `frontend/src/pages/CopyPage.tsx`, `CHANGELOG.md`
-- **Learnings for future iterations:**
-  - `handleLogRetry` is at line ~183 in CopyPage.tsx
-  - The `CopyLog` type in `api.ts` already includes `source_seller`, `dest_sellers`, `source_item_id` — no type changes needed
-  - `LogCard`'s `onRetrySubmit` prop type is `(dims: Dimensions) => void` — it doesn't need to change because the caller creates a closure capturing the log object
-  - Backend Shopee with-dimensions endpoint: `ShopeeCopyWithDimensionsRequest` expects `{ source, destinations, item_id, dimensions }` (shopee_copy.py:125-129)
-  - ML retry endpoint uses `{ log_id, dimensions }` — completely different payload shape
----
-
-## 2026-03-06 - US-019
-- Extended `ItemPreview` type with optional `weight`, `has_description`, `stock` fields
-- Updated Shopee preview normalization in `handlePreview` to include `weight`, `has_description`, `stock` from backend response
-- Added weight display (g or kg) and "Sem descricao" warning to preview card
-- ML preview unaffected (fields are optional)
-- Files changed: `frontend/src/lib/api.ts`, `frontend/src/pages/CopyPage.tsx`, `CHANGELOG.md`
-- **Learnings for future iterations:**
-  - Shopee preview backend returns `weight` in grams — display as grams if <1000, kg if >=1000
-  - `has_description === false` check uses strict equality to avoid triggering on `undefined` (ML previews don't have this field)
-  - The preview card rendering is at lines ~312-336 in CopyPage.tsx (the `previews.map(p => ...)` block)
-  - `ShopeeItemPreview` type in api.ts already has `weight`, `has_description`, `stock` — but preview normalization maps to `ItemPreview` shape
----
-
-## 2026-03-06 - US-020
-- Fixed Shopee resolve-sellers error handling in CopyForm.tsx: `!res.ok` now parses error response and shows via `setResolveError` instead of silently returning
-- Added early check for Shopee URLs with no Shopee sellers connected — shows 'Nenhuma loja Shopee conectada' instead of items appearing as unresolved with no explanation
-- ML resolve path unchanged
-- Files changed: `frontend/src/components/CopyForm.tsx`, `CHANGELOG.md`
-- **Learnings for future iterations:**
-  - The `resolveAll` function in CopyForm.tsx runs ML and Shopee resolve promises in parallel via `Promise.all`
-  - Each platform's resolve runs in its own async arrow function inside `promises` array — `return` exits the arrow, not `resolveAll`
-  - `setResolving(false)` is in the `finally` block of `resolveAll`, so loading state is always reset regardless of errors inside platform-specific promises
-  - The `hasShopee` boolean (line 87) checks `shopeeSourceSellers.length > 0` — when false, Shopee candidates are never built (line 152 condition), so the resolve API is never called
-  - Error display uses `resolveError` state shown inline (lines 404-410), not a toast — the component has its own error UI with a "Tentar novamente" button
----
-
-## 2026-03-06 - US-021
-- Added "Conectar loja Shopee" button to empty state screen (onboarding for new orgs), side-by-side with ML connect button
-- Added `connectingShopee` state and `handleConnectShopee` handler mirroring the ML pattern (`/api/shopee/install`)
-- Updated empty state description to mention Shopee alongside ML
-- Updated QuickStartGuide step 1 description to mention Shopee shops
-- Added "Integração com Shopee" to paywall feature list
-- Files changed: `frontend/src/App.tsx`, `CHANGELOG.md`
-- **Learnings for future iterations:**
-  - Empty state is shown when `auth.sellers.length === 0 && auth.shopeeSellers.length === 0` — already checks both platforms
-  - The Shopee install endpoint follows the exact same pattern as ML: fetch `/api/shopee/install` → get `redirect_url` → redirect
-  - `connectingShopee` state added at line 38, handler at lines 418-429, button at lines 481-497
-  - QuickStartGuide is only shown when `auth.sellers.length > 0` (line 165) — so it won't appear for completely new orgs until they connect at least one seller
-  - Paywall features list is a simple string array at lines 309-315
----
-
-## 2026-03-06 - US-022
-- Deleted `frontend/src/pages/ShopeeCopyPage.tsx` (~950 lines of dead code) — never imported or rendered anywhere
-- Verified via grep: no file in `frontend/src/` references `ShopeeCopyPage` (only match was the file's own `export default`)
-- Typecheck passes cleanly after deletion
-- Files changed: `frontend/src/pages/ShopeeCopyPage.tsx` (deleted), `CHANGELOG.md`
-- **Learnings for future iterations:**
-  - The file was purely orphaned — all useful patterns (retry payload format, preview weight display) had already been extracted to CopyPage.tsx in US-018 and US-019
-  - US-023 depends on this being deleted first, as it removes dead types (`ShopeeCopyResponse`, `ShopeeCopyResult`) that were only used by this page
----
-
-## 2026-03-06 - US-023
-- Extracted `StatusBadge` component to `frontend/src/components/StatusBadge.tsx` (including `statusLabels` map)
-- Extracted `isDimensionError` to `frontend/src/lib/helpers.ts` with added 'weight' keyword check for Shopee dimension errors
-- Updated `CopyPage.tsx` to import from shared files, removed local definitions (~26 lines removed)
-- Removed dead types `ShopeeCopyResponse` and `ShopeeCopyResult` from `frontend/src/lib/api.ts` (16 lines removed)
-- Files changed: `frontend/src/components/StatusBadge.tsx` (new), `frontend/src/lib/helpers.ts` (new), `frontend/src/pages/CopyPage.tsx`, `frontend/src/lib/api.ts`, `CHANGELOG.md`
-- **Learnings for future iterations:**
-  - `StatusBadge` is now a shared component at `frontend/src/components/StatusBadge.tsx` — import from there, not define locally
-  - `isDimensionError` is at `frontend/src/lib/helpers.ts` — add new dimension-related keywords there
-  - The `Card` component is still exported from `CopyPage.tsx` (line ~532) — could be extracted in future cleanup
-  - `ShopeeCopyLog` and `ShopeeItemPreview` types in api.ts are NOT dead — they're used by backend response typing even if not directly imported in components
+  - photo_logs status values differ from compat_logs: 'completed'/'error'/'partial'/'processing'/'pending' (compat uses 'success'/'in_progress')
+  - `LogRow` as a separate component avoids cluttering the main render — it handles both the data row and the expandable detail row via React Fragment
+  - `loadLogsRef` pattern needed for polling interval — `loadLogs` changes on every render due to `headers()` dependency, but the ref always points to latest
+  - Renamed shadow variable `logs` to `allLogs` inside apply poll handler to avoid conflict with component-level `logs` state
+  - History section is always visible (not gated behind `preview`) — users can check history without loading a new item
 ---
