@@ -906,11 +906,11 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
     return adjusted, actions
 
 
-def _build_title_correction_details(original_title: str, max_length: int) -> dict[str, Any]:
+def _build_title_correction_details(original_title: str, max_length: int, item_id: str = "") -> dict[str, Any]:
     """Build correction details for title length errors — lets user edit the title."""
     return {
         "kind": "title",
-        "group_key": "title",
+        "group_key": f"title:{item_id}" if item_id else "title",
         "summary": f"Titulo excede limite de {max_length} caracteres da categoria. Edite o titulo para continuar.",
         "original_title": original_title,
         "max_length": max_length,
@@ -926,7 +926,7 @@ def _build_title_correction_details(original_title: str, max_length: int) -> dic
     }
 
 
-def _extract_correction_details(exc: MlApiError, payload: dict | None = None) -> dict[str, Any] | None:
+def _extract_correction_details(exc: MlApiError, payload: dict | None = None, item_id: str = "") -> dict[str, Any] | None:
     if _is_dimension_error(exc):
         return _build_dimension_correction_details()
 
@@ -935,7 +935,7 @@ def _extract_correction_details(exc: MlApiError, payload: dict | None = None) ->
         original_title = ""
         if payload:
             original_title = payload.get("title") or payload.get("family_name") or ""
-        return _build_title_correction_details(original_title, max_len)
+        return _build_title_correction_details(original_title, max_len, item_id=item_id)
 
     missing_attrs = _extract_missing_required_attributes(exc)
     if missing_attrs:
@@ -1504,7 +1504,7 @@ async def copy_single_item(
         result["status"] = "success"
 
     except MlApiError as e:
-        correction_details = _extract_correction_details(e, payload=payload)
+        correction_details = _extract_correction_details(e, payload=payload, item_id=item_id)
         if correction_details:
             logger.warning("Copy %s -> %s requires manual correction", item_id, dest_seller)
             result["status"] = CORRECTION_STATUS

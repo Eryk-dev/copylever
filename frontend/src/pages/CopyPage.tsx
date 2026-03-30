@@ -306,9 +306,12 @@ export default function CopyPage({ sellers, shopeeSellers, headers, user }: Prop
       if (!correction) continue;
 
       const sku = log.source_item_sku || null;
-      const batchKey = log.platform === 'shopee'
+      // Title corrections must NOT be grouped by SKU — each MLB needs its own title
+      const batchKey = correction.kind === 'title'
         ? log.source_item_id
-        : (sku || log.source_item_id);
+        : log.platform === 'shopee'
+          ? log.source_item_id
+          : (sku || log.source_item_id);
       const key = [
         log.platform,
         log.source_seller,

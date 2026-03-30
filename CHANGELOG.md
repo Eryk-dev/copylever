@@ -12,6 +12,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 ### Added
 - Formulario de correcao de titulo: quando a categoria ML limita o numero de caracteres do titulo, o usuario agora pode editar o titulo manualmente antes de reenviar a copia (ERR-054)
 - Contador de caracteres no campo de titulo com limite visual e `maxLength` no input
+- Correcoes de titulo agora sao individuais por MLB (nao agrupam por SKU) — cada anuncio precisa de um titulo proprio
 
 ### Changed
 - `POST /api/copy/resolve-sellers` otimizado: identifica o seller do primeiro item e usa como fast path para os demais (1+N requests em vez de N×M); fallback completo apenas para itens de sellers diferentes
