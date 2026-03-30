@@ -40,6 +40,12 @@ export default function PhotosPage({ sellers, headers }: Props) {
   const [previewError, setPreviewError] = useState('');
   const [copiedSku, setCopiedSku] = useState<string | null>(null);
 
+  // Editable photo state (US-008)
+  const [activePhotos, setActivePhotos] = useState<PhotoPicture[]>([]);
+  const [removedPhotos, setRemovedPhotos] = useState<PhotoPicture[]>([]);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+
   const sellerName = useCallback((slug: string) => {
     return sellers.find(s => s.slug === slug)?.name || slug;
   }, [sellers]);
@@ -83,6 +89,74 @@ export default function PhotosPage({ sellers, headers }: Props) {
     }, 600);
     return () => clearTimeout(timer);
   }, [sourceInput]);
+
+  // Initialize editable photos when preview loads
+  useEffect(() => {
+    if (preview) {
+      setActivePhotos([...preview.pictures]);
+      setRemovedPhotos([]);
+    } else {
+      setActivePhotos([]);
+      setRemovedPhotos([]);
+    }
+  }, [preview]);
+
+  // Photo editing handlers
+  const handleRemovePhoto = useCallback((idx: number) => {
+    setActivePhotos(prev => {
+      if (prev.length <= 1) return prev;
+      const removed = prev[idx];
+      setRemovedPhotos(r => [...r, removed]);
+      return prev.filter((_, i) => i !== idx);
+    });
+  }, []);
+
+  const handleRestorePhoto = useCallback((idx: number) => {
+    setRemovedPhotos(prev => {
+      const restored = prev[idx];
+      setActivePhotos(a => [...a, restored]);
+      return prev.filter((_, i) => i !== idx);
+    });
+  }, []);
+
+  const handleDragStart = useCallback((e: React.DragEvent, idx: number) => {
+    setDragIdx(idx);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(idx));
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent, idx: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverIdx(idx);
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    setDragOverIdx(null);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent, dropIdx: number) => {
+    e.preventDefault();
+    const sourceIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
+    if (isNaN(sourceIdx) || sourceIdx === dropIdx) {
+      setDragIdx(null);
+      setDragOverIdx(null);
+      return;
+    }
+    setActivePhotos(prev => {
+      const next = [...prev];
+      const [moved] = next.splice(sourceIdx, 1);
+      next.splice(dropIdx, 0, moved);
+      return next;
+    });
+    setDragIdx(null);
+    setDragOverIdx(null);
+  }, []);
+
+  const handleDragEnd = useCallback(() => {
+    setDragIdx(null);
+    setDragOverIdx(null);
+  }, []);
 
   const handleCopySku = useCallback(async (sku: string) => {
     try {
@@ -189,32 +263,46 @@ export default function PhotosPage({ sellers, headers }: Props) {
             )}
           </div>
 
-          {/* Photos Grid */}
+          {/* Photos Grid — editable */}
           <div style={{ marginTop: 'var(--space-4)' }}>
             <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', fontWeight: 500, marginBottom: 'var(--space-2)' }}>
-              Fotos ({preview.pictures.length})
+              Fotos ({activePhotos.length})
             </p>
             <div style={{
               display: 'grid',
               gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
               gap: 'var(--space-3)',
             }}>
-              {preview.pictures.map((pic, idx) => (
-                <div key={pic.id} style={{
-                  position: 'relative',
-                  aspectRatio: '1',
-                  borderRadius: 8,
-                  overflow: 'hidden',
-                  border: '1px solid var(--line)',
-                  background: 'var(--paper)',
-                }}>
+              {activePhotos.map((pic, idx) => (
+                <div
+                  key={pic.id}
+                  draggable
+                  onDragStart={e => handleDragStart(e, idx)}
+                  onDragOver={e => handleDragOver(e, idx)}
+                  onDragLeave={handleDragLeave}
+                  onDrop={e => handleDrop(e, idx)}
+                  onDragEnd={handleDragEnd}
+                  style={{
+                    position: 'relative',
+                    aspectRatio: '1',
+                    borderRadius: 8,
+                    overflow: 'hidden',
+                    border: dragOverIdx === idx ? '2px solid var(--accent)' : '1px solid var(--line)',
+                    background: 'var(--paper)',
+                    opacity: dragIdx === idx ? 0.4 : 1,
+                    cursor: 'grab',
+                    transition: 'border 0.15s, opacity 0.15s',
+                  }}
+                >
                   <img
                     src={pic.secure_url || pic.url}
                     alt={`Foto ${idx + 1}`}
+                    draggable={false}
                     style={{
                       width: '100%',
                       height: '100%',
                       objectFit: 'cover',
+                      pointerEvents: 'none',
                     }}
                   />
                   {idx === 0 && (
@@ -234,10 +322,94 @@ export default function PhotosPage({ sellers, headers }: Props) {
                       Principal
                     </span>
                   )}
+                  {/* Remove button — hidden when only 1 photo left */}
+                  {activePhotos.length > 1 && (
+                    <button
+                      onClick={() => handleRemovePhoto(idx)}
+                      title="Remover foto"
+                      style={{
+                        position: 'absolute',
+                        top: 6,
+                        right: 6,
+                        width: 24,
+                        height: 24,
+                        borderRadius: '50%',
+                        border: 'none',
+                        background: 'rgba(0,0,0,0.6)',
+                        color: '#fff',
+                        fontSize: 14,
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        lineHeight: 1,
+                      }}
+                    >
+                      ×
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
           </div>
+
+          {/* Removed Photos */}
+          {removedPhotos.length > 0 && (
+            <div style={{ marginTop: 'var(--space-4)' }}>
+              <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', fontWeight: 500, marginBottom: 'var(--space-2)' }}>
+                Removidas ({removedPhotos.length})
+              </p>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))',
+                gap: 'var(--space-2)',
+              }}>
+                {removedPhotos.map((pic, idx) => (
+                  <div key={pic.id} style={{
+                    position: 'relative',
+                    aspectRatio: '1',
+                    borderRadius: 8,
+                    overflow: 'hidden',
+                    border: '1px dashed var(--line)',
+                    background: 'var(--surface)',
+                    opacity: 0.5,
+                  }}>
+                    <img
+                      src={pic.secure_url || pic.url}
+                      alt="Removida"
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'cover',
+                      }}
+                    />
+                    <button
+                      onClick={() => handleRestorePhoto(idx)}
+                      title="Restaurar foto"
+                      style={{
+                        position: 'absolute',
+                        bottom: 6,
+                        left: '50%',
+                        transform: 'translateX(-50%)',
+                        padding: '2px 10px',
+                        borderRadius: 4,
+                        border: 'none',
+                        background: 'rgba(0,0,0,0.7)',
+                        color: '#fff',
+                        fontSize: 11,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      Restaurar
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </Card>
       )}
     </div>

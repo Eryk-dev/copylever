@@ -22,6 +22,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - `POST /api/photos/apply` — endpoint para aplicar fotos editadas em anuncios destino (BackgroundTask, valida permissoes can_copy_to, retorna log_id imediatamente)
 - `GET /api/photos/logs` — endpoint para historico de operacoes de fotos com filtro por status e paginacao (org-scoped, operadores veem apenas seus logs)
 - `PhotosPage.tsx` — pagina frontend com aba "Fotos" para visualizar fotos de anuncios ML (input MLB, preview com grid de fotos, SKUs, seller detectado)
+- Edicao de fotos no PhotosPage: remover fotos (botao X), restaurar fotos removidas, reordenar via drag & drop (HTML5), badge "Principal" na primeira foto
 
 ### Changed
 - `POST /api/copy/resolve-sellers` otimizado: identifica o seller do primeiro item e usa como fast path para os demais (1+N requests em vez de N×M); fallback completo apenas para itens de sellers diferentes
