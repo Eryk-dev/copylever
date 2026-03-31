@@ -84,47 +84,50 @@ async def apply_photos_to_targets(
     success_count = 0
     error_count = 0
 
-    # Collect IDs from the new pictures (source-URL pictures have no ID yet)
-    new_pic_ids = [p["id"] for p in ml_pictures if p.get("id")]
-
     try:
         for idx, target in enumerate(targets):
             if idx > 0:
                 await asyncio.sleep(1)  # pace between targets to respect ML rate limits
 
             try:
-                # Fetch target item to read its variations.  ML requires that
-                # every variation picture_id exists in the item-level pictures
-                # list, and we also need to update each variation's picture_ids
-                # so they actually display the new photos.
-                put_payload: dict[str, Any] = {"pictures": list(ml_pictures)}
-                try:
-                    item_data = await get_item(
-                        target["seller_slug"], target["item_id"], org_id=org_id or "",
-                    )
-                    target_variations = item_data.get("variations", [])
-                    if target_variations and new_pic_ids:
-                        # Assign ALL new pictures to every variation so each
-                        # one displays the full edited photo set.  True User
-                        # Products have no variations, so this block only runs
-                        # for regular items that happen to have family_name.
-                        put_payload["variations"] = [
-                            {"id": var["id"], "picture_ids": list(new_pic_ids)}
-                            for var in target_variations
-                            if var.get("id")
-                        ]
-                except Exception as fetch_err:
-                    logger.warning(
-                        "Could not fetch target %s to sync variation pictures: %s",
-                        target["item_id"], fetch_err,
-                    )
-
+                # Step 1: PUT item-level pictures only.
                 await update_item(
                     target["seller_slug"],
                     target["item_id"],
-                    put_payload,
+                    {"pictures": list(ml_pictures)},
                     org_id=org_id or "",
                 )
+
+                # Step 2: Re-read the item to get the picture IDs that ML
+                # actually assigned (they may differ from the source IDs when
+                # photos are copied across sellers).
+                try:
+                    updated_item = await get_item(
+                        target["seller_slug"], target["item_id"], org_id=org_id or "",
+                    )
+                    target_variations = updated_item.get("variations", [])
+                    actual_pic_ids = [
+                        p["id"] for p in updated_item.get("pictures", [])
+                        if p.get("id")
+                    ]
+                    if target_variations and actual_pic_ids:
+                        # Step 3: PUT variation picture_ids using the real IDs.
+                        await update_item(
+                            target["seller_slug"],
+                            target["item_id"],
+                            {"variations": [
+                                {"id": var["id"], "picture_ids": list(actual_pic_ids)}
+                                for var in target_variations
+                                if var.get("id")
+                            ]},
+                            org_id=org_id or "",
+                        )
+                except Exception as var_err:
+                    # Item-level photos succeeded; log variation failure as warning
+                    logger.warning(
+                        "Photos applied to %s but variation update failed: %s",
+                        target["item_id"], var_err,
+                    )
                 results.append({
                     "seller_slug": target["seller_slug"],
                     "item_id": target["item_id"],
