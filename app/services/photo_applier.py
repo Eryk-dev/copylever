@@ -7,7 +7,7 @@ from typing import Any
 
 from app.db.supabase import get_db
 from app.services.item_copier import _log_api_debug
-from app.services.ml_api import MlApiError, update_item
+from app.services.ml_api import MlApiError, get_item, update_item
 
 logger = logging.getLogger(__name__)
 
@@ -84,16 +84,39 @@ async def apply_photos_to_targets(
     success_count = 0
     error_count = 0
 
+    new_pic_ids = {p.get("id") for p in ml_pictures if p.get("id")}
+
     try:
         for idx, target in enumerate(targets):
             if idx > 0:
                 await asyncio.sleep(1)  # pace between targets to respect ML rate limits
 
             try:
+                # Fetch target item to check for variation picture_ids.
+                # ML validates that ALL variation picture_ids exist in the
+                # item-level pictures list on PUT — include any missing ones
+                # so the update isn't rejected.
+                target_pictures = list(ml_pictures)
+                try:
+                    item_data = await get_item(
+                        target["seller_slug"], target["item_id"], org_id=org_id or "",
+                    )
+                    seen = set(new_pic_ids)
+                    for var in item_data.get("variations", []):
+                        for pid in var.get("picture_ids", []):
+                            if pid and pid not in seen:
+                                target_pictures.append({"id": pid})
+                                seen.add(pid)
+                except Exception as fetch_err:
+                    logger.warning(
+                        "Could not fetch target %s to sync variation pictures: %s",
+                        target["item_id"], fetch_err,
+                    )
+
                 await update_item(
                     target["seller_slug"],
                     target["item_id"],
-                    {"pictures": ml_pictures},
+                    {"pictures": target_pictures},
                     org_id=org_id or "",
                 )
                 results.append({
