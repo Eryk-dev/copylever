@@ -32,12 +32,9 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - `POST /api/copy/resolve-sellers` otimizado: identifica o seller do primeiro item e usa como fast path para os demais (1+N requests em vez de N×M); fallback completo apenas para itens de sellers diferentes
 - Erro de titulo longo nao faz mais truncamento automatico — agora entra no fluxo de correcao manual (needs_correction com kind="title")
 
-### Changed
-- Busca por SKU na aba Fotos agora expande variacoes: cada variacao aparece como item individual selecionavel, com label (ex: "Vermelho / P") e thumbnail propria
-- Aplicacao de fotos agora opera por variacao: atualiza apenas o `picture_ids` da variacao selecionada, mantendo as fotos das demais variacoes intactas — evita erro `user_product.repeated.conflict` em User Products
-
 ### Fixed
 - Corrigido erro `item.pictures.invalid.missing_ids` ao atualizar atributos no item origem: ML valida pictures no PUT mesmo quando so atributos sao enviados — agora sincroniza picture_ids das variacoes na lista de pictures antes do retry (ERR-056)
+- Corrigido fotos nao aplicadas dentro das variacoes: `photo_applier` agora envia `variations[].picture_ids` no PUT apontando para a primeira foto nova, alem de atualizar as fotos no nivel do item (ERR-057)
 - Corrigido preview de fotos mostrando todas as fotos de todas as variacoes: agora exibe apenas as fotos da primeira variacao, na ordem do `picture_ids` (ERR-057)
 - Corrigido busca por SKU (`search_items_by_sku`) retornando apenas 50 resultados — agora pagina todas as paginas da API ML (limit=100, offset incremental) para encontrar todos os anuncios com o mesmo SKU
 - Corrigido photo_logs "processing" nao limpos no restart do servidor (adicionado cleanup em `cleanup_stale_tasks`)

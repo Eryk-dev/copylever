@@ -28,8 +28,6 @@ interface SkuSearchResult {
   seller_slug: string;
   seller_name: string;
   item_id: string;
-  variation_id?: number;
-  variation_label?: string;
   sku: string;
   title: string;
   thumbnail: string;
@@ -63,12 +61,6 @@ type EditablePhoto =
 
 function getPhotoKey(photo: EditablePhoto): string {
   return photo.type === 'existing' ? photo.id : photo.tempId;
-}
-
-function getResultKey(r: SkuSearchResult): string {
-  return r.variation_id != null
-    ? `${r.seller_slug}:${r.item_id}:${r.variation_id}`
-    : getResultKey(r);
 }
 
 function getPhotoSrc(photo: EditablePhoto): string {
@@ -357,7 +349,7 @@ export default function PhotosPage({ sellers, headers }: Props) {
       const filtered = data.filter(r => r.item_id !== preview?.id);
       setSkuSearchResults(filtered);
       // Select all by default
-      setSelectedTargets(new Set(filtered.map(r => getResultKey(r))));
+      setSelectedTargets(new Set(filtered.map(r => `${r.seller_slug}:${r.item_id}`)));
       setHasSearched(true);
     } catch (e) {
       setSearchError(String(e));
@@ -378,7 +370,7 @@ export default function PhotosPage({ sellers, headers }: Props) {
   const handleToggleAll = useCallback(() => {
     setSelectedTargets(prev => {
       if (prev.size === skuSearchResults.length) return new Set();
-      return new Set(skuSearchResults.map(r => getResultKey(r)));
+      return new Set(skuSearchResults.map(r => `${r.seller_slug}:${r.item_id}`));
     });
   }, [skuSearchResults]);
 
@@ -418,14 +410,10 @@ export default function PhotosPage({ sellers, headers }: Props) {
         }
       }
 
-      // Step 2: Build targets from selected (include variation_id when present)
+      // Step 2: Build targets from selected
       const targets = skuSearchResults
-        .filter(r => selectedTargets.has(getResultKey(r)))
-        .map(r => ({
-          seller_slug: r.seller_slug,
-          item_id: r.item_id,
-          ...(r.variation_id != null ? { variation_id: r.variation_id } : {}),
-        }));
+        .filter(r => selectedTargets.has(`${r.seller_slug}:${r.item_id}`))
+        .map(r => ({ seller_slug: r.seller_slug, item_id: r.item_id }));
 
       // Step 3: Call apply endpoint
       const applyRes = await fetch(`${API_BASE}/api/photos/apply`, {
@@ -936,7 +924,7 @@ export default function PhotosPage({ sellers, headers }: Props) {
             </label>
 
             {skuSearchResults.map(item => {
-              const key = getResultKey(item);
+              const key = `${item.seller_slug}:${item.item_id}`;
               return (
                 <label
                   key={key}
@@ -970,7 +958,7 @@ export default function PhotosPage({ sellers, headers }: Props) {
                       {item.title || item.item_id}
                     </p>
                     <p style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', fontFamily: 'var(--font-mono)' }}>
-                      {item.item_id}{item.variation_label ? ` — ${item.variation_label}` : ''}
+                      {item.item_id}
                     </p>
                   </div>
                   <span style={{
