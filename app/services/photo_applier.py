@@ -84,7 +84,8 @@ async def apply_photos_to_targets(
     success_count = 0
     error_count = 0
 
-    new_pic_ids = {p.get("id") for p in ml_pictures if p.get("id")}
+    # Collect IDs from the new pictures (source-URL pictures have no ID yet)
+    new_pic_ids = [p["id"] for p in ml_pictures if p.get("id")]
 
     try:
         for idx, target in enumerate(targets):
@@ -92,21 +93,33 @@ async def apply_photos_to_targets(
                 await asyncio.sleep(1)  # pace between targets to respect ML rate limits
 
             try:
-                # Fetch target item to check for variation picture_ids.
-                # ML validates that ALL variation picture_ids exist in the
-                # item-level pictures list on PUT — include any missing ones
-                # so the update isn't rejected.
-                target_pictures = list(ml_pictures)
+                # Fetch target item to read its variations.  ML requires that
+                # every variation picture_id exists in the item-level pictures
+                # list, and we also need to update each variation's picture_ids
+                # so they actually display the new photos.
+                put_payload: dict[str, Any] = {"pictures": list(ml_pictures)}
                 try:
                     item_data = await get_item(
                         target["seller_slug"], target["item_id"], org_id=org_id or "",
                     )
-                    seen = set(new_pic_ids)
-                    for var in item_data.get("variations", []):
-                        for pid in var.get("picture_ids", []):
-                            if pid and pid not in seen:
-                                target_pictures.append({"id": pid})
-                                seen.add(pid)
+                    target_variations = item_data.get("variations", [])
+                    # User Products don't accept variations on update
+                    tags = item_data.get("tags") or []
+                    is_user_product = (
+                        "user_product_listing" in tags
+                        or bool(item_data.get("family_name"))
+                    )
+                    if target_variations and new_pic_ids and not is_user_product:
+                        # Assign the new picture set to every variation so the
+                        # listing displays the edited photos.  Use the first
+                        # new picture ID for each variation (ML requires at
+                        # least one picture_id per variation).
+                        first_pic_id = new_pic_ids[0]
+                        put_payload["variations"] = [
+                            {"id": var["id"], "picture_ids": [first_pic_id]}
+                            for var in target_variations
+                            if var.get("id")
+                        ]
                 except Exception as fetch_err:
                     logger.warning(
                         "Could not fetch target %s to sync variation pictures: %s",
@@ -116,7 +129,7 @@ async def apply_photos_to_targets(
                 await update_item(
                     target["seller_slug"],
                     target["item_id"],
-                    {"pictures": target_pictures},
+                    put_payload,
                     org_id=org_id or "",
                 )
                 results.append({

@@ -143,6 +143,13 @@ ml_error_codes:
       severity: blocking
       notes: Typically happens with VEHICLE_PARTS_POSITION but could affect any attribute with null value_id
 
+    item.user_product.repeated.conflict:
+      message: "Repeated user-product. Conflict id: MLBUXXXXXXXXX; User product was duplicated"
+      cause: Changing item pictures (or other identity fields) on a User Product would create a duplicate in ML's catalog
+      fix_applied: Not automatically fixable — inherent ML catalog constraint. Photo apply skips variation updates for User Products.
+      severity: blocking
+      notes: User Products are matched by family_name + attributes. Changing photos can shift which catalog product they match.
+
     item.attribute.missing.seller.package.dimensions:
       message: "The attributes [seller_package_height, width, length, weight] are all required"
       cause: Item has no shipping dimensions — ML requires them for certain categories
@@ -1332,6 +1339,46 @@ error_history:
       If the item has pre-existing inconsistencies (like orphaned variation
       picture_ids), even an attribute-only PUT will fail. The fix is to include
       the corrected pictures list in the PUT payload.
+
+  - id: ERR-057
+    date: "2026-03-31"
+    category: pictures
+    title: "Photos tab: fotos nao aplicadas dentro das variacoes + preview mostrando fotos de todas as variacoes"
+    symptom: |
+      1. Preview de fotos mostra TODAS as fotos do item (galeria completa),
+         quando deveria mostrar apenas as fotos da primeira variacao.
+      2. Aplicar fotos com sucesso, mas as variacoes continuam exibindo as
+         fotos antigas — o PUT so atualizava pictures no nivel do item,
+         sem alterar variations[].picture_ids.
+      3. Itens User Product (NET AIR) retornam user_product.repeated.conflict
+         ao tentar atualizar fotos — erro do ML para produtos duplicados.
+    root_cause: |
+      - Preview: endpoint retornava item.pictures sem filtrar por variacao.
+        ML armazena todas as fotos no nivel do item; cada variacao referencia
+        um subconjunto via picture_ids. O correto e mostrar apenas as fotos
+        da primeira variacao.
+      - Apply: photo_applier enviava {"pictures": [...]} sem incluir
+        "variations" no PUT. ML atualizava as fotos do item mas as variacoes
+        mantinham picture_ids antigos, exibindo fotos desatualizadas.
+      - User Products: mudar fotos pode causar duplicacao de user_product
+        no catalogo ML — erro inerente ao ML, nao contornavel.
+    fix: |
+      1. Preview (photos.py): quando item tem variacoes, filtra pictures
+         pelo picture_ids da primeira variacao, mantendo a ordem.
+      2. Apply (photo_applier.py): busca item destino, e se tem variacoes
+         (e nao e User Product), envia variations[].picture_ids = [first_new_pic_id]
+         junto com as novas pictures no PUT.
+      3. User Products: skip de variation update (nao aceitam variacoes).
+    files:
+      - app/routers/photos.py
+      - app/services/photo_applier.py
+    lesson: |
+      ML items with variations: pictures are stored at item level, but each
+      variation references a SUBSET via picture_ids. To change what a variation
+      displays, you must update both the item pictures AND the variation
+      picture_ids in the same PUT. User Products are a special case — they
+      don't accept variation updates and changing photos can trigger
+      user_product.repeated.conflict.
 
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.

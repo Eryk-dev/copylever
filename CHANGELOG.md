@@ -34,7 +34,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Fixed
 - Corrigido erro `item.pictures.invalid.missing_ids` ao atualizar atributos no item origem: ML valida pictures no PUT mesmo quando so atributos sao enviados — agora sincroniza picture_ids das variacoes na lista de pictures antes do retry (ERR-056)
-- Corrigido aplicacao de fotos falhando em anuncios com variacoes: `photo_applier` agora busca o item destino antes do PUT e inclui os picture_ids das variacoes na lista de pictures, evitando rejeicao do ML (ERR-056)
+- Corrigido fotos nao aplicadas dentro das variacoes: `photo_applier` agora envia `variations[].picture_ids` no PUT apontando para a primeira foto nova, alem de atualizar as fotos no nivel do item (ERR-057)
+- Corrigido preview de fotos mostrando todas as fotos de todas as variacoes: agora exibe apenas as fotos da primeira variacao, na ordem do `picture_ids` (ERR-057)
 - Corrigido busca por SKU (`search_items_by_sku`) retornando apenas 50 resultados — agora pagina todas as paginas da API ML (limit=100, offset incremental) para encontrar todos os anuncios com o mesmo SKU
 - Corrigido photo_logs "processing" nao limpos no restart do servidor (adicionado cleanup em `cleanup_stale_tasks`)
 - Corrigido guard contra lista de fotos vazia no `apply_photos_to_targets` — impede que PUT /items com pictures=[] apague todas as fotos de um anuncio

@@ -90,9 +90,26 @@ async def preview_item(
         else:
             raise HTTPException(status_code=404, detail=f"Item não encontrado: {first_err}")
 
-    # Extract pictures
+    # Extract pictures — when the item has variations, show only the first
+    # variation's pictures (ordered by its picture_ids) so the user edits a
+    # single variation set instead of seeing the combined gallery.
+    all_pictures = item.get("pictures", [])
+    pic_by_id = {p.get("id"): p for p in all_pictures if p.get("id")}
+
+    variations = item.get("variations", [])
+    first_var_pic_ids = (
+        variations[0].get("picture_ids", []) if variations else []
+    )
+
+    if first_var_pic_ids and pic_by_id:
+        # Use first variation's picture_ids to filter & order
+        ordered = [pic_by_id[pid] for pid in first_var_pic_ids if pid in pic_by_id]
+        source_pics = ordered if ordered else all_pictures
+    else:
+        source_pics = all_pictures
+
     pictures = []
-    for pic in item.get("pictures", []):
+    for pic in source_pics:
         pictures.append({
             "id": pic.get("id"),
             "url": pic.get("url"),
