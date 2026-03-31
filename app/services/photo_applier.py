@@ -92,32 +92,69 @@ async def apply_photos_to_targets(
             if idx > 0:
                 await asyncio.sleep(1)  # pace between targets to respect ML rate limits
 
+            target_variation_id = target.get("variation_id")
+
             try:
-                # Fetch target item to read its variations.  ML requires that
-                # every variation picture_id exists in the item-level pictures
-                # list, and we also need to update each variation's picture_ids
-                # so they actually display the new photos.
-                put_payload: dict[str, Any] = {"pictures": list(ml_pictures)}
+                # Fetch target item to build the correct PUT payload.
+                item_data: dict[str, Any] = {}
                 try:
                     item_data = await get_item(
                         target["seller_slug"], target["item_id"], org_id=org_id or "",
                     )
-                    target_variations = item_data.get("variations", [])
+                except Exception as fetch_err:
+                    logger.warning(
+                        "Could not fetch target %s: %s",
+                        target["item_id"], fetch_err,
+                    )
+
+                target_variations = item_data.get("variations", [])
+
+                if target_variation_id and target_variations:
+                    # ── Per-variation mode ──
+                    # Only update the selected variation's picture_ids.
+                    # Keep pictures referenced by OTHER variations so ML
+                    # doesn't reject the PUT.
+                    other_pic_ids: set[str] = set()
+                    for var in target_variations:
+                        if var.get("id") != target_variation_id:
+                            for pid in var.get("picture_ids", []):
+                                if pid:
+                                    other_pic_ids.add(pid)
+
+                    # Build pictures list: other variations' pics + new pics
+                    existing_pics = item_data.get("pictures", [])
+                    pic_payload: list[dict[str, str]] = []
+                    seen: set[str] = set()
+                    # Keep pictures needed by other variations (preserve order)
+                    for pic in existing_pics:
+                        pid = pic.get("id")
+                        if pid and pid in other_pic_ids and pid not in seen:
+                            pic_payload.append({"id": pid})
+                            seen.add(pid)
+                    # Append the new pictures
+                    for pic in ml_pictures:
+                        pid = pic.get("id")
+                        if pid and pid not in seen:
+                            pic_payload.append(pic)
+                            seen.add(pid)
+                        elif pic.get("source"):
+                            pic_payload.append(pic)
+
+                    put_payload: dict[str, Any] = {
+                        "pictures": pic_payload,
+                        "variations": [
+                            {"id": target_variation_id, "picture_ids": list(new_pic_ids)},
+                        ],
+                    }
+                else:
+                    # ── Whole-item mode (no variation_id) ──
+                    put_payload = {"pictures": list(ml_pictures)}
                     if target_variations and new_pic_ids:
-                        # Assign ALL new pictures to every variation so each
-                        # one displays the full edited photo set.  True User
-                        # Products have no variations, so this block only runs
-                        # for regular items that happen to have family_name.
                         put_payload["variations"] = [
                             {"id": var["id"], "picture_ids": list(new_pic_ids)}
                             for var in target_variations
                             if var.get("id")
                         ]
-                except Exception as fetch_err:
-                    logger.warning(
-                        "Could not fetch target %s to sync variation pictures: %s",
-                        target["item_id"], fetch_err,
-                    )
 
                 await update_item(
                     target["seller_slug"],

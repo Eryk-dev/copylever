@@ -225,7 +225,10 @@ async def search_sku(req: SearchSkuRequest, user: dict = Depends(require_active_
             if p.get("can_copy_to")
         ]
 
-    results = await search_sku_all_sellers(req.skus, allowed_sellers=allowed_sellers, org_id=org_id)
+    results = await search_sku_all_sellers(
+        req.skus, allowed_sellers=allowed_sellers, org_id=org_id,
+        expand_variations=True,
+    )
     return results
 
 
@@ -251,6 +254,7 @@ class PictureEntry(BaseModel):
 class ApplyTarget(BaseModel):
     seller_slug: str
     item_id: str
+    variation_id: int | None = None
 
 
 class ApplyRequest(BaseModel):
@@ -288,7 +292,10 @@ async def apply_photos(
                 detail=f"Sem permissão para copiar para: {', '.join(denied)}",
             )
 
-    targets = [{"seller_slug": t.seller_slug, "item_id": t.item_id} for t in req.targets]
+    targets = [
+        {"seller_slug": t.seller_slug, "item_id": t.item_id, "variation_id": t.variation_id}
+        for t in req.targets
+    ]
     pictures = [p.model_dump(exclude_none=True) for p in req.pictures]
 
     # Create photo_logs record before background task so we can return log_id

@@ -23,10 +23,13 @@ async def search_sku_all_sellers(
     skus: list[str],
     allowed_sellers: list[str] | None = None,
     org_id: str = "",
+    expand_variations: bool = False,
 ) -> list[dict[str, Any]]:
     """Search for items matching the given SKUs across connected sellers.
 
     If allowed_sellers is provided, only those sellers are searched.
+    When expand_variations is True, items with variations are expanded
+    into one entry per variation (used by the Photos feature).
     Returns a list of dicts with: seller_slug, seller_name, item_id, sku, title.
     """
     db = get_db()
@@ -73,20 +76,56 @@ async def search_sku_all_sellers(
     for seller, sku, item_id, info_task in item_info_tasks:
         try:
             item_data = await info_task
-            title = item_data.get("title", "")
+            title = item_data.get("title", "") or item_data.get("family_name", "")
             thumbnail = item_data.get("secure_thumbnail") or item_data.get("thumbnail") or ""
         except Exception:
             logger.warning("Failed to fetch item info for %s", item_id)
+            item_data = {}
             title = ""
             thumbnail = ""
-        results.append({
-            "seller_slug": seller["slug"],
-            "seller_name": seller["name"],
-            "item_id": item_id,
-            "sku": sku,
-            "title": title,
-            "thumbnail": thumbnail,
-        })
+
+        variations = item_data.get("variations", []) if expand_variations else []
+        if variations:
+            # One entry per variation
+            pic_by_id = {
+                p.get("id"): p
+                for p in item_data.get("pictures", [])
+                if p.get("id")
+            }
+            for var in variations:
+                var_id = var.get("id")
+                if not var_id:
+                    continue
+                # Build variation label from attribute_combinations
+                combos = var.get("attribute_combinations", [])
+                label = " / ".join(
+                    c.get("value_name", "") for c in combos if c.get("value_name")
+                ) or f"Var {var_id}"
+                # Use first picture of the variation as thumbnail
+                var_pic_ids = var.get("picture_ids", [])
+                var_thumb = thumbnail
+                if var_pic_ids and var_pic_ids[0] in pic_by_id:
+                    pic = pic_by_id[var_pic_ids[0]]
+                    var_thumb = pic.get("secure_url") or pic.get("url") or thumbnail
+                results.append({
+                    "seller_slug": seller["slug"],
+                    "seller_name": seller["name"],
+                    "item_id": item_id,
+                    "variation_id": var_id,
+                    "variation_label": label,
+                    "sku": var.get("seller_custom_field") or sku,
+                    "title": title,
+                    "thumbnail": var_thumb,
+                })
+        else:
+            results.append({
+                "seller_slug": seller["slug"],
+                "seller_name": seller["name"],
+                "item_id": item_id,
+                "sku": sku,
+                "title": title,
+                "thumbnail": thumbnail,
+            })
 
     return results
 
