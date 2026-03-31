@@ -10,7 +10,7 @@
 # 3. If it's new, add an entry following the same structure
 # 4. The retry_system section documents how the auto-retry loop works
 #
-# Last updated: 2026-03-30
+# Last updated: 2026-03-31
 # ============================================================================
 
 # ── Quick reference: ML API error codes we've encountered ──────────────────
@@ -125,6 +125,15 @@ ml_error_codes:
       message: "Items in category MLBXXX cannot exceeds 12 pictures."
       cause: Source item has more pictures than the category allows (usually 12)
       fix_applied: Cap pictures at 12 in _build_item_payload; auto-truncate in _adjust_payload_for_ml_error using exact max from error message
+      severity: blocking
+
+    item.pictures.invalid.missing_ids:
+      message: "There is a conflict matching item variation pictures with item pictures list. Variations pictures [...] are not present in item pictures list."
+      cause: Item variations reference picture_ids that are not in the item-level pictures array. ML validates picture consistency on any PUT, even attribute-only updates.
+      fix_applied: |
+        1. _copy_with_source_attribute_updates: on PUT failure, fetch item, collect all variation picture_ids, add missing ones to pictures list, retry PUT with synced pictures + attributes.
+        2. _adjust_payload_for_ml_error: on POST, sync variation picture_ids into pictures list.
+        3. _is_picture_missing_ids_error() detection function added.
       severity: blocking
 
     invalid.item.attribute.values:
@@ -1289,6 +1298,40 @@ error_history:
       ML cause array mixes errors and warnings. mandatory_free_shipping is informational
       (ML already applies it), but proactively setting free_shipping=true avoids edge cases.
       Always check cause[].type — only type="error" causes are blocking.
+
+  - id: ERR-056
+    date: "2026-03-31"
+    category: pictures
+    title: "item.pictures.invalid.missing_ids — variation picture_ids not in item pictures list"
+    symptom: |
+      PUT /items/MLB2821809151 to update source attributes returned 400:
+      "item.pictures.invalid.missing_ids: There is a conflict matching item variation
+      pictures with item pictures list. Variations pictures [...] are not present in
+      item pictures list."
+      The PUT only sent {"attributes": [...]}, but ML validates the entire item state.
+    ml_error_code: item.pictures.invalid.missing_ids
+    root_cause: |
+      The source item on ML has variations whose picture_ids reference pictures that
+      are not in the item-level pictures array. This can happen when pictures are
+      removed from the item (via ML portal or API) without updating variation
+      picture_ids. ML validates picture consistency on every PUT, even if the PUT
+      payload only changes attributes.
+    fix: |
+      1. Added _is_picture_missing_ids_error() to detect this error code.
+      2. Added _build_pictures_sync_payload() to collect all variation picture_ids
+         and merge missing ones into the item-level pictures list as {"id": missing_id}.
+      3. Modified _copy_with_source_attribute_updates: when the initial PUT fails
+         with this error, fetch the item, build synced pictures, retry with
+         {"attributes": attrs, "pictures": synced_pictures}.
+      4. Added handler in _adjust_payload_for_ml_error for the POST/create flow:
+         if variations have picture_ids not in the payload's pictures list, add them.
+    files:
+      - app/services/item_copier.py
+    lesson: |
+      ML validates the ENTIRE item state on PUT, not just the fields you send.
+      If the item has pre-existing inconsistencies (like orphaned variation
+      picture_ids), even an attribute-only PUT will fail. The fix is to include
+      the corrected pictures list in the PUT payload.
 
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.

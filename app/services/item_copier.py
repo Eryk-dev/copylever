@@ -683,6 +683,52 @@ def _extract_title_max_length(exc: MlApiError) -> int:
     return 60
 
 
+def _is_picture_missing_ids_error(exc: MlApiError) -> bool:
+    """Detect item.pictures.invalid.missing_ids — variation picture_ids not in item pictures list."""
+    payload = exc.payload if isinstance(exc.payload, dict) else {}
+    causes = payload.get("cause", [])
+    if isinstance(causes, list):
+        for cause in causes:
+            if not isinstance(cause, dict) or cause.get("type") != "error":
+                continue
+            code = str(cause.get("code", "")).lower()
+            if "pictures" in code and "missing_ids" in code:
+                return True
+    # Fallback: text match on error detail
+    text = str(exc).lower()
+    if "variation" in text and "pictures" in text and "not present" in text:
+        return True
+    return False
+
+
+def _build_pictures_sync_payload(item: dict) -> dict:
+    """Build a pictures list that includes all variation picture_ids.
+
+    When an item's variations reference picture_ids not present in the item-level
+    pictures list, ML rejects any PUT with item.pictures.invalid.missing_ids.
+    This builds a synced pictures list so the PUT can succeed.
+    """
+    pictures = item.get("pictures", [])
+    existing_ids = {p.get("id") for p in pictures if isinstance(p, dict) and p.get("id")}
+
+    all_var_pic_ids: set[str] = set()
+    for var in item.get("variations", []):
+        for pic_id in var.get("picture_ids", []):
+            if pic_id:
+                all_var_pic_ids.add(pic_id)
+
+    missing_ids = all_var_pic_ids - existing_ids
+    if not missing_ids:
+        return {}
+
+    # Keep existing pictures in original order, append missing ones
+    synced = [{"id": p["id"]} for p in pictures if isinstance(p, dict) and p.get("id")]
+    for mid in sorted(missing_ids):
+        synced.append({"id": mid})
+
+    return {"pictures": synced}
+
+
 def _extract_pictures_max(exc: MlApiError) -> int | None:
     """Extract max pictures count from item.pictures.max error, or None if not present."""
     payload = exc.payload if isinstance(exc.payload, dict) else {}
@@ -851,6 +897,25 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
         gtin = _extract_source_attribute_value(item, "GTIN")
         if gtin and _ensure_attribute_in_payload(adjusted, "GTIN", gtin):
             actions.append("added GTIN from source after removing variations")
+
+    # Handle pictures missing_ids error: sync variation picture_ids into pictures list
+    if _is_picture_missing_ids_error(exc) and isinstance(adjusted.get("variations"), list):
+        pic_ids = {
+            p.get("id") or p.get("source", "")
+            for p in (adjusted.get("pictures") or [])
+            if isinstance(p, dict)
+        }
+        missing: list[str] = []
+        for var in adjusted["variations"]:
+            for pid in var.get("picture_ids", []):
+                if pid and pid not in pic_ids:
+                    missing.append(pid)
+                    pic_ids.add(pid)
+        if missing:
+            if "pictures" not in adjusted:
+                adjusted["pictures"] = []
+            adjusted["pictures"].extend({"id": mid} for mid in missing)
+            actions.append(f"synced {len(missing)} variation picture_ids into pictures")
 
     # Handle pictures max error: truncate to category limit
     pic_max = _extract_pictures_max(exc)
@@ -1897,6 +1962,43 @@ async def _copy_with_source_attribute_updates(
     try:
         await update_item(source_seller, item_id, {"attributes": attrs}, org_id=org_id)
         logger.info("Source item %s updated on %s with %d correction attribute(s)", item_id, source_seller, len(attrs))
+    except MlApiError as ml_err:
+        if _is_picture_missing_ids_error(ml_err):
+            # ML validates pictures on any PUT — sync variation picture_ids into
+            # the item-level pictures list so the attribute update can proceed.
+            logger.warning(
+                "PUT to %s failed with picture missing_ids — syncing pictures and retrying",
+                item_id,
+            )
+            try:
+                item_data = await get_item(source_seller, item_id, org_id=org_id)
+                sync_payload = _build_pictures_sync_payload(item_data)
+                sync_payload["attributes"] = attrs
+                await update_item(source_seller, item_id, sync_payload, org_id=org_id)
+                logger.info(
+                    "Source item %s updated on %s after syncing pictures (%d correction attribute(s))",
+                    item_id, source_seller, len(attrs),
+                )
+            except Exception as retry_err:
+                logger.error("Failed to apply source corrections to %s (picture sync retry): %s", item_id, retry_err)
+                return [{
+                    "source_item_id": item_id,
+                    "dest_seller": ds,
+                    "status": "error",
+                    "dest_item_id": None,
+                    "error": f"{failure_message_prefix}: {retry_err}",
+                    "correction_details": None,
+                } for ds in dest_sellers]
+        else:
+            logger.error("Failed to apply source corrections to %s: %s", item_id, ml_err)
+            return [{
+                "source_item_id": item_id,
+                "dest_seller": ds,
+                "status": "error",
+                "dest_item_id": None,
+                "error": f"{failure_message_prefix}: {ml_err}",
+                "correction_details": None,
+            } for ds in dest_sellers]
     except Exception as e:
         logger.error("Failed to apply source corrections to %s: %s", item_id, e)
         return [{
