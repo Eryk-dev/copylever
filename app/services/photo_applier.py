@@ -110,13 +110,10 @@ async def apply_photos_to_targets(
                         or bool(item_data.get("family_name"))
                     )
                     if target_variations and new_pic_ids and not is_user_product:
-                        # Assign the new picture set to every variation so the
-                        # listing displays the edited photos.  Use the first
-                        # new picture ID for each variation (ML requires at
-                        # least one picture_id per variation).
-                        first_pic_id = new_pic_ids[0]
+                        # Assign ALL new pictures to every variation so each
+                        # one displays the full edited photo set.
                         put_payload["variations"] = [
-                            {"id": var["id"], "picture_ids": [first_pic_id]}
+                            {"id": var["id"], "picture_ids": list(new_pic_ids)}
                             for var in target_variations
                             if var.get("id")
                         ]
