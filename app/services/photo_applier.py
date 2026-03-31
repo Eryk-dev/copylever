@@ -103,15 +103,11 @@ async def apply_photos_to_targets(
                         target["seller_slug"], target["item_id"], org_id=org_id or "",
                     )
                     target_variations = item_data.get("variations", [])
-                    # User Products don't accept variations on update
-                    tags = item_data.get("tags") or []
-                    is_user_product = (
-                        "user_product_listing" in tags
-                        or bool(item_data.get("family_name"))
-                    )
-                    if target_variations and new_pic_ids and not is_user_product:
+                    if target_variations and new_pic_ids:
                         # Assign ALL new pictures to every variation so each
-                        # one displays the full edited photo set.
+                        # one displays the full edited photo set.  True User
+                        # Products have no variations, so this block only runs
+                        # for regular items that happen to have family_name.
                         put_payload["variations"] = [
                             {"id": var["id"], "picture_ids": list(new_pic_ids)}
                             for var in target_variations
