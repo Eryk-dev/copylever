@@ -121,6 +121,12 @@ ml_error_codes:
       fix_applied: Parse the attribute id directly from the message and surface a manual correction form
       severity: blocking
 
+    item.picture.invalid:
+      message: "Picture id '...' is not valid. It does not match expected pattern"
+      cause: Non-URL value sent as picture source (e.g. local file path)
+      fix_applied: Validate source is http/https URL in both frontend and backend (ERR-058)
+      severity: blocking
+
     item.pictures.max:
       message: "Items in category MLBXXX cannot exceeds 12 pictures."
       cause: Source item has more pictures than the category allows (usually 12)
@@ -1379,6 +1385,63 @@ error_history:
       picture_ids in the same PUT. User Products are a special case — they
       don't accept variation updates and changing photos can trigger
       user_product.repeated.conflict.
+
+  - id: ERR-059
+    date: "2026-04-02"
+    category: pictures
+    title: "Photos tab: 409 FURY_MULTI_BATCH_KVSAPI_ERROR — transient ML KVS conflict"
+    symptom: |
+      PUT /items/MLB3982458279 to apply photos returned 409 Conflict:
+      "com.mercadolibre.kvsclient.exceptions.KvsException:
+       FURY_MULTI_BATCH_KVSAPI_ERROR::Could not multi batch from KVS API"
+      Item failed permanently even though it was a transient ML infra error.
+    root_cause: |
+      ML's internal KVS (key-value store) occasionally returns 409 conflict
+      due to concurrent writes or infra contention. This is transient and
+      resolves on retry. The photo_applier had no retry logic for non-400
+      errors — any ML API failure was treated as permanent.
+    ml_error_code: "conflict (409)"
+    fix: |
+      Added retry loop in photo_applier Step 1 (PUT pictures): up to 3
+      attempts with exponential backoff (3s, 6s) for transient errors
+      (status >= 500 OR status == 409). Non-transient errors (400, 403, etc.)
+      still fail immediately.
+    files:
+      - app/services/photo_applier.py
+    lesson: |
+      ML 409 Conflict with KVS errors are transient infra issues, same
+      category as 500 errors. Any ML API integration should retry on
+      409 + 5xx with backoff. The item_copier already had this for 5xx;
+      the photo_applier was missing it entirely.
+
+  - id: ERR-058
+    date: "2026-04-02"
+    category: pictures
+    title: "Photos tab: local file paths accepted as URL source — item.picture.invalid"
+    symptom: |
+      User entered a local Windows file path (e.g. C:\Users\...\image.webp)
+      in the URL input field of the Photos tab. The system sent this path as
+      the picture "source" in PUT /items/{id}, resulting in ML API 400:
+      "Picture id 'C:\...\image.webp' is not valid. It does not match expected pattern"
+      All 59 target items failed with the same error.
+    root_cause: |
+      Neither frontend nor backend validated that the "source" field was a
+      valid HTTP/HTTPS URL. The URL input accepted any string, and the
+      PictureEntry model only checked that id or source was non-empty.
+    fix: |
+      1. Frontend (PhotosPage.tsx handleAddUrl): added regex check
+         /^https?:\/\//i — rejects non-URL inputs with error toast
+         guiding user to use the upload button for local files.
+      2. Backend (photos.py PictureEntry): added field_validator on source
+         requiring http:// or https:// prefix, rejecting local paths with
+         clear Portuguese error message.
+    files:
+      - frontend/src/pages/PhotosPage.tsx
+      - app/routers/photos.py
+    lesson: |
+      Always validate external input format at BOTH frontend (UX) and backend
+      (safety net). ML API expects picture source to be a valid HTTP URL —
+      local file paths, data URIs, or relative paths will all fail.
 
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.

@@ -321,9 +321,13 @@ export default function PhotosPage({ sellers, headers }: Props) {
   const handleAddUrl = useCallback(() => {
     const url = urlInput.trim();
     if (!url) return;
+    if (!/^https?:\/\//i.test(url)) {
+      toast('URL inválida — use uma URL que comece com http:// ou https://. Para arquivos locais, use o botão de upload.', 'error');
+      return;
+    }
     setActivePhotos(prev => [...prev, { type: 'url', source: url, tempId: nextTempId() }]);
     setUrlInput('');
-  }, [urlInput]);
+  }, [urlInput, toast]);
 
   // SKU search handler (US-010)
   const handleSkuSearch = useCallback(async () => {

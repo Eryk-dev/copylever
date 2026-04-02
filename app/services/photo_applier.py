@@ -90,13 +90,31 @@ async def apply_photos_to_targets(
                 await asyncio.sleep(1)  # pace between targets to respect ML rate limits
 
             try:
-                # Step 1: PUT item-level pictures only.
-                await update_item(
-                    target["seller_slug"],
-                    target["item_id"],
-                    {"pictures": list(ml_pictures)},
-                    org_id=org_id or "",
-                )
+                # Step 1: PUT item-level pictures only, with retry for transient errors.
+                max_retries = 3
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        await update_item(
+                            target["seller_slug"],
+                            target["item_id"],
+                            {"pictures": list(ml_pictures)},
+                            org_id=org_id or "",
+                        )
+                        break  # success
+                    except MlApiError as ml_exc:
+                        is_transient = (
+                            ml_exc.status_code >= 500
+                            or ml_exc.status_code == 409
+                        )
+                        if is_transient and attempt < max_retries:
+                            wait = 3 * (2 ** (attempt - 1))  # 3s, 6s
+                            logger.warning(
+                                "Transient ML error %d for %s (attempt %d/%d), retrying in %ds: %s",
+                                ml_exc.status_code, target["item_id"], attempt, max_retries, wait, ml_exc.detail,
+                            )
+                            await asyncio.sleep(wait)
+                            continue
+                        raise  # non-transient or last attempt — propagate
 
                 # Step 2: Re-read the item to get the picture IDs that ML
                 # actually assigned (they may differ from the source IDs when

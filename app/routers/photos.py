@@ -239,8 +239,12 @@ class PictureEntry(BaseModel):
 
     @field_validator("source")
     @classmethod
-    def validate_not_empty(cls, v: str | None, info) -> str | None:  # noqa: N805
-        # At least one of id or source must be provided (checked at model level)
+    def validate_source_url(cls, v: str | None) -> str | None:
+        if v is not None and not v.startswith(("http://", "https://")):
+            raise ValueError(
+                "O campo 'source' deve ser uma URL válida (http:// ou https://). "
+                "Caminhos de arquivo local não são aceitos."
+            )
         return v
 
     def model_post_init(self, __context: Any) -> None:

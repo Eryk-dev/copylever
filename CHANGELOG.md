@@ -9,6 +9,11 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Fixed
+- Validacao de URL no campo de fotos por URL: rejeita caminhos locais (ex: `C:\Users\...\imagem.webp`) com mensagem de erro, exigindo URLs http/https validas (ERR-058)
+- Backend: validacao no modelo `PictureEntry` que impede envio de caminhos locais como `source` para a ML API
+- Retry automatico no photo_applier para erros transientes do ML (409 conflict KVS, 5xx) — ate 3 tentativas com backoff exponencial (ERR-059)
+
 ### Added
 - Formulario de correcao de titulo: quando a categoria ML limita o numero de caracteres do titulo, o usuario agora pode editar o titulo manualmente antes de reenviar a copia (ERR-054)
 - Contador de caracteres no campo de titulo com limite visual e `maxLength` no input
