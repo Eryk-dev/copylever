@@ -91,6 +91,7 @@ async def apply_photos_to_targets(
 
             try:
                 # Step 1: PUT item-level pictures only, with retry for transient errors.
+                user_product_conflict = False
                 max_retries = 3
                 for attempt in range(1, max_retries + 1):
                     try:
@@ -102,6 +103,19 @@ async def apply_photos_to_targets(
                         )
                         break  # success
                     except MlApiError as ml_exc:
+                        # ML returns 400 user_product.repeated.conflict but
+                        # still applies the photo change — treat as success.
+                        if (
+                            ml_exc.status_code == 400
+                            and "user_product" in (ml_exc.detail or "").lower()
+                            and "repeated" in (ml_exc.detail or "").lower()
+                        ):
+                            logger.info(
+                                "User product repeated conflict for %s — ML applies change despite 400, treating as success",
+                                target["item_id"],
+                            )
+                            user_product_conflict = True
+                            break
                         is_transient = (
                             ml_exc.status_code >= 500
                             or ml_exc.status_code == 409
@@ -119,33 +133,36 @@ async def apply_photos_to_targets(
                 # Step 2: Re-read the item to get the picture IDs that ML
                 # actually assigned (they may differ from the source IDs when
                 # photos are copied across sellers).
-                try:
-                    updated_item = await get_item(
-                        target["seller_slug"], target["item_id"], org_id=org_id or "",
-                    )
-                    target_variations = updated_item.get("variations", [])
-                    actual_pic_ids = [
-                        p["id"] for p in updated_item.get("pictures", [])
-                        if p.get("id")
-                    ]
-                    if target_variations and actual_pic_ids:
-                        # Step 3: PUT variation picture_ids using the real IDs.
-                        await update_item(
-                            target["seller_slug"],
-                            target["item_id"],
-                            {"variations": [
-                                {"id": var["id"], "picture_ids": list(actual_pic_ids)}
-                                for var in target_variations
-                                if var.get("id")
-                            ]},
-                            org_id=org_id or "",
+                # Skip variation update for User Product conflicts — they don't
+                # accept variation updates and the photos are already applied.
+                if not user_product_conflict:
+                    try:
+                        updated_item = await get_item(
+                            target["seller_slug"], target["item_id"], org_id=org_id or "",
                         )
-                except Exception as var_err:
-                    # Item-level photos succeeded; log variation failure as warning
-                    logger.warning(
-                        "Photos applied to %s but variation update failed: %s",
-                        target["item_id"], var_err,
-                    )
+                        target_variations = updated_item.get("variations", [])
+                        actual_pic_ids = [
+                            p["id"] for p in updated_item.get("pictures", [])
+                            if p.get("id")
+                        ]
+                        if target_variations and actual_pic_ids:
+                            # Step 3: PUT variation picture_ids using the real IDs.
+                            await update_item(
+                                target["seller_slug"],
+                                target["item_id"],
+                                {"variations": [
+                                    {"id": var["id"], "picture_ids": list(actual_pic_ids)}
+                                    for var in target_variations
+                                    if var.get("id")
+                                ]},
+                                org_id=org_id or "",
+                            )
+                    except Exception as var_err:
+                        # Item-level photos succeeded; log variation failure as warning
+                        logger.warning(
+                            "Photos applied to %s but variation update failed: %s",
+                            target["item_id"], var_err,
+                        )
                 results.append({
                     "seller_slug": target["seller_slug"],
                     "item_id": target["item_id"],

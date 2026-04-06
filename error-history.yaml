@@ -152,9 +152,9 @@ ml_error_codes:
     item.user_product.repeated.conflict:
       message: "Repeated user-product. Conflict id: MLBUXXXXXXXXX; User product was duplicated"
       cause: Changing item pictures (or other identity fields) on a User Product would create a duplicate in ML's catalog
-      fix_applied: Not automatically fixable — inherent ML catalog constraint. Photo apply skips variation updates for User Products.
-      severity: blocking
-      notes: User Products are matched by family_name + attributes. Changing photos can shift which catalog product they match.
+      fix_applied: Treat as success — ML returns 400 but actually applies the photo change. Photo applier detects this error and continues normally, skipping variation updates.
+      severity: non-blocking (ML applies the change despite the 400)
+      notes: User Products are matched by family_name + attributes. Changing photos can shift which catalog product they match. Despite the 400 error, ML does apply the requested photo changes.
 
     item.attribute.missing.seller.package.dimensions:
       message: "The attributes [seller_package_height, width, length, weight] are all required"
@@ -1442,6 +1442,40 @@ error_history:
       Always validate external input format at BOTH frontend (UX) and backend
       (safety net). ML API expects picture source to be a valid HTTP URL —
       local file paths, data URIs, or relative paths will all fail.
+
+  - id: ERR-060
+    date: "2026-04-06"
+    category: pictures
+    title: "Photos tab: user_product.repeated.conflict treated as error but ML applies the change"
+    symptom: |
+      PUT /items/MLB5631326148 to apply photos returned 400:
+      "Repeated user-product. Conflict id: MLBU3385156162;
+       item.user_product.repeated.conflict: User product was duplicated"
+      Item marked as error in photo_logs. However, ML actually applies the
+      photo change despite returning the 400 — the photos are updated on the
+      listing, but the system reports failure.
+    root_cause: |
+      ML's User Product catalog detects that changing photos on a User Product
+      would duplicate the product entry. It returns a 400 error, but still
+      applies the requested photo changes. The photo_applier treated all 400
+      errors as hard failures, so this was reported as error instead of success.
+    ml_error_code: "item.user_product.repeated.conflict"
+    fix: |
+      In photo_applier.py Step 1 (PUT pictures), detect 400 errors containing
+      "user_product" + "repeated" in the detail message. When detected:
+      1. Log as info (not error) — ML applies the change despite 400.
+      2. Set user_product_conflict flag.
+      3. Skip Step 2/3 (variation picture_ids update) — User Products don't
+         accept variation updates.
+      4. Report as success in results.
+    files:
+      - app/services/photo_applier.py
+    lesson: |
+      Not all ML 400 errors are true failures. user_product.repeated.conflict
+      is a "warning disguised as error" — ML applies the change but complains
+      about catalog duplication. Always verify whether ML actually applies
+      changes before treating API errors as hard failures. This is specific
+      to User Products (catalog items); regular items don't exhibit this.
 
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.
