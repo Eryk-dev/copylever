@@ -390,7 +390,8 @@ export default function PhotosPage({ sellers, headers }: Props) {
 
       for (const photo of activePhotos) {
         if (photo.type === 'existing') {
-          picturesPayload.push({ id: photo.id });
+          // Use source URL instead of picture ID — IDs fail cross-account
+          picturesPayload.push({ source: photo.secure_url || photo.url });
         } else if (photo.type === 'upload') {
           const formData = new FormData();
           formData.append('file', photo.file);
@@ -408,7 +409,8 @@ export default function PhotosPage({ sellers, headers }: Props) {
             return;
           }
           const uploadData = await uploadRes.json();
-          picturesPayload.push({ id: uploadData.id });
+          // Use source URL for cross-account compatibility
+          picturesPayload.push({ source: uploadData.secure_url || uploadData.url || uploadData.id });
         } else if (photo.type === 'url') {
           picturesPayload.push({ source: photo.source });
         }

@@ -10,7 +10,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 ## [Unreleased]
 
 ### Fixed
-- Fotos de User Products (catalogo ML) agora sao aplicadas com sucesso: erro `user_product.repeated.conflict` tratado como sucesso pois o ML aplica a alteracao mesmo retornando 400 (ERR-060)
+- Fotos de User Products (catalogo ML) nao eram aplicadas: corrigido para fazer upload das fotos ao seller de destino antes de aplicar (IDs proprios do destino evitam `user_product.repeated.conflict`) (ERR-060)
+- Frontend do gerenciador de fotos agora envia URLs de origem em vez de picture IDs para compatibilidade cross-account
 - Validacao de URL no campo de fotos por URL: rejeita caminhos locais (ex: `C:\Users\...\imagem.webp`) com mensagem de erro, exigindo URLs http/https validas (ERR-058)
 - Backend: validacao no modelo `PictureEntry` que impede envio de caminhos locais como `source` para a ML API
 - Retry automatico no photo_applier para erros transientes do ML (409 conflict KVS, 5xx) — ate 3 tentativas com backoff exponencial (ERR-059)

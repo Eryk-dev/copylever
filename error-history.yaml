@@ -1444,38 +1444,43 @@ error_history:
       local file paths, data URIs, or relative paths will all fail.
 
   - id: ERR-060
-    date: "2026-04-06"
+    date: "2026-04-07"
     category: pictures
-    title: "Photos tab: user_product.repeated.conflict treated as error but ML applies the change"
+    title: "Photos tab: user_product.repeated.conflict — photos NOT applied when using picture IDs cross-account"
     symptom: |
-      PUT /items/MLB5631326148 to apply photos returned 400:
-      "Repeated user-product. Conflict id: MLBU3385156162;
+      PUT /items/MLB4589289523 to apply photos returned 400:
+      "Repeated user-product. Conflict id: MLBU3891790314;
        item.user_product.repeated.conflict: User product was duplicated"
-      Item marked as error in photo_logs. However, ML actually applies the
-      photo change despite returning the 400 — the photos are updated on the
-      listing, but the system reports failure.
+      Photos logged as "success" in photo_logs but NOT actually changed on the
+      ML listing. Prior ERR-060 incorrectly assumed ML applied the change.
     root_cause: |
-      ML's User Product catalog detects that changing photos on a User Product
-      would duplicate the product entry. It returns a 400 error, but still
-      applies the requested photo changes. The photo_applier treated all 400
-      errors as hard failures, so this was reported as error instead of success.
+      The frontend sent {"id": "pic_id_from_source_item"} to PUT /items/{target_id}.
+      For User Product (catalog) items, ML rejects this with user_product.repeated.conflict
+      because picture IDs belong to a different item/user_product and cause identity
+      conflict. The photos are NOT applied — the 400 is a real error.
+      The previous fix incorrectly treated this 400 as success.
+      Root pattern: same as item_copier cross-account rule — picture IDs fail cross-account.
     ml_error_code: "item.user_product.repeated.conflict"
     fix: |
-      In photo_applier.py Step 1 (PUT pictures), detect 400 errors containing
-      "user_product" + "repeated" in the detail message. When detected:
-      1. Log as info (not error) — ML applies the change despite 400.
-      2. Set user_product_conflict flag.
-      3. Skip Step 2/3 (variation picture_ids update) — User Products don't
-         accept variation updates.
-      4. Report as success in results.
+      1. Backend (photo_applier.py): complete rewrite of photo application strategy.
+         Instead of sending source picture IDs or URLs directly:
+         a. Download each photo from its source URL
+         b. Upload to the TARGET seller via POST /pictures/items/upload
+         c. PUT /items/{target_id} with target-seller-owned picture IDs
+         Photos are uploaded once per seller and reused for all targets on that seller.
+      2. Frontend (PhotosPage.tsx): send {"source": "secure_url"} instead of {"id": "pic_id"}
+         for existing photos, ensuring the backend always has download URLs.
+      3. Removed false "treat as success" handling for user_product.repeated.conflict.
     files:
       - app/services/photo_applier.py
+      - frontend/src/pages/PhotosPage.tsx
     lesson: |
-      Not all ML 400 errors are true failures. user_product.repeated.conflict
-      is a "warning disguised as error" — ML applies the change but complains
-      about catalog duplication. Always verify whether ML actually applies
-      changes before treating API errors as hard failures. This is specific
-      to User Products (catalog items); regular items don't exhibit this.
+      For User Products, the user_product.repeated.conflict error is about the
+      resulting user product identity (name + attributes + thumbnail), not about
+      HOW pictures are provided. Using source URLs vs picture IDs doesn't change
+      the result. The fix is to upload photos to the target seller first, getting
+      target-owned picture IDs, which avoids cross-account identity conflicts.
+      Never assume ML "applies changes despite 400" without verifying on the listing.
 
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.
