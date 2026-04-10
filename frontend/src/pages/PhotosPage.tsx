@@ -114,7 +114,7 @@ export default function PhotosPage({ sellers, headers }: Props) {
 
   // Apply photos state (US-011)
   const [applying, setApplying] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pendingLogIdRef = useRef<number | null>(null);
 
   // History state (US-012)
   const [logs, setLogs] = useState<PhotoLog[]>([]);
@@ -127,10 +127,21 @@ export default function PhotosPage({ sellers, headers }: Props) {
 
   const LOGS_PAGE_SIZE = 20;
 
-  // Clean up poll interval on unmount
+  // Show summary toast when a pending log completes
+  const prevLogsRef = useRef<PhotoLog[]>([]);
   useEffect(() => {
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, []);
+    if (!pendingLogIdRef.current) {
+      prevLogsRef.current = logs;
+      return;
+    }
+    const log = logs.find(l => l.id === pendingLogIdRef.current);
+    if (log && log.status !== 'processing' && log.status !== 'pending') {
+      pendingLogIdRef.current = null;
+      const msg = `${log.success_count} sucesso, ${log.error_count} erro${log.error_count !== 1 ? 's' : ''}`;
+      toast(msg, log.error_count > 0 ? 'error' : 'success');
+    }
+    prevLogsRef.current = logs;
+  }, [logs, toast]);
 
   // Logs loading (US-012)
   const loadLogs = useCallback(async () => {
@@ -380,6 +391,7 @@ export default function PhotosPage({ sellers, headers }: Props) {
 
   // Apply photos handler (US-011)
   const handleApply = useCallback(async () => {
+    if (applying) return; // prevent double-click
     if (!preview || selectedTargets.size === 0 || activePhotos.length === 0) return;
 
     setApplying(true);
@@ -410,7 +422,12 @@ export default function PhotosPage({ sellers, headers }: Props) {
           }
           const uploadData = await uploadRes.json();
           // Use source URL for cross-account compatibility
-          picturesPayload.push({ source: uploadData.secure_url || uploadData.url || uploadData.id });
+          const uploadedUrl = uploadData?.secure_url || uploadData?.url;
+          if (!uploadedUrl && !uploadData?.id) {
+            toast('Erro ao enviar foto: resposta inesperada do servidor', 'error');
+            return;
+          }
+          picturesPayload.push(uploadedUrl ? { source: uploadedUrl } : { id: uploadData.id });
         } else if (photo.type === 'url') {
           picturesPayload.push({ source: photo.source });
         }
@@ -420,6 +437,11 @@ export default function PhotosPage({ sellers, headers }: Props) {
       const targets = skuSearchResults
         .filter(r => selectedTargets.has(`${r.seller_slug}:${r.item_id}`))
         .map(r => ({ seller_slug: r.seller_slug, item_id: r.item_id }));
+
+      if (targets.length === 0) {
+        toast('Nenhum destino selecionado.', 'error');
+        return;
+      }
 
       // Step 3: Call apply endpoint
       const applyRes = await fetch(`${API_BASE}/api/photos/apply`, {
@@ -435,45 +457,27 @@ export default function PhotosPage({ sellers, headers }: Props) {
 
       if (!applyRes.ok) {
         const err = await applyRes.json().catch(() => ({ detail: 'Erro ao aplicar fotos' }));
-        toast(err.detail, 'error');
+        toast(err.detail || 'Erro ao aplicar fotos', 'error');
         return;
       }
 
       const result = await applyRes.json();
-      const logId = result.log_id as number;
+      const logId = typeof result?.log_id === 'number' ? result.log_id : null;
+      pendingLogIdRef.current = logId;
 
-      // Refresh logs to show the new entry; polling effect handles updates
+      toast('Fotos sendo aplicadas...', 'success');
+
+      // Refresh logs to show the new entry; the component-level
+      // polling effect (hasProcessing) will handle subsequent updates.
       setTimeout(() => { void loadLogsRef.current(); }, 1000);
 
-      // Poll for completion to show summary toast
-      if (pollRef.current) clearInterval(pollRef.current);
-      pollRef.current = setInterval(async () => {
-        try {
-          const logsRes = await fetch(`${API_BASE}/api/photos/logs?limit=50`, { headers: headers() });
-          if (!logsRes.ok) return;
-          const allLogs: Array<{ id: number; status: string; success_count: number; error_count: number }> = await logsRes.json();
-          const log = allLogs.find(l => l.id === logId);
-          if (log && log.status !== 'processing' && log.status !== 'pending') {
-            if (pollRef.current) clearInterval(pollRef.current);
-            pollRef.current = null;
-            const msg = `${log.success_count} sucesso, ${log.error_count} erro${log.error_count !== 1 ? 's' : ''}`;
-            toast(msg, log.error_count > 0 ? 'error' : 'success');
-            void loadLogsRef.current();
-          }
-        } catch { /* ignore polling errors */ }
-      }, 3000);
-
-      // Stop polling after 2 minutes
-      setTimeout(() => {
-        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-      }, 120000);
-
     } catch (e) {
-      toast(String(e), 'error');
+      console.error('handleApply error:', e);
+      toast(String(e) || 'Erro inesperado', 'error');
     } finally {
       setApplying(false);
     }
-  }, [preview, selectedTargets, activePhotos, skuSearchResults, skuInput, headers, toast]);
+  }, [applying, preview, selectedTargets, activePhotos, skuSearchResults, skuInput, headers, toast]);
 
   const canApply = preview && selectedTargets.size > 0 && activePhotos.length > 0 && !applying;
 

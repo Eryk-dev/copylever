@@ -9,6 +9,7 @@ import Admin from './pages/Admin';
 import UsersPage from './pages/UsersPage';
 import CompatPage from './pages/CompatPage';
 import PhotosPage from './pages/PhotosPage';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import SuperAdminPage from './pages/SuperAdminPage';
 import BillingPage from './pages/BillingPage';
 import ForgotPassword from './pages/ForgotPassword';
@@ -799,7 +800,9 @@ export default function App() {
           </div>
         )}
         {activeView === 'photos' && (
-          <PhotosPage sellers={auth.sellers} headers={auth.headers} />
+          <ErrorBoundary>
+            <PhotosPage sellers={auth.sellers} headers={auth.headers} />
+          </ErrorBoundary>
         )}
         {activeView === 'compat' && (
           <CompatPage sellers={auth.sellers} headers={auth.headers} />

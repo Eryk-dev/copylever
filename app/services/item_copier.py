@@ -95,6 +95,11 @@ def _log_api_debug(
     except Exception as e:
         logger.warning("Failed to write api_debug_log: %s", e)
 
+# Product identifier attributes — stripped on invalid_product_identifier errors
+PRODUCT_IDENTIFIER_ATTRIBUTES = {
+    "GTIN", "EAN", "UPC", "ISBN", "MPN", "ALPHANUMERIC_MODEL",
+}
+
 # Attributes to exclude (read-only, auto-generated, or non-modifiable on create)
 EXCLUDED_ATTRIBUTES = {
     "ITEM_CONDITION",       # set via `condition` field
@@ -745,6 +750,19 @@ def _extract_pictures_max(exc: MlApiError) -> int | None:
     return None
 
 
+def _has_error_code(exc: MlApiError, code: str) -> bool:
+    """Check if any error cause has the given code."""
+    payload = exc.payload if isinstance(exc.payload, dict) else {}
+    causes = payload.get("cause", [])
+    if isinstance(causes, list):
+        for cause in causes:
+            if not isinstance(cause, dict) or cause.get("type") != "error":
+                continue
+            if str(cause.get("code", "")) == code:
+                return True
+    return False
+
+
 def _extract_invalid_attribute_ids(exc: MlApiError) -> set[str]:
     """Extract attribute IDs from invalid.item.attribute.values errors."""
     payload = exc.payload if isinstance(exc.payload, dict) else {}
@@ -933,6 +951,27 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
         removed = before - len(adjusted["attributes"])
         if removed:
             actions.append(f"removed invalid attributes: {', '.join(invalid_attrs)}")
+
+    # Handle invalid_product_identifier: strip all product identifier attrs
+    # ML rejects universal codes (GTIN/EAN/UPC) already used in another category
+    if _has_error_code(exc, "item.attribute.invalid_product_identifier"):
+        if isinstance(adjusted.get("attributes"), list):
+            before = len(adjusted["attributes"])
+            adjusted["attributes"] = [
+                a for a in adjusted["attributes"]
+                if a.get("id") not in PRODUCT_IDENTIFIER_ATTRIBUTES
+            ]
+            removed = before - len(adjusted["attributes"])
+            if removed:
+                actions.append(f"removed product identifiers (invalid_product_identifier)")
+        # Also strip from variation attributes
+        if isinstance(adjusted.get("variations"), list):
+            for var in adjusted["variations"]:
+                if isinstance(var.get("attributes"), list):
+                    var["attributes"] = [
+                        a for a in var["attributes"]
+                        if a.get("id") not in PRODUCT_IDENTIFIER_ATTRIBUTES
+                    ]
 
     # Handle family_name length error: truncate to 60 chars instead of removing
     if _is_family_name_length_error(exc) and adjusted.get("family_name"):

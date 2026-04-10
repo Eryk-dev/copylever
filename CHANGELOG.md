@@ -10,6 +10,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 ## [Unreleased]
 
 ### Fixed
+- Aba de Fotos: pagina em branco ao confirmar aplicacao de fotos — adicionado ErrorBoundary, removido polling duplicado que causava race condition, guarda contra double-click, e validacoes defensivas nas respostas da API
+- Copia de anuncios com codigo universal (GTIN/EAN/UPC) duplicado em outra categoria: erro `invalid_product_identifier` agora remove automaticamente os identificadores de produto e retenta (ERR-061)
 - Fotos de User Products (catalogo ML) nao eram aplicadas: corrigido para fazer upload das fotos ao seller de destino antes de aplicar (IDs proprios do destino evitam `user_product.repeated.conflict`) (ERR-060)
 - Frontend do gerenciador de fotos agora envia URLs de origem em vez de picture IDs para compatibilidade cross-account
 - Validacao de URL no campo de fotos por URL: rejeita caminhos locais (ex: `C:\Users\...\imagem.webp`) com mensagem de erro, exigindo URLs http/https validas (ERR-058)

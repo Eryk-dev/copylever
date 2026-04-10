@@ -106,6 +106,13 @@ ml_error_codes:
       fix_applied: No auto-fix — source data issue. Clear error message returned.
       severity: blocking
 
+    item.attribute.invalid_product_identifier:
+      message: "Insira um código universal que você não tenha usado no anúncio de outra categoria"
+      cause: Source item has a GTIN/EAN/UPC already registered in ML under a different category
+      fix_applied: Strip all product identifier attributes (GTIN, EAN, UPC, ISBN, MPN, ALPHANUMERIC_MODEL) from top-level and variation attributes on retry
+      severity: blocking
+      notes: ML enforces unique universal codes per category — copying between categories triggers this
+
     item.attribute.missing_conditional_required:
       message: "The attribute [X] is conditionally required for category Y"
       cause: Conditional attribute exists in source data but may be hidden in variation attributes or stripped from payload
@@ -1481,6 +1488,83 @@ error_history:
       the result. The fix is to upload photos to the target seller first, getting
       target-owned picture IDs, which avoids cross-account identity conflicts.
       Never assume ML "applies changes despite 400" without verifying on the listing.
+
+  - id: ERR-061
+    date: "2026-04-08"
+    category: copy
+    title: "invalid_product_identifier: universal code (GTIN/EAN/UPC) already used in another category"
+    symptom: |
+      POST /items returned 400: validation_error; Validation error;
+      item.attribute.invalid_product_identifier: Insira um código universal
+      que você não tenha usado no anúncio de outra categoria.
+    root_cause: |
+      Source item has a GTIN/EAN/UPC code that is already registered in the
+      ML catalog under a different category. When copying to the destination,
+      ML rejects the product identifier because it conflicts with an existing
+      listing in another category. The code was being blindly copied from
+      source attributes without checking for this cross-category restriction.
+    ml_error_code: "item.attribute.invalid_product_identifier"
+    fix: |
+      1. Added _has_error_code() helper to detect specific ML cause codes.
+      2. Added PRODUCT_IDENTIFIER_ATTRIBUTES set (GTIN, EAN, UPC, ISBN, MPN,
+         ALPHANUMERIC_MODEL).
+      3. In _adjust_payload_for_ml_error(), detect invalid_product_identifier
+         and strip all product identifier attributes from both top-level
+         attributes and variation attributes.
+      4. Retry succeeds without the conflicting identifier — ML creates the
+         item without a universal code.
+    files:
+      - app/services/item_copier.py
+    lesson: |
+      ML enforces unique universal codes per category. When copying items,
+      product identifiers that work in the source category may be rejected in
+      the destination category. The safe approach is to strip all product
+      identifiers on this error rather than trying to guess which one is
+      conflicting — ML's error doesn't specify which attribute caused it.
+
+  - id: ERR-062
+    date: "2026-04-10"
+    category: frontend
+    title: "Photos tab: blank page on apply — React crash from polling race + missing ErrorBoundary"
+    symptom: |
+      User enters MLB, edits photos, searches SKU, selects targets, and clicks
+      "Aplicar fotos". The entire page goes blank (white screen) and does not
+      recover. No error message shown. The request may or may not be processed
+      on the backend.
+    root_cause: |
+      Multiple issues combined to produce the blank page:
+      1. No React ErrorBoundary around PhotosPage — any unhandled render error
+         causes React 18 to unmount the entire component tree, showing nothing.
+      2. handleApply started its own 3-second polling interval AND the component
+         had a separate 5-second polling effect (hasProcessing). Both called
+         loadLogs which aborts the previous in-flight request, creating a race
+         condition that could produce unexpected state.
+      3. No double-click guard on handleApply — clicking the button rapidly
+         could trigger concurrent apply executions before the React re-render
+         disabled the button.
+      4. No validation on upload response shape — if uploadData.id was missing,
+         undefined would be JSON-serialized as omitted field, sending invalid
+         picture entries to the backend.
+    fix: |
+      1. Added ErrorBoundary component wrapping PhotosPage in App.tsx — render
+         errors now show a friendly recovery UI instead of blank page.
+      2. Removed the duplicate polling interval from handleApply. Now relies
+         solely on the component-level hasProcessing polling effect +
+         pendingLogIdRef to show the summary toast when done.
+      3. Added `if (applying) return` guard at the top of handleApply.
+      4. Added validation for uploadData?.id before using it.
+      5. Added validation for empty targets array.
+      6. Added console.error logging for better debugging.
+    files:
+      - frontend/src/components/ErrorBoundary.tsx
+      - frontend/src/pages/PhotosPage.tsx
+      - frontend/src/App.tsx
+    lesson: |
+      React 18 without ErrorBoundary = any render error → blank page. Always
+      wrap page-level components with ErrorBoundary. Avoid multiple independent
+      polling loops that call the same data-fetching function with abort
+      controllers — they fight each other. Single polling source with refs for
+      per-operation tracking is cleaner.
 
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.
