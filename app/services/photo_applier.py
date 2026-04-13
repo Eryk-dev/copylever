@@ -205,6 +205,7 @@ async def apply_photos_to_targets(
                     ml_pictures = [{"source": url} for url in source_urls]
 
                 # Step 1: PUT item-level pictures with retry for transient errors.
+                user_product_conflict = False
                 max_retries = 3
                 for attempt in range(1, max_retries + 1):
                     try:
@@ -216,6 +217,22 @@ async def apply_photos_to_targets(
                         )
                         break  # success
                     except MlApiError as ml_exc:
+                        # user_product.repeated.conflict: ML returns 400 but
+                        # may still apply the photo change on User Product
+                        # (catalog) items. We verify by re-reading below.
+                        detail_lower = (ml_exc.detail or "").lower()
+                        if (
+                            ml_exc.status_code == 400
+                            and "user_product" in detail_lower
+                            and "repeated" in detail_lower
+                        ):
+                            logger.warning(
+                                "user_product.repeated.conflict on %s — will verify if photos were applied",
+                                target["item_id"],
+                            )
+                            user_product_conflict = True
+                            break  # exit retry loop, verify below
+
                         is_transient = (
                             ml_exc.status_code >= 500
                             or ml_exc.status_code == 409
@@ -236,6 +253,42 @@ async def apply_photos_to_targets(
                     updated_item = await get_item(
                         target["seller_slug"], target["item_id"], org_id=org_id or "",
                     )
+
+                    # If we got user_product.repeated.conflict, verify photos
+                    # were actually applied by comparing picture counts.
+                    if user_product_conflict:
+                        sent_count = len(ml_pictures)
+                        current_pics = updated_item.get("pictures", [])
+                        current_count = len(current_pics)
+                        # Check if at least one of our uploaded IDs is now on the item
+                        sent_ids = {p["id"] for p in ml_pictures if p.get("id")}
+                        current_ids = {p.get("id") for p in current_pics if p.get("id")}
+                        overlap = sent_ids & current_ids
+                        if overlap:
+                            logger.info(
+                                "user_product.repeated.conflict on %s but photos WERE applied "
+                                "(%d/%d IDs match) — treating as success",
+                                target["item_id"], len(overlap), sent_count,
+                            )
+                        elif current_count == sent_count:
+                            logger.info(
+                                "user_product.repeated.conflict on %s — photo count matches "
+                                "(%d sent, %d current) — treating as success",
+                                target["item_id"], sent_count, current_count,
+                            )
+                        else:
+                            logger.warning(
+                                "user_product.repeated.conflict on %s — photos NOT applied "
+                                "(%d sent, %d current, 0 ID overlap) — reporting error",
+                                target["item_id"], sent_count, current_count,
+                            )
+                            raise MlApiError(
+                                status_code=400,
+                                method="PUT",
+                                url=f"https://api.mercadolibre.com/items/{target['item_id']}",
+                                detail="user_product.repeated.conflict: fotos não foram aplicadas pelo ML",
+                            )
+
                     target_variations = updated_item.get("variations", [])
                     actual_pic_ids = [
                         p["id"] for p in updated_item.get("pictures", [])
@@ -243,16 +296,31 @@ async def apply_photos_to_targets(
                     ]
                     if target_variations and actual_pic_ids:
                         # Step 3: PUT variation picture_ids using the real IDs.
-                        await update_item(
-                            target["seller_slug"],
-                            target["item_id"],
-                            {"variations": [
-                                {"id": var["id"], "picture_ids": list(actual_pic_ids)}
-                                for var in target_variations
-                                if var.get("id")
-                            ]},
-                            org_id=org_id or "",
-                        )
+                        try:
+                            await update_item(
+                                target["seller_slug"],
+                                target["item_id"],
+                                {"variations": [
+                                    {"id": var["id"], "picture_ids": list(actual_pic_ids)}
+                                    for var in target_variations
+                                    if var.get("id")
+                                ]},
+                                org_id=org_id or "",
+                            )
+                        except MlApiError as var_ml_err:
+                            # Variation update on User Products often fails —
+                            # item-level photos are the important part.
+                            detail_lower = (var_ml_err.detail or "").lower()
+                            if "user_product" in detail_lower and "repeated" in detail_lower:
+                                logger.warning(
+                                    "user_product.repeated.conflict on variation update for %s — "
+                                    "item-level photos applied, skipping variations",
+                                    target["item_id"],
+                                )
+                            else:
+                                raise
+                except MlApiError:
+                    raise  # re-raise ML errors to be caught by outer handler
                 except Exception as var_err:
                     # Item-level photos succeeded; log variation failure as warning
                     logger.warning(
