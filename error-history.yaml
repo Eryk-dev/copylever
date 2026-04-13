@@ -1606,6 +1606,37 @@ error_history:
       is inconsistent: sometimes it applies the change, sometimes it doesn't. The only
       reliable approach is to verify actual state after the error.
 
+  - id: ERR-064
+    date: "2026-04-13"
+    category: pictures
+    title: "Photos tab: item.pictures.invalid.missing_ids — variation picture_ids not in new pictures list"
+    symptom: |
+      PUT /items/MLB3396228941 to apply photos returned 400:
+      "item.pictures.invalid.missing_ids: There is a conflict matching item variation
+       pictures with item pictures list. Variations pictures [...14 old IDs...] are
+       not present in item pictures list."
+      Photo applier sent only {"pictures": [new_ids]} but the item's variations still
+      referenced old picture IDs, causing ML to reject the update.
+    root_cause: |
+      ML validates on every PUT that all variation picture_ids exist in the item-level
+      pictures list. When photo_applier sent only new pictures without updating
+      variations in the same request, ML saw the old variation picture_ids were missing
+      from the new pictures list and rejected the entire PUT.
+    ml_error_code: "item.pictures.invalid.missing_ids"
+    fix: |
+      1. Before the PUT, fetch the target item to get its current variations (Step 0).
+      2. Build an atomic payload with BOTH pictures AND variations (each variation gets
+         the new picture_ids) so ML validates the new consistent state.
+      3. If the atomic PUT still fails with missing_ids, fall back to pictures-only PUT
+         (lets ML keep existing variation pics) and sync variations in a separate step.
+    files:
+      - app/services/photo_applier.py
+    lesson: |
+      ML validates picture consistency across the entire item on any PUT — even if you
+      only intend to change pictures. When an item has variations with picture_ids, you
+      MUST include those variations in the same PUT with updated picture_ids, or ML
+      rejects with missing_ids. Always fetch item state before modifying pictures.
+
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.
 patterns:

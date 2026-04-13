@@ -204,7 +204,29 @@ async def apply_photos_to_targets(
                     # Fallback: use source URLs directly
                     ml_pictures = [{"source": url} for url in source_urls]
 
-                # Step 1: PUT item-level pictures with retry for transient errors.
+                # Step 0: Fetch target item to get its variations BEFORE
+                # updating pictures.  ML validates that all variation
+                # picture_ids exist in the item-level pictures list on
+                # every PUT — sending only pictures would fail with
+                # item.pictures.invalid.missing_ids when variations
+                # still reference the old IDs.
+                pre_item = await get_item(
+                    target["seller_slug"], target["item_id"], org_id=org_id or "",
+                )
+                pre_variations = pre_item.get("variations", [])
+
+                # Build atomic payload: pictures + variations together
+                # so ML validates the new consistent state.
+                new_pic_ids = [p.get("id") for p in ml_pictures if p.get("id")]
+                put_payload: dict[str, Any] = {"pictures": ml_pictures}
+                if pre_variations and new_pic_ids:
+                    put_payload["variations"] = [
+                        {"id": var["id"], "picture_ids": list(new_pic_ids)}
+                        for var in pre_variations
+                        if var.get("id")
+                    ]
+
+                # Step 1: PUT pictures (+ variations) with retry.
                 user_product_conflict = False
                 max_retries = 3
                 for attempt in range(1, max_retries + 1):
@@ -212,7 +234,7 @@ async def apply_photos_to_targets(
                         await update_item(
                             target["seller_slug"],
                             target["item_id"],
-                            {"pictures": ml_pictures},
+                            put_payload,
                             org_id=org_id or "",
                         )
                         break  # success
@@ -233,6 +255,21 @@ async def apply_photos_to_targets(
                             user_product_conflict = True
                             break  # exit retry loop, verify below
 
+                        # missing_ids on first attempt: retry without
+                        # variations (let ML keep existing variation pics)
+                        if (
+                            attempt == 1
+                            and ml_exc.status_code == 400
+                            and "variations" in put_payload
+                            and ("missing_ids" in detail_lower or "not present" in detail_lower)
+                        ):
+                            logger.warning(
+                                "missing_ids with variations on %s — retrying pictures-only",
+                                target["item_id"],
+                            )
+                            put_payload = {"pictures": ml_pictures}
+                            continue
+
                         is_transient = (
                             ml_exc.status_code >= 500
                             or ml_exc.status_code == 409
@@ -247,20 +284,18 @@ async def apply_photos_to_targets(
                             continue
                         raise  # non-transient or last attempt — propagate
 
-                # Step 2: Re-read the item to get the picture IDs that ML
-                # actually assigned and update variations.
+                # Step 2: Re-read to verify state and sync variations if needed.
                 try:
                     updated_item = await get_item(
                         target["seller_slug"], target["item_id"], org_id=org_id or "",
                     )
 
                     # If we got user_product.repeated.conflict, verify photos
-                    # were actually applied by comparing picture counts.
+                    # were actually applied by comparing picture IDs/counts.
                     if user_product_conflict:
                         sent_count = len(ml_pictures)
                         current_pics = updated_item.get("pictures", [])
                         current_count = len(current_pics)
-                        # Check if at least one of our uploaded IDs is now on the item
                         sent_ids = {p["id"] for p in ml_pictures if p.get("id")}
                         current_ids = {p.get("id") for p in current_pics if p.get("id")}
                         overlap = sent_ids & current_ids
@@ -289,13 +324,14 @@ async def apply_photos_to_targets(
                                 detail="user_product.repeated.conflict: fotos não foram aplicadas pelo ML",
                             )
 
+                    # Sync variation picture_ids if not already sent in the
+                    # atomic payload (e.g. pictures-only fallback succeeded).
                     target_variations = updated_item.get("variations", [])
                     actual_pic_ids = [
                         p["id"] for p in updated_item.get("pictures", [])
                         if p.get("id")
                     ]
-                    if target_variations and actual_pic_ids:
-                        # Step 3: PUT variation picture_ids using the real IDs.
+                    if target_variations and actual_pic_ids and "variations" not in put_payload:
                         try:
                             await update_item(
                                 target["seller_slug"],
@@ -308,8 +344,6 @@ async def apply_photos_to_targets(
                                 org_id=org_id or "",
                             )
                         except MlApiError as var_ml_err:
-                            # Variation update on User Products often fails —
-                            # item-level photos are the important part.
                             detail_lower = (var_ml_err.detail or "").lower()
                             if "user_product" in detail_lower and "repeated" in detail_lower:
                                 logger.warning(
