@@ -10,6 +10,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 ## [Unreleased]
 
 ### Fixed
+- Copia de anuncios com codigo universal duplicado: variante de erro `product_identifier.invalid_by_seller_category` nao era detectada pelo handler existente — adicionado como codigo alternativo ao lado de `invalid_product_identifier` para remover GTIN/EAN/UPC e retentar automaticamente (ERR-065)
 - Fotos em itens com variações: `item.pictures.invalid.missing_ids` ao aplicar fotos — agora o photo_applier busca as variações do item antes do PUT e envia pictures + variations juntos no mesmo request atomico (ERR-064)
 - Fotos de User Products (catalogo ML): `user_product.repeated.conflict` ainda ocorria mesmo com upload ao seller destino — agora o photo_applier verifica se as fotos foram realmente aplicadas relendo o item apos o erro 400, e trata variações que disparam o mesmo erro graciosamente (ERR-063)
 - Aba de Fotos: pagina em branco ao confirmar aplicacao de fotos — adicionado ErrorBoundary, removido polling duplicado que causava race condition, guarda contra double-click, e validacoes defensivas nas respostas da API

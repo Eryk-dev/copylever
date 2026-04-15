@@ -954,7 +954,13 @@ def _adjust_payload_for_ml_error(payload: dict, item: dict, exc: MlApiError) -> 
 
     # Handle invalid_product_identifier: strip all product identifier attrs
     # ML rejects universal codes (GTIN/EAN/UPC) already used in another category
-    if _has_error_code(exc, "item.attribute.invalid_product_identifier"):
+    # Two known ML error codes for the same issue:
+    #   - item.attribute.invalid_product_identifier (original)
+    #   - item.attribute.product_identifier.invalid_by_seller_category (variant)
+    if (
+        _has_error_code(exc, "item.attribute.invalid_product_identifier")
+        or _has_error_code(exc, "item.attribute.product_identifier.invalid_by_seller_category")
+    ):
         if isinstance(adjusted.get("attributes"), list):
             before = len(adjusted["attributes"])
             adjusted["attributes"] = [

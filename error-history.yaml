@@ -113,6 +113,13 @@ ml_error_codes:
       severity: blocking
       notes: ML enforces unique universal codes per category — copying between categories triggers this
 
+    item.attribute.product_identifier.invalid_by_seller_category:
+      message: "Enter a universal code that you have not used in another category listing"
+      cause: Same as invalid_product_identifier — GTIN/EAN/UPC already used in another category by this seller
+      fix_applied: Same as invalid_product_identifier — strip all product identifier attributes on retry
+      severity: blocking
+      notes: Variant error code for the same underlying restriction. ML returns this code instead of invalid_product_identifier in some cases (possibly language/region-dependent)
+
     item.attribute.missing_conditional_required:
       message: "The attribute [X] is conditionally required for category Y"
       cause: Conditional attribute exists in source data but may be hidden in variation attributes or stripped from payload
@@ -1636,6 +1643,37 @@ error_history:
       only intend to change pictures. When an item has variations with picture_ids, you
       MUST include those variations in the same PUT with updated picture_ids, or ML
       rejects with missing_ids. Always fetch item state before modifying pictures.
+
+  - id: ERR-065
+    date: "2026-04-15"
+    category: copy
+    title: "product_identifier.invalid_by_seller_category: variant error code for universal code conflict"
+    symptom: |
+      POST /items returned 400: validation_error; Validation error;
+      item.attribute.product_identifier.invalid_by_seller_category: Enter a
+      universal code that you have not used in another category listing.
+    root_cause: |
+      ML API returns a different error code for the same product identifier
+      conflict documented in ERR-061. The existing handler only checked for
+      "item.attribute.invalid_product_identifier" (exact match), so this
+      variant code "item.attribute.product_identifier.invalid_by_seller_category"
+      was not caught and the retry logic never stripped the conflicting attrs.
+    ml_error_code: "item.attribute.product_identifier.invalid_by_seller_category"
+    fix: |
+      Added the variant error code to the existing product identifier handler
+      in _adjust_payload_for_ml_error(). Now checks both:
+        - item.attribute.invalid_product_identifier (ERR-061)
+        - item.attribute.product_identifier.invalid_by_seller_category (ERR-065)
+      Same fix applies: strip all PRODUCT_IDENTIFIER_ATTRIBUTES from top-level
+      and variation attributes, then retry.
+    files:
+      - app/services/item_copier.py
+    lesson: |
+      ML uses multiple error codes for the same underlying issue. Product
+      identifier conflicts can come as "invalid_product_identifier" or
+      "product_identifier.invalid_by_seller_category" (possibly language or
+      region dependent). Always check for variant codes when an exact-match
+      handler misses an error that looks like a known pattern.
 
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.
