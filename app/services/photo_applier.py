@@ -213,6 +213,21 @@ async def apply_photos_to_targets(
                 pre_item = await get_item(
                     target["seller_slug"], target["item_id"], org_id=org_id or "",
                 )
+
+                # Guard: items under_review cannot have pictures modified
+                item_status = pre_item.get("status", "")
+                if item_status == "under_review":
+                    raise MlApiError(
+                        status_code=400,
+                        method="PUT",
+                        url=f"https://api.mercadolibre.com/items/{target['item_id']}",
+                        detail=(
+                            f"Item {target['item_id']} está em revisão (under_review) "
+                            f"pelo Mercado Livre — fotos não podem ser alteradas neste momento. "
+                            f"Aguarde a revisão finalizar e tente novamente."
+                        ),
+                    )
+
                 pre_variations = pre_item.get("variations", [])
 
                 # Build atomic payload: pictures + variations together
@@ -239,10 +254,30 @@ async def apply_photos_to_targets(
                         )
                         break  # success
                     except MlApiError as ml_exc:
+                        detail_lower = (ml_exc.detail or "").lower()
+
+                        # field_not_updatable: item is under_review or
+                        # otherwise locked — pictures can't be modified.
+                        # Non-retryable; surface a clear message.
+                        if (
+                            ml_exc.status_code == 400
+                            and "field_not_updatable" in detail_lower
+                            and "pictures" in detail_lower
+                        ):
+                            raise MlApiError(
+                                status_code=ml_exc.status_code,
+                                method=ml_exc.method,
+                                url=ml_exc.url,
+                                detail=(
+                                    f"Item {target['item_id']} não permite alteração de fotos "
+                                    f"neste momento (status provável: under_review). "
+                                    f"Aguarde a revisão do ML finalizar e tente novamente."
+                                ),
+                            ) from ml_exc
+
                         # user_product.repeated.conflict: ML returns 400 but
                         # may still apply the photo change on User Product
                         # (catalog) items. We verify by re-reading below.
-                        detail_lower = (ml_exc.detail or "").lower()
                         if (
                             ml_exc.status_code == 400
                             and "user_product" in detail_lower

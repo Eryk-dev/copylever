@@ -176,6 +176,15 @@ ml_error_codes:
         can shift catalog matching. ML sometimes applies the change despite the 400, sometimes
         does not. Always verify by re-reading the item after the error. (ERR-060, ERR-063)
 
+    field_not_updatable.pictures:
+      message: "field_not_updatable: pictures is not modifiable"
+      cause: Item is under_review — ML blocks picture updates on items being reviewed
+      fix_applied: |
+        1. photo_applier checks item status before PUT — skips with clear message if under_review
+        2. Retry loop catches field_not_updatable as non-retryable with user-facing message
+      severity: blocking
+      notes: under_review is temporary; user should retry after ML finishes review
+
     item.attribute.missing.seller.package.dimensions:
       message: "The attributes [seller_package_height, width, length, weight] are all required"
       cause: Item has no shipping dimensions — ML requires them for certain categories
@@ -1674,6 +1683,33 @@ error_history:
       "product_identifier.invalid_by_seller_category" (possibly language or
       region dependent). Always check for variant codes when an exact-match
       handler misses an error that looks like a known pattern.
+
+  - id: ERR-066
+    date: "2026-04-16"
+    category: photos
+    title: "field_not_updatable: pictures not modifiable on under_review items"
+    symptom: |
+      PUT /items/{id} returned 400: validation_error; Cannot update item {id}
+      [status:under_review, has_bids:false]; field_not_updatable: pictures is
+      not modifiable.
+    root_cause: |
+      When an ML item has status "under_review" (ML is reviewing the listing),
+      the API blocks modifications to the pictures field. The photo_applier
+      was not checking item status before attempting the PUT, so the raw ML
+      error was surfaced without explanation.
+    ml_error_code: "field_not_updatable"
+    fix: |
+      1. photo_applier now checks pre_item["status"] after fetching the target
+         item. If status == "under_review", raises MlApiError with a clear
+         Portuguese message explaining the item is under review.
+      2. Added field_not_updatable + pictures detection in the retry loop as
+         a safety net — non-retryable, surfaces clear message.
+    files:
+      - app/services/photo_applier.py
+    lesson: |
+      ML item status restricts which fields can be updated. Items under review
+      have limited mutability. Always check item status before attempting
+      field-specific updates, especially pictures which are commonly restricted.
 
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.
