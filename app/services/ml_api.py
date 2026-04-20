@@ -501,6 +501,24 @@ async def update_item(seller_slug: str, item_id: str, payload: dict, org_id: str
     return resp.json()
 
 
+async def update_user_product(
+    seller_slug: str, user_product_id: str, payload: dict, org_id: str = "",
+) -> dict:
+    """PUT /user-products/{user_product_id} — update catalog user product.
+
+    Use as a fallback when PUT /items/{id} fails with
+    user_product.repeated.conflict on catalog items: updating the user
+    product directly avoids the catalog-identity matching that rejects
+    picture changes at the item level.
+    """
+    token = await _get_token(seller_slug, org_id)
+    resp = await _ml_request(
+        "PUT", f"{ML_API}/user-products/{user_product_id}", token, json=payload,
+    )
+    _raise_for_status(resp, "Mercado Livre API")
+    return resp.json()
+
+
 async def upload_picture(seller_slug: str, file_bytes: bytes, filename: str, content_type: str, org_id: str = "") -> dict:
     """POST /pictures/items/upload — upload image to ML and get picture_id."""
     token = await _get_token(seller_slug, org_id)

@@ -1761,6 +1761,51 @@ error_history:
       remember service_name is required: a missing kwarg becomes a TypeError
       that masks the real failure message the user was supposed to see.
 
+  - id: ERR-068
+    date: "2026-04-20"
+    category: photos
+    title: "user_product.repeated.conflict persists on catalog items — fallback via /user-products endpoint"
+    symptom: |
+      PUT /items/MLB3671881621 to apply photos returned 400:
+      "user_product.repeated.conflict: fotos não foram aplicadas pelo ML"
+      (after ERR-063/ERR-067 verification confirmed photos weren't applied).
+      Happens on User Product (catalog) items where the photo change would
+      shift which catalog product the item matches — uploading photos to
+      the target seller first (ERR-060) was not enough; the conflict is at
+      the catalog-identity level, not at picture ownership.
+    root_cause: |
+      PUT /items/{id} validates the resulting listing against ML's catalog
+      index. When new pictures + existing family_name/attributes match a
+      different user_product than the one the item currently references,
+      ML rejects with user_product.repeated.conflict to prevent silent
+      catalog migration. There is no way to bypass this on the /items
+      endpoint itself.
+    ml_error_code: "item.user_product.repeated.conflict"
+    fix: |
+      1. Added update_user_product() helper in ml_api.py — PUT to
+         /user-products/{user_product_id} with 429 retry. This endpoint
+         updates the catalog entity directly instead of the listing.
+      2. In photo_applier.py, when user_product.repeated.conflict fires
+         on the item-level PUT, read pre_item["user_product_id"] and
+         retry via update_user_product({"pictures": [...]}). Updating
+         the catalog entity propagates photos to all items that
+         reference it and doesn't trigger the identity-match rejection.
+      3. If the user-products PUT also fails, fall through to the
+         existing verify-by-re-read path (ERR-063), so legitimate
+         failures still surface a clear message.
+    files:
+      - app/services/ml_api.py
+      - app/services/photo_applier.py
+    lesson: |
+      ML has two layers for catalog listings: the item (/items/{id}) and
+      the user product (/user-products/{id}). Some modifications are
+      rejected at the item layer because they would shift catalog
+      identity, but the same modification succeeds at the user-product
+      layer because you're updating the catalog entity itself. When a
+      PUT /items rejection mentions user_product + repeated, always try
+      the /user-products fallback before reporting failure — the change
+      propagates to every item referencing that user product.
+
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.
 patterns:

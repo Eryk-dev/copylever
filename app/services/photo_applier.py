@@ -18,7 +18,13 @@ import httpx
 
 from app.db.supabase import get_db
 from app.services.item_copier import _log_api_debug
-from app.services.ml_api import MlApiError, get_item, update_item, upload_picture
+from app.services.ml_api import (
+    MlApiError,
+    get_item,
+    update_item,
+    update_user_product,
+    upload_picture,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -277,14 +283,40 @@ async def apply_photos_to_targets(
                                 ),
                             ) from ml_exc
 
-                        # user_product.repeated.conflict: ML returns 400 but
-                        # may still apply the photo change on User Product
-                        # (catalog) items. We verify by re-reading below.
+                        # user_product.repeated.conflict: ML rejects the
+                        # item-level PUT because the photo change would
+                        # shift catalog-identity matching. Fallback to
+                        # PUT /user-products/{id} which updates the
+                        # catalog entity directly and bypasses this check.
                         if (
                             ml_exc.status_code == 400
                             and "user_product" in detail_lower
                             and "repeated" in detail_lower
                         ):
+                            up_id = pre_item.get("user_product_id")
+                            if up_id and new_pic_ids:
+                                logger.warning(
+                                    "user_product.repeated.conflict on %s — "
+                                    "trying PUT /user-products/%s fallback",
+                                    target["item_id"], up_id,
+                                )
+                                try:
+                                    await update_user_product(
+                                        target["seller_slug"],
+                                        up_id,
+                                        {"pictures": ml_pictures},
+                                        org_id=org_id or "",
+                                    )
+                                    logger.info(
+                                        "user-products PUT succeeded for %s",
+                                        target["item_id"],
+                                    )
+                                    break  # Step 2 will re-read and verify
+                                except MlApiError as up_exc:
+                                    logger.warning(
+                                        "user-products fallback failed for %s: %s",
+                                        target["item_id"], up_exc.detail,
+                                    )
                             logger.warning(
                                 "user_product.repeated.conflict on %s — will verify if photos were applied",
                                 target["item_id"],
