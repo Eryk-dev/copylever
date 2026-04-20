@@ -10,6 +10,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 ## [Unreleased]
 
 ### Fixed
+- Aplicacao de fotos nao atualizava as variacoes silenciosamente (ML retornava 200 OK mas ignorava as `variations[].picture_ids` na PUT atomica, especialmente em User Products): photo_applier agora sempre re-le o item apos o PUT, compara os `picture_ids` de cada variacao com as fotos atuais, e faz PUT separado de variacoes quando estao fora de sincronia. Se o ML continuar ignorando apos o retry, o erro e propagado para o usuario em vez de ser marcado como sucesso (ERR-067)
+- Corrigido TypeError latente em `photo_applier.py`: todas as chamadas `raise MlApiError(...)` estavam sem o argumento obrigatorio `service_name`, o que mascarava as mensagens de erro claras (ex: under_review, user_product.repeated.conflict) com um `TypeError: missing 1 required positional argument: 'service_name'` (ERR-067)
 - Aplicacao de fotos em itens sob revisao (under_review): ML retornava `field_not_updatable: pictures is not modifiable` sem explicacao — agora o photo_applier verifica o status do item antes do PUT e exibe mensagem clara pedindo para aguardar a revisao (ERR-066)
 - Copia de anuncios com codigo universal duplicado: variante de erro `product_identifier.invalid_by_seller_category` nao era detectada pelo handler existente — adicionado como codigo alternativo ao lado de `invalid_product_identifier` para remover GTIN/EAN/UPC e retentar automaticamente (ERR-065)
 - Fotos em itens com variações: `item.pictures.invalid.missing_ids` ao aplicar fotos — agora o photo_applier busca as variações do item antes do PUT e envia pictures + variations juntos no mesmo request atomico (ERR-064)

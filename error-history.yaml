@@ -1711,6 +1711,56 @@ error_history:
       have limited mutability. Always check item status before attempting
       field-specific updates, especially pictures which are commonly restricted.
 
+  - id: ERR-067
+    date: "2026-04-20"
+    category: photos
+    title: "Photo update silently skipped variation picture_ids (no error surfaced)"
+    symptom: |
+      User reports applying new photos to an ML listing: item-level pictures
+      change but variation thumbnails still show the old photos. No error is
+      logged; photo_logs marks the target as status=ok. Two separate issues
+      are in play:
+      (1) ML returns 200 OK on the atomic pictures+variations PUT but silently
+          ignores the variations change (common on User Products/catalog).
+      (2) Any MlApiError raised by photo_applier became a TypeError because
+          every `raise MlApiError(...)` call was missing the required
+          service_name positional argument — so the intended clear message
+          was replaced by Python's "missing argument" TypeError, which may
+          have short-circuited downstream validation paths.
+    root_cause: |
+      1. The verification logic after the atomic PUT only triggered a
+         follow-up variations PUT when "variations" was NOT in the original
+         payload (e.g. after the missing_ids fallback). When the atomic PUT
+         succeeded, we assumed variations were updated without re-checking.
+      2. Any variation update failure was caught and logged as a warning,
+         never surfaced to the user (results.append status=ok).
+      3. MlApiError.__init__ requires service_name, but five raise sites in
+         photo_applier.py omitted it — this was a latent bug that would
+         TypeError the moment the under_review/user_product paths fired.
+    ml_error_code: null  # behavioral bug, no specific ML code
+    fix: |
+      1. After every successful PUT, re-read the item and compare each
+         variation's picture_ids against the actual item-level pictures.
+         If any variation is out of sync, issue a separate variations-only
+         PUT with {id, picture_ids} for every variation.
+      2. Re-verify after that PUT: if ML still reports variation picture_ids
+         out of sync, raise MlApiError with a Portuguese message telling the
+         user ML is silently ignoring the variation update (User Product
+         catalog items) and to edit in the ML panel directly.
+      3. Propagate MlApiError from the variation PUT instead of swallowing
+         it — the outer handler already writes it to photo_logs.
+      4. Added service_name="Mercado Livre API" to every MlApiError raise in
+         photo_applier.py.
+    files:
+      - app/services/photo_applier.py
+    lesson: |
+      ML may return 200 OK on an atomic PUT and silently ignore part of the
+      payload (especially variation picture_ids on User Products). Never
+      trust a 200 for multi-field updates — always re-read and verify each
+      field landed. And when building MlApiError instances from scratch,
+      remember service_name is required: a missing kwarg becomes a TypeError
+      that masks the real failure message the user was supposed to see.
+
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.
 patterns:

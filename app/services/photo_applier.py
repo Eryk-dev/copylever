@@ -218,6 +218,7 @@ async def apply_photos_to_targets(
                 item_status = pre_item.get("status", "")
                 if item_status == "under_review":
                     raise MlApiError(
+                        service_name="Mercado Livre API",
                         status_code=400,
                         method="PUT",
                         url=f"https://api.mercadolibre.com/items/{target['item_id']}",
@@ -265,6 +266,7 @@ async def apply_photos_to_targets(
                             and "pictures" in detail_lower
                         ):
                             raise MlApiError(
+                                service_name="Mercado Livre API",
                                 status_code=ml_exc.status_code,
                                 method=ml_exc.method,
                                 url=ml_exc.url,
@@ -320,53 +322,62 @@ async def apply_photos_to_targets(
                         raise  # non-transient or last attempt — propagate
 
                 # Step 2: Re-read to verify state and sync variations if needed.
-                try:
-                    updated_item = await get_item(
-                        target["seller_slug"], target["item_id"], org_id=org_id or "",
+                updated_item = await get_item(
+                    target["seller_slug"], target["item_id"], org_id=org_id or "",
+                )
+
+                # If we got user_product.repeated.conflict, verify photos
+                # were actually applied by comparing picture IDs/counts.
+                if user_product_conflict:
+                    sent_count = len(ml_pictures)
+                    current_pics = updated_item.get("pictures", [])
+                    current_count = len(current_pics)
+                    sent_ids = {p["id"] for p in ml_pictures if p.get("id")}
+                    current_ids = {p.get("id") for p in current_pics if p.get("id")}
+                    overlap = sent_ids & current_ids
+                    if overlap:
+                        logger.info(
+                            "user_product.repeated.conflict on %s but photos WERE applied "
+                            "(%d/%d IDs match) — treating as success",
+                            target["item_id"], len(overlap), sent_count,
+                        )
+                    elif current_count == sent_count:
+                        logger.info(
+                            "user_product.repeated.conflict on %s — photo count matches "
+                            "(%d sent, %d current) — treating as success",
+                            target["item_id"], sent_count, current_count,
+                        )
+                    else:
+                        logger.warning(
+                            "user_product.repeated.conflict on %s — photos NOT applied "
+                            "(%d sent, %d current, 0 ID overlap) — reporting error",
+                            target["item_id"], sent_count, current_count,
+                        )
+                        raise MlApiError(
+                            service_name="Mercado Livre API",
+                            status_code=400,
+                            method="PUT",
+                            url=f"https://api.mercadolibre.com/items/{target['item_id']}",
+                            detail="user_product.repeated.conflict: fotos não foram aplicadas pelo ML",
+                        )
+
+                # Verify variation picture_ids match the item's current
+                # pictures. ML may silently ignore variation updates in the
+                # atomic PUT (especially on User Products), so we always
+                # check and force a separate variations PUT if out of sync.
+                target_variations = updated_item.get("variations", []) or []
+                actual_pic_ids = [
+                    p["id"] for p in updated_item.get("pictures", [])
+                    if p.get("id")
+                ]
+                if target_variations and actual_pic_ids:
+                    actual_set = set(actual_pic_ids)
+                    out_of_sync = any(
+                        set(var.get("picture_ids") or []) != actual_set
+                        for var in target_variations
+                        if var.get("id")
                     )
-
-                    # If we got user_product.repeated.conflict, verify photos
-                    # were actually applied by comparing picture IDs/counts.
-                    if user_product_conflict:
-                        sent_count = len(ml_pictures)
-                        current_pics = updated_item.get("pictures", [])
-                        current_count = len(current_pics)
-                        sent_ids = {p["id"] for p in ml_pictures if p.get("id")}
-                        current_ids = {p.get("id") for p in current_pics if p.get("id")}
-                        overlap = sent_ids & current_ids
-                        if overlap:
-                            logger.info(
-                                "user_product.repeated.conflict on %s but photos WERE applied "
-                                "(%d/%d IDs match) — treating as success",
-                                target["item_id"], len(overlap), sent_count,
-                            )
-                        elif current_count == sent_count:
-                            logger.info(
-                                "user_product.repeated.conflict on %s — photo count matches "
-                                "(%d sent, %d current) — treating as success",
-                                target["item_id"], sent_count, current_count,
-                            )
-                        else:
-                            logger.warning(
-                                "user_product.repeated.conflict on %s — photos NOT applied "
-                                "(%d sent, %d current, 0 ID overlap) — reporting error",
-                                target["item_id"], sent_count, current_count,
-                            )
-                            raise MlApiError(
-                                status_code=400,
-                                method="PUT",
-                                url=f"https://api.mercadolibre.com/items/{target['item_id']}",
-                                detail="user_product.repeated.conflict: fotos não foram aplicadas pelo ML",
-                            )
-
-                    # Sync variation picture_ids if not already sent in the
-                    # atomic payload (e.g. pictures-only fallback succeeded).
-                    target_variations = updated_item.get("variations", [])
-                    actual_pic_ids = [
-                        p["id"] for p in updated_item.get("pictures", [])
-                        if p.get("id")
-                    ]
-                    if target_variations and actual_pic_ids and "variations" not in put_payload:
+                    if out_of_sync:
                         try:
                             await update_item(
                                 target["seller_slug"],
@@ -379,23 +390,42 @@ async def apply_photos_to_targets(
                                 org_id=org_id or "",
                             )
                         except MlApiError as var_ml_err:
-                            detail_lower = (var_ml_err.detail or "").lower()
-                            if "user_product" in detail_lower and "repeated" in detail_lower:
-                                logger.warning(
-                                    "user_product.repeated.conflict on variation update for %s — "
-                                    "item-level photos applied, skipping variations",
-                                    target["item_id"],
-                                )
-                            else:
-                                raise
-                except MlApiError:
-                    raise  # re-raise ML errors to be caught by outer handler
-                except Exception as var_err:
-                    # Item-level photos succeeded; log variation failure as warning
-                    logger.warning(
-                        "Photos applied to %s but variation update failed: %s",
-                        target["item_id"], var_err,
-                    )
+                            raise MlApiError(
+                                service_name="Mercado Livre API",
+                                status_code=var_ml_err.status_code,
+                                method=var_ml_err.method,
+                                url=var_ml_err.url,
+                                detail=(
+                                    f"Fotos do item {target['item_id']} foram aplicadas, "
+                                    f"mas ML rejeitou a atualização das variações: "
+                                    f"{var_ml_err.detail}"
+                                ),
+                                payload=var_ml_err.payload,
+                            ) from var_ml_err
+
+                        # Re-verify: ML returned 200 but may still have
+                        # ignored the variation picture_ids silently.
+                        reverify = await get_item(
+                            target["seller_slug"], target["item_id"], org_id=org_id or "",
+                        )
+                        still_out_of_sync = [
+                            var.get("id") for var in reverify.get("variations", []) or []
+                            if var.get("id") and set(var.get("picture_ids") or []) != actual_set
+                        ]
+                        if still_out_of_sync:
+                            raise MlApiError(
+                                service_name="Mercado Livre API",
+                                status_code=400,
+                                method="PUT",
+                                url=f"https://api.mercadolibre.com/items/{target['item_id']}",
+                                detail=(
+                                    f"Fotos do item foram aplicadas mas ML não atualizou "
+                                    f"as fotos das variações ({len(still_out_of_sync)} "
+                                    f"variação(ões) fora de sincronia). Isso pode ocorrer "
+                                    f"em itens de catálogo (User Products). Edite as fotos "
+                                    f"diretamente no painel do ML."
+                                ),
+                            )
                 results.append({
                     "seller_slug": target["seller_slug"],
                     "item_id": target["item_id"],
