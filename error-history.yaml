@@ -167,9 +167,11 @@ ml_error_codes:
       message: "Repeated user-product. Conflict id: MLBUXXXXXXXXX; User product was duplicated"
       cause: Changing item pictures (or other identity fields) on a User Product would create a duplicate in ML's catalog
       fix_applied: |
-        Photo applier catches this 400 error, re-reads the item to verify if ML actually
-        applied the photos (checks picture ID overlap and count), and treats as success only
-        if verified. Variation updates that trigger the same error are skipped gracefully.
+        Photo applier catches this 400 error and retries via PUT /user-products/{id}
+        (ERR-068) which updates the catalog entity directly. On success waits for ML's
+        async replication with up to 4 re-reads (2s/4s/6s backoff) before declaring
+        failure (ERR-069). On fallback failure, the real /user-products error detail
+        is surfaced to the operator and logged to api_debug_logs.
       severity: conditionally non-blocking (verify before assuming success)
       notes: |
         User Products are matched by family_name + attributes + thumbnail. Changing photos
@@ -1805,6 +1807,102 @@ error_history:
       PUT /items rejection mentions user_product + repeated, always try
       the /user-products fallback before reporting failure — the change
       propagates to every item referencing that user product.
+
+  - id: ERR-069
+    date: "2026-04-23"
+    category: photos
+    title: "Photos tab: user_product.repeated.conflict still reported as failure after /user-products fallback was added"
+    symptom: |
+      Batch photo apply on 43 targets: 7 reported "Mercado Livre API 400
+      PUT https://api.mercadolibre.com/items/MLB4138953803:
+      user_product.repeated.conflict: fotos não foram aplicadas pelo ML"
+      (and similar for MLB6658171414, MLB6658171450, MLB5525074512,
+      MLB5525087620, MLB6658184462, MLB6658184464). api_debug_logs only
+      contained the synthetic item-level wrapper error with response_body
+      NULL — no trace of the /user-products fallback outcome.
+    root_cause: |
+      After ERR-068 added the /user-products fallback, the photo_applier
+      handled its result poorly:
+      1. The /user-products error was swallowed with a warning-only
+         logger.warning() — _log_api_debug was never called, so there
+         was no way to diagnose WHY the fallback failed (or if it even
+         ran).
+      2. When the fallback succeeded (200 OK), ML replicates the photo
+         change to the item asynchronously. The existing verify step
+         read the item immediately after the 200 and, finding the OLD
+         picture IDs still in place, declared the operation a failure.
+         There was no delay/retry for replication.
+      3. When the item had no user_product_id, the fallback was silently
+         skipped with no log entry — the operator had no hint that the
+         retry never ran.
+      4. The final error message ("fotos não foram aplicadas pelo ML")
+         did not tell the user which path actually failed.
+    ml_error_code: "item.user_product.repeated.conflict"
+    fix: |
+      1. In photo_applier.py, every branch of the /user-products fallback
+         now writes to api_debug_logs via _log_api_debug:
+         - success: action=apply_photos_user_products_fallback, status=200, request_payload captured
+         - failure: same action with the real ML status_code + response_body
+         - skipped (no user_product_id): action=apply_photos_user_products_fallback_skipped
+      2. When the fallback PUT returns 200, the verify step now loops
+         up to 4 times with 2s/4s/6s backoff, re-reading the item each
+         time and breaking as soon as the uploaded picture IDs appear.
+         This absorbs ML's async replication delay.
+      3. Carried the /user-products error detail into the final
+         MlApiError so the user-facing message now includes either
+         "(fallback /user-products falhou: <ML detail>)" or
+         "(fallback /user-products retornou 200 mas ML não replicou as
+         fotos no item após ~12s)".
+      4. Sent `pictures` as [{"id": pid}] on /user-products — ML's
+         /user-products endpoint does not accept the "source" URL form.
+    files:
+      - app/services/photo_applier.py
+    lesson: |
+      Fallback paths must be observable — never let an except branch
+      swallow the real API error with a warning-only log. Always write
+      the raw method/url/status/response_body to api_debug_logs so
+      future debugging has the full exchange. Also, for ML endpoints
+      whose effect replicates across the catalog (/user-products
+      propagating to /items), treat the 200 OK as a promise, not a
+      confirmation — re-read with delay before declaring success or
+      failure. "Photos not applied yet" and "photos will never be
+      applied" look identical in the first second after the PUT.
+
+  - id: ERR-070
+    date: "2026-04-23"
+    category: photos
+    title: "Photos tab: under_review pre-flight block prevented the very edit that fixes the takedown"
+    symptom: |
+      PUT /items/MLB5397762046 failed with:
+      "Item MLB5397762046 está em revisão (under_review) pelo Mercado Livre —
+       fotos não podem ser alteradas neste momento. Aguarde a revisão finalizar
+       e tente novamente."
+      User reported that items usually enter under_review precisely because
+      their photos are flagged — the photo edit IS the remedy, so hard-blocking
+      it leaves the seller unable to fix the listing.
+    root_cause: |
+      photo_applier had a pre-flight guard that raised a synthetic 400 error
+      whenever pre_item["status"] == "under_review", without ever sending the
+      PUT. Additionally, the post-PUT handler for field_not_updatable: pictures
+      raised on the very first occurrence — there was no retry, so transient
+      ML state mid-review aborted the operation.
+    ml_error_code: "field_not_updatable"
+    fix: |
+      1. Removed the pre-flight under_review hard-block — now only logs
+         an info message and proceeds with the PUT.
+      2. Made field_not_updatable: pictures retryable: the applier tries
+         at least 2 attempts (configurable via field_not_updatable_max)
+         with a 4s/8s backoff between them before surfacing the friendly
+         "aguarde a revisão" message. Bumped max_retries from 3 to 4 so
+         these retries don't starve other retry paths.
+    files:
+      - app/services/photo_applier.py
+    lesson: |
+      Pre-flight guards based on ML status fields are brittle — the same
+      status can mean "don't touch" or "fix it now" depending on why the
+      listing entered that state. Prefer letting ML reject the write with
+      its own rules, and retry transient rejections with backoff. A status
+      flag is a hint, not a contract.
 
 # ── Patterns & Rules ───────────────────────────────────────────────────────
 # High-level lessons extracted from the error history above.

@@ -220,19 +220,15 @@ async def apply_photos_to_targets(
                     target["seller_slug"], target["item_id"], org_id=org_id or "",
                 )
 
-                # Guard: items under_review cannot have pictures modified
+                # Items under_review often arise from listings flagged
+                # precisely because their photos need fixing — the edit is
+                # the remedy. Do NOT hard-block here; let ML decide and
+                # retry the PUT on field_not_updatable below.
                 item_status = pre_item.get("status", "")
                 if item_status == "under_review":
-                    raise MlApiError(
-                        service_name="Mercado Livre API",
-                        status_code=400,
-                        method="PUT",
-                        url=f"https://api.mercadolibre.com/items/{target['item_id']}",
-                        detail=(
-                            f"Item {target['item_id']} está em revisão (under_review) "
-                            f"pelo Mercado Livre — fotos não podem ser alteradas neste momento. "
-                            f"Aguarde a revisão finalizar e tente novamente."
-                        ),
+                    logger.info(
+                        "Item %s is under_review — will attempt PUT anyway (photo edit may be the remedy)",
+                        target["item_id"],
                     )
 
                 pre_variations = pre_item.get("variations", [])
@@ -250,7 +246,11 @@ async def apply_photos_to_targets(
 
                 # Step 1: PUT pictures (+ variations) with retry.
                 user_product_conflict = False
-                max_retries = 3
+                up_fallback_succeeded = False
+                up_fallback_error: str | None = None
+                field_not_updatable_attempts = 0
+                field_not_updatable_max = 2  # pelo menos 2 tentativas
+                max_retries = 4
                 for attempt in range(1, max_retries + 1):
                     try:
                         await update_item(
@@ -264,13 +264,28 @@ async def apply_photos_to_targets(
                         detail_lower = (ml_exc.detail or "").lower()
 
                         # field_not_updatable: item is under_review or
-                        # otherwise locked — pictures can't be modified.
-                        # Non-retryable; surface a clear message.
+                        # otherwise locked. Retry at least twice with a
+                        # backoff — the edit itself is often the remedy
+                        # for a takedown flag, so ML may accept on retry
+                        # once internal state settles.
                         if (
                             ml_exc.status_code == 400
                             and "field_not_updatable" in detail_lower
                             and "pictures" in detail_lower
                         ):
+                            field_not_updatable_attempts += 1
+                            if field_not_updatable_attempts < field_not_updatable_max:
+                                wait = 4 * field_not_updatable_attempts  # 4s, 8s
+                                logger.warning(
+                                    "field_not_updatable pictures on %s "
+                                    "(attempt %d/%d), retrying in %ds",
+                                    target["item_id"],
+                                    field_not_updatable_attempts,
+                                    field_not_updatable_max,
+                                    wait,
+                                )
+                                await asyncio.sleep(wait)
+                                continue
                             raise MlApiError(
                                 service_name="Mercado Livre API",
                                 status_code=ml_exc.status_code,
@@ -278,7 +293,8 @@ async def apply_photos_to_targets(
                                 url=ml_exc.url,
                                 detail=(
                                     f"Item {target['item_id']} não permite alteração de fotos "
-                                    f"neste momento (status provável: under_review). "
+                                    f"neste momento após {field_not_updatable_max} tentativas "
+                                    f"(status provável: under_review). "
                                     f"Aguarde a revisão do ML finalizar e tente novamente."
                                 ),
                             ) from ml_exc
@@ -294,6 +310,7 @@ async def apply_photos_to_targets(
                             and "repeated" in detail_lower
                         ):
                             up_id = pre_item.get("user_product_id")
+                            up_payload = {"pictures": [{"id": pid} for pid in new_pic_ids]}
                             if up_id and new_pic_ids:
                                 logger.warning(
                                     "user_product.repeated.conflict on %s — "
@@ -304,19 +321,74 @@ async def apply_photos_to_targets(
                                     await update_user_product(
                                         target["seller_slug"],
                                         up_id,
-                                        {"pictures": ml_pictures},
+                                        up_payload,
                                         org_id=org_id or "",
                                     )
+                                    up_fallback_succeeded = True
                                     logger.info(
-                                        "user-products PUT succeeded for %s",
+                                        "user-products PUT succeeded for %s (waiting for async replication)",
                                         target["item_id"],
                                     )
-                                    break  # Step 2 will re-read and verify
+                                    _log_api_debug(
+                                        action="apply_photos_user_products_fallback",
+                                        source_seller=None,
+                                        dest_seller=target["seller_slug"],
+                                        source_item_id=source_item_id,
+                                        dest_item_id=target["item_id"],
+                                        user_id=user_id,
+                                        copy_log_id=log_id,
+                                        api_method="PUT",
+                                        api_url=f"https://api.mercadolibre.com/user-products/{up_id}",
+                                        request_payload=up_payload,
+                                        response_status=200,
+                                        error_message=None,
+                                        resolved=True,
+                                        org_id=org_id,
+                                    )
                                 except MlApiError as up_exc:
+                                    up_fallback_error = up_exc.detail
                                     logger.warning(
                                         "user-products fallback failed for %s: %s",
                                         target["item_id"], up_exc.detail,
                                     )
+                                    _log_api_debug(
+                                        action="apply_photos_user_products_fallback",
+                                        source_seller=None,
+                                        dest_seller=target["seller_slug"],
+                                        source_item_id=source_item_id,
+                                        dest_item_id=target["item_id"],
+                                        user_id=user_id,
+                                        copy_log_id=log_id,
+                                        api_method=up_exc.method,
+                                        api_url=up_exc.url,
+                                        request_payload=up_payload,
+                                        response_status=up_exc.status_code,
+                                        response_body=up_exc.payload if isinstance(up_exc.payload, dict) else None,
+                                        error_message=str(up_exc),
+                                        org_id=org_id,
+                                    )
+                            else:
+                                # No user_product_id — fallback is not
+                                # possible. Record why so we can diagnose.
+                                up_fallback_error = (
+                                    "no user_product_id on item — /user-products fallback skipped"
+                                )
+                                logger.warning(
+                                    "user_product.repeated.conflict on %s but no user_product_id — "
+                                    "cannot try /user-products fallback",
+                                    target["item_id"],
+                                )
+                                _log_api_debug(
+                                    action="apply_photos_user_products_fallback_skipped",
+                                    source_seller=None,
+                                    dest_seller=target["seller_slug"],
+                                    source_item_id=source_item_id,
+                                    dest_item_id=target["item_id"],
+                                    user_id=user_id,
+                                    copy_log_id=log_id,
+                                    error_message=up_fallback_error,
+                                    org_id=org_id,
+                                )
                             logger.warning(
                                 "user_product.repeated.conflict on %s — will verify if photos were applied",
                                 target["item_id"],
@@ -354,44 +426,71 @@ async def apply_photos_to_targets(
                         raise  # non-transient or last attempt — propagate
 
                 # Step 2: Re-read to verify state and sync variations if needed.
-                updated_item = await get_item(
-                    target["seller_slug"], target["item_id"], org_id=org_id or "",
-                )
-
-                # If we got user_product.repeated.conflict, verify photos
-                # were actually applied by comparing picture IDs/counts.
+                # After a successful /user-products fallback the change
+                # replicates asynchronously (often a few seconds), so we
+                # poll up to 3 times with backoff before declaring failure.
+                updated_item: dict[str, Any] = {}
                 if user_product_conflict:
-                    sent_count = len(ml_pictures)
-                    current_pics = updated_item.get("pictures", [])
-                    current_count = len(current_pics)
                     sent_ids = {p["id"] for p in ml_pictures if p.get("id")}
-                    current_ids = {p.get("id") for p in current_pics if p.get("id")}
-                    overlap = sent_ids & current_ids
-                    if overlap:
-                        logger.info(
-                            "user_product.repeated.conflict on %s but photos WERE applied "
-                            "(%d/%d IDs match) — treating as success",
-                            target["item_id"], len(overlap), sent_count,
+                    verify_attempts = 4 if up_fallback_succeeded else 1
+                    photos_applied = False
+                    for verify_i in range(verify_attempts):
+                        if verify_i > 0:
+                            await asyncio.sleep(2 + verify_i * 2)  # 2s, 4s, 6s
+                        updated_item = await get_item(
+                            target["seller_slug"], target["item_id"], org_id=org_id or "",
                         )
-                    elif current_count == sent_count:
-                        logger.info(
-                            "user_product.repeated.conflict on %s — photo count matches "
-                            "(%d sent, %d current) — treating as success",
-                            target["item_id"], sent_count, current_count,
+                        current_pics = updated_item.get("pictures", [])
+                        current_ids = {p.get("id") for p in current_pics if p.get("id")}
+                        if sent_ids & current_ids:
+                            logger.info(
+                                "user_product.repeated.conflict on %s but photos WERE applied "
+                                "(%d/%d IDs match on verify attempt %d) — treating as success",
+                                target["item_id"], len(sent_ids & current_ids),
+                                len(ml_pictures), verify_i + 1,
+                            )
+                            photos_applied = True
+                            break
+                        if not up_fallback_succeeded and len(current_pics) == len(ml_pictures):
+                            # /items PUT was rejected and no fallback ran,
+                            # but picture count matches — legacy heuristic.
+                            logger.info(
+                                "user_product.repeated.conflict on %s — photo count matches "
+                                "(%d) — treating as success",
+                                target["item_id"], len(ml_pictures),
+                            )
+                            photos_applied = True
+                            break
+                    if not photos_applied:
+                        reason_suffix = (
+                            f" (fallback /user-products falhou: {up_fallback_error})"
+                            if up_fallback_error
+                            else (
+                                " (fallback /user-products retornou 200 mas ML "
+                                "não replicou as fotos no item após ~12s — "
+                                "pode propagar em alguns minutos)"
+                                if up_fallback_succeeded
+                                else ""
+                            )
                         )
-                    else:
                         logger.warning(
-                            "user_product.repeated.conflict on %s — photos NOT applied "
-                            "(%d sent, %d current, 0 ID overlap) — reporting error",
-                            target["item_id"], sent_count, current_count,
+                            "user_product.repeated.conflict on %s — photos NOT applied%s",
+                            target["item_id"], reason_suffix,
                         )
                         raise MlApiError(
                             service_name="Mercado Livre API",
                             status_code=400,
                             method="PUT",
                             url=f"https://api.mercadolibre.com/items/{target['item_id']}",
-                            detail="user_product.repeated.conflict: fotos não foram aplicadas pelo ML",
+                            detail=(
+                                "user_product.repeated.conflict: fotos não foram aplicadas "
+                                "pelo ML" + reason_suffix
+                            ),
                         )
+                else:
+                    updated_item = await get_item(
+                        target["seller_slug"], target["item_id"], org_id=org_id or "",
+                    )
 
                 # Verify variation picture_ids match the item's current
                 # pictures. ML may silently ignore variation updates in the
