@@ -35,19 +35,23 @@ function parseTargets(input: string): { skus: string[]; mlbs: string[] } {
     .filter(Boolean);
   const skus: string[] = [];
   const mlbs: string[] = [];
+  const skuSeen = new Set<string>();
+  const mlbSeen = new Set<string>();
   for (const token of tokens) {
     const withPrefix = token.match(/^MLB[-]?(\d+)$/i);
     if (withPrefix) {
-      mlbs.push(`MLB${withPrefix[1]}`);
+      const normalized = `MLB${withPrefix[1]}`;
+      if (!mlbSeen.has(normalized)) { mlbSeen.add(normalized); mlbs.push(normalized); }
       continue;
     }
     // Auto-detect MLBs: a bare 10-digit numeric token is treated as MLB.
     // Anything shorter or longer falls back to SKU.
     if (/^\d{10}$/.test(token)) {
-      mlbs.push(`MLB${token}`);
+      const normalized = `MLB${token}`;
+      if (!mlbSeen.has(normalized)) { mlbSeen.add(normalized); mlbs.push(normalized); }
       continue;
     }
-    skus.push(token);
+    if (!skuSeen.has(token)) { skuSeen.add(token); skus.push(token); }
   }
   return { skus, mlbs };
 }
