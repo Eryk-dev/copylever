@@ -83,6 +83,9 @@ export default function CompatPage({ sellers, headers }: Props) {
 
   const [copiedSku, setCopiedSku] = useState<string | null>(null);
 
+  const sourceInputRef = useRef(sourceInput);
+  useEffect(() => { sourceInputRef.current = sourceInput; }, [sourceInput]);
+
   const COMPAT_PAGE_SIZE = 50;
 
   const sellerName = useCallback((slug: string) => {
@@ -213,13 +216,28 @@ export default function CompatPage({ sellers, headers }: Props) {
         setPreviewError(err.detail);
         return;
       }
-      setPreview(await res.json());
+      const data: CompatPreview = await res.json();
+
+      // Auto-eliminate: if the item has no active compatibilities,
+      // clear the source input (as long as the user hasn't already
+      // typed a new value in the meantime) and toast the reason.
+      if (!data.has_compatibilities) {
+        if (sourceInputRef.current.trim() === raw.trim()) {
+          setSourceInput('');
+          setPreview(null);
+          setPreviewError('');
+        }
+        toast(`${data.id} nao possui compatibilidades ativas.`, 'error');
+        return;
+      }
+
+      setPreview(data);
     } catch (e) {
       setPreviewError(String(e));
     } finally {
       setPreviewLoading(false);
     }
-  }, [headers]);
+  }, [headers, toast]);
 
   const { skus: parsedSkus, mlbs: parsedMlbs } = parseTargets(skuInput);
   const parsedTotalCount = parsedSkus.length + parsedMlbs.length;

@@ -32,6 +32,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Compatibilidade: tokens numericos com exatamente 10 digitos sao tratados automaticamente como MLB (o prefixo `MLB` e prefixado); qualquer tamanho diferente continua sendo tratado como SKU.
 - Compatibilidade: SKUs e MLBs duplicados no campo de destino sao eliminados automaticamente antes da busca (preserva a ordem da primeira ocorrencia).
 - Compatibilidade: erros passam a ser totalmente visiveis ao usuario. Linhas do historico sao expansiveis com detalhes por destino (item_id, seller e mensagem de erro do ML); falhas ao carregar o historico exibem banner inline com botao "Tentar novamente"; falhas ao paginar o historico exibem toast. Erros de preview, busca e envio ja eram exibidos e seguem iguais.
+- Compatibilidade: MLB de origem sem compatibilidades ativas e eliminado automaticamente do campo apos o preview. O usuario recebe um toast com o motivo ("MLBxxxx nao possui compatibilidades ativas.") e o campo fica pronto para o proximo MLB. Protegido contra race condition: so limpa se o usuario ainda nao digitou outra coisa.
 - Formulario de correcao de titulo: quando a categoria ML limita o numero de caracteres do titulo, o usuario agora pode editar o titulo manualmente antes de reenviar a copia (ERR-054)
 - Contador de caracteres no campo de titulo com limite visual e `maxLength` no input
 - Correcoes de titulo agora sao individuais por MLB (nao agrupam por SKU) — cada anuncio precisa de um titulo proprio
