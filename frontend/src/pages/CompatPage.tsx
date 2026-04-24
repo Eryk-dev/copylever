@@ -36,9 +36,18 @@ function parseTargets(input: string): { skus: string[]; mlbs: string[] } {
   const skus: string[] = [];
   const mlbs: string[] = [];
   for (const token of tokens) {
-    const m = token.match(/^MLB[-]?(\d+)$/i);
-    if (m) mlbs.push(`MLB${m[1]}`);
-    else skus.push(token);
+    const withPrefix = token.match(/^MLB[-]?(\d+)$/i);
+    if (withPrefix) {
+      mlbs.push(`MLB${withPrefix[1]}`);
+      continue;
+    }
+    // Auto-detect MLBs: a bare 10-digit numeric token is treated as MLB.
+    // Anything shorter or longer falls back to SKU.
+    if (/^\d{10}$/.test(token)) {
+      mlbs.push(`MLB${token}`);
+      continue;
+    }
+    skus.push(token);
   }
   return { skus, mlbs };
 }
@@ -435,7 +444,7 @@ export default function CompatPage({ sellers, headers }: Props) {
           </label>
           <textarea
             className="input-base"
-            placeholder="SKUs ou MLBs separados por vírgula, espaço ou quebra de linha (ex.: ABC-123, MLB1234567890)"
+            placeholder="SKUs ou MLBs separados por vírgula, espaço ou quebra de linha (ex.: ABC-123, 1234567890, MLB1234567890)"
             value={skuInput}
             onChange={e => setSkuInput(e.target.value)}
             rows={3}
