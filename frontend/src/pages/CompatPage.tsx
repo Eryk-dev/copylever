@@ -28,11 +28,19 @@ function parseItemId(input: string): string {
   return trimmed;
 }
 
-function parseSkus(input: string): string[] {
-  return input
+function parseTargets(input: string): { skus: string[]; mlbs: string[] } {
+  const tokens = input
     .split(/[,\s\n]+/)
     .map(s => s.trim())
     .filter(Boolean);
+  const skus: string[] = [];
+  const mlbs: string[] = [];
+  for (const token of tokens) {
+    const m = token.match(/^MLB[-]?(\d+)$/i);
+    if (m) mlbs.push(`MLB${m[1]}`);
+    else skus.push(token);
+  }
+  return { skus, mlbs };
 }
 
 export default function CompatPage({ sellers, headers }: Props) {
@@ -45,6 +53,7 @@ export default function CompatPage({ sellers, headers }: Props) {
   const [skuInput, setSkuInput] = useState('');
   const [searchResults, setSearchResults] = useState<CompatSearchResult[]>([]);
   const [searchedSkus, setSearchedSkus] = useState<string[]>([]);
+  const [searchedMlbs, setSearchedMlbs] = useState<string[]>([]);
   const [searching, setSearching] = useState(false);
 
   const [copyResult, setCopyResult] = useState<CompatCopyResult | null>(null);
@@ -184,28 +193,57 @@ export default function CompatPage({ sellers, headers }: Props) {
     }
   }, [headers]);
 
-  const parsedSkuCount = parseSkus(skuInput).length;
+  const { skus: parsedSkus, mlbs: parsedMlbs } = parseTargets(skuInput);
+  const parsedTotalCount = parsedSkus.length + parsedMlbs.length;
 
   const handleSearch = useCallback(async () => {
-    const skus = parseSkus(skuInput);
-    if (!skus.length) return;
+    const { skus, mlbs } = parseTargets(skuInput);
+    if (!skus.length && !mlbs.length) return;
     setSearching(true);
     setSearchResults([]);
     setSearchedSkus(skus);
+    setSearchedMlbs(mlbs);
     setCopyResult(null);
     setCopyError('');
     try {
-      const res = await fetch(`${API_BASE}/api/compat/search-sku`, {
-        method: 'POST',
-        headers: headers(),
-        body: JSON.stringify({ skus }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: 'Erro na busca' }));
-        setCopyError(err.detail);
-        return;
+      const requests: Promise<Response | null>[] = [
+        skus.length
+          ? fetch(`${API_BASE}/api/compat/search-sku`, {
+              method: 'POST',
+              headers: headers(),
+              body: JSON.stringify({ skus }),
+            })
+          : Promise.resolve(null),
+        mlbs.length
+          ? fetch(`${API_BASE}/api/compat/resolve-mlbs`, {
+              method: 'POST',
+              headers: headers(),
+              body: JSON.stringify({ item_ids: mlbs }),
+            })
+          : Promise.resolve(null),
+      ];
+      const [skuRes, mlbRes] = await Promise.all(requests);
+
+      const merged: CompatSearchResult[] = [];
+      if (skuRes) {
+        if (!skuRes.ok) {
+          const err = await skuRes.json().catch(() => ({ detail: 'Erro na busca por SKU' }));
+          setCopyError(err.detail);
+          return;
+        }
+        const data: CompatSearchResult[] = await skuRes.json();
+        merged.push(...data.map(r => ({ ...r, matched_by: r.matched_by ?? 'sku' as const })));
       }
-      setSearchResults(await res.json());
+      if (mlbRes) {
+        if (!mlbRes.ok) {
+          const err = await mlbRes.json().catch(() => ({ detail: 'Erro na busca por MLB' }));
+          setCopyError(err.detail);
+          return;
+        }
+        const data: CompatSearchResult[] = await mlbRes.json();
+        merged.push(...data.map(r => ({ ...r, matched_by: r.matched_by ?? 'mlb' as const })));
+      }
+      setSearchResults(merged);
     } catch (e) {
       setCopyError(String(e));
     } finally {
@@ -238,6 +276,7 @@ export default function CompatPage({ sellers, headers }: Props) {
       setCopyResult({ total: data.total_targets, success: 0, errors: 0, results: [] });
       setSearchResults([]);
       setSearchedSkus([]);
+      setSearchedMlbs([]);
       setSkuInput('');
       // Refresh logs after a short delay to pick up in_progress rows created by the backend
       setTimeout(() => { void loadLogs(); }, 1000);
@@ -251,12 +290,18 @@ export default function CompatPage({ sellers, headers }: Props) {
 
   const canCopy = preview?.has_compatibilities && searchResults.length > 0 && !copying;
 
-  // Group search results by SKU
+  // Group search results: SKU-matched grouped by SKU, MLB-matched grouped by MLB
   const resultsBySku: Record<string, CompatSearchResult[]> = {};
+  const resultsByMlb: Record<string, CompatSearchResult[]> = {};
   for (const r of searchResults) {
-    (resultsBySku[r.sku] ||= []).push(r);
+    if (r.matched_by === 'mlb') {
+      (resultsByMlb[r.item_id] ||= []).push(r);
+    } else {
+      (resultsBySku[r.sku] ||= []).push(r);
+    }
   }
   const skusNotFound = searchedSkus.filter(s => !resultsBySku[s]?.length);
+  const mlbsNotFound = searchedMlbs.filter(m => !resultsByMlb[m]?.length);
 
   const handleCopySku = useCallback(async (sku: string) => {
     try {
@@ -382,15 +427,15 @@ export default function CompatPage({ sellers, headers }: Props) {
         </Card>
       )}
 
-      {/* SKU Search */}
-      <Card title="Buscar por SKU">
+      {/* SKU / MLB Search */}
+      <Card title="Buscar por SKU ou MLB">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
           <label style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', fontWeight: 500 }}>
-            SKUs dos anúncios de destino
+            SKUs ou MLBs dos anúncios de destino
           </label>
           <textarea
             className="input-base"
-            placeholder="Digite os SKUs separados por vírgula, espaço ou quebra de linha"
+            placeholder="SKUs ou MLBs separados por vírgula, espaço ou quebra de linha (ex.: ABC-123, MLB1234567890)"
             value={skuInput}
             onChange={e => setSkuInput(e.target.value)}
             rows={3}
@@ -405,25 +450,30 @@ export default function CompatPage({ sellers, headers }: Props) {
               fontFamily: 'var(--font-mono)',
             }}
           />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
             <span style={{
               fontSize: 'var(--text-xs)',
               fontFamily: 'var(--font-mono)',
-              color: parsedSkuCount > 50 ? 'var(--danger)' : parsedSkuCount > 45 ? 'var(--warning)' : 'var(--ink-faint)',
-              fontWeight: parsedSkuCount > 45 ? 600 : 400,
+              color: parsedTotalCount > 50 ? 'var(--danger)' : parsedTotalCount > 45 ? 'var(--warning)' : 'var(--ink-faint)',
+              fontWeight: parsedTotalCount > 45 ? 600 : 400,
             }}>
-              {parsedSkuCount}/50 SKUs
+              {parsedTotalCount}/50 itens
             </span>
-            {parsedSkuCount > 50 && (
+            {(parsedSkus.length > 0 || parsedMlbs.length > 0) && (
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--ink-faint)', fontFamily: 'var(--font-mono)' }}>
+                {parsedSkus.length} SKU{parsedSkus.length !== 1 ? 's' : ''} · {parsedMlbs.length} MLB{parsedMlbs.length !== 1 ? 's' : ''}
+              </span>
+            )}
+            {parsedTotalCount > 50 && (
               <span style={{ fontSize: 'var(--text-xs)', color: 'var(--danger)', fontWeight: 500 }}>
-                Máximo de 50 SKUs por busca
+                Máximo de 50 itens por busca
               </span>
             )}
           </div>
           <button
             className="btn-primary"
             onClick={handleSearch}
-            disabled={!skuInput.trim() || searching || parsedSkuCount > 50}
+            disabled={!skuInput.trim() || searching || parsedTotalCount > 50}
             style={{ padding: 'var(--space-2) var(--space-4)', fontSize: 'var(--text-sm)', alignSelf: 'flex-start' }}
           >
             {searching ? (
@@ -436,11 +486,14 @@ export default function CompatPage({ sellers, headers }: Props) {
       </Card>
 
       {/* Search Results */}
-      {(searchResults.length > 0 || skusNotFound.length > 0) && (
+      {(searchResults.length > 0 || skusNotFound.length > 0 || mlbsNotFound.length > 0) && (
         <Card title={`Resultados (${searchResults.length} encontrado${searchResults.length !== 1 ? 's' : ''})`}>
           <div className="animate-in" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-            {Object.entries(resultsBySku).map(([sku, items]) => (
-              <div key={sku}>
+            {[
+              ...Object.entries(resultsBySku).map(([key, items]) => ({ key, label: `SKU: ${key}`, items })),
+              ...Object.entries(resultsByMlb).map(([key, items]) => ({ key: `mlb:${key}`, label: `MLB: ${key}`, items })),
+            ].map(group => (
+              <div key={group.key}>
                 <p style={{
                   fontSize: 'var(--text-xs)',
                   fontWeight: 600,
@@ -449,10 +502,10 @@ export default function CompatPage({ sellers, headers }: Props) {
                   letterSpacing: '0.05em',
                   marginBottom: 'var(--space-2)',
                 }}>
-                  SKU: {sku}
+                  {group.label}
                 </p>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-                  {items.map(item => (
+                  {group.items.map(item => (
                     <div key={`${item.seller_slug}-${item.item_id}`} style={{
                       display: 'flex',
                       justifyContent: 'space-between',
@@ -495,6 +548,19 @@ export default function CompatPage({ sellers, headers }: Props) {
                 fontWeight: 500,
               }}>
                 SKUs sem resultados: {skusNotFound.join(', ')}
+              </div>
+            )}
+
+            {mlbsNotFound.length > 0 && (
+              <div style={{
+                padding: 'var(--space-2) var(--space-3)',
+                background: 'rgba(245, 158, 11, 0.06)',
+                borderRadius: 6,
+                fontSize: 'var(--text-xs)',
+                color: 'var(--warning)',
+                fontWeight: 500,
+              }}>
+                MLBs sem resultados: {mlbsNotFound.join(', ')}
               </div>
             )}
           </div>

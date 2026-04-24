@@ -113,6 +113,7 @@ export interface CompatSearchResult {
   item_id: string;
   sku: string;
   title: string;
+  matched_by?: 'sku' | 'mlb';
 }
 
 export interface Org {

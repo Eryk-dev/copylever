@@ -28,6 +28,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Retry automatico no photo_applier para erros transientes do ML (409 conflict KVS, 5xx) — ate 3 tentativas com backoff exponencial (ERR-059)
 
 ### Added
+- Compatibilidade: campo de destino passa a aceitar SKUs e MLBs misturados. Ao colar MLBs, eles sao resolvidos diretamente para o seller dono (via `POST /api/compat/resolve-mlbs`, filtrado por `can_copy_to`) e aparecem como grupo "MLB: ..." nos resultados, junto com os itens encontrados por SKU. Limite segue sendo 50 itens por busca.
 - Formulario de correcao de titulo: quando a categoria ML limita o numero de caracteres do titulo, o usuario agora pode editar o titulo manualmente antes de reenviar a copia (ERR-054)
 - Contador de caracteres no campo de titulo com limite visual e `maxLength` no input
 - Correcoes de titulo agora sao individuais por MLB (nao agrupam por SKU) — cada anuncio precisa de um titulo proprio
