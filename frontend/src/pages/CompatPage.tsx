@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, Fragment } from 'react';
 import { API_BASE, type Seller, type CompatPreview, type CompatSearchResult, type CompatCopyResult } from '../lib/api';
 import { useToast } from '../components/Toast';
 import { Card } from './CopyPage';
@@ -78,6 +78,8 @@ export default function CompatPage({ sellers, headers }: Props) {
   const [logsOpen, setLogsOpen] = useState(true);
   const [compatStatusFilter, setCompatStatusFilter] = useState('');
   const [hasMoreLogs, setHasMoreLogs] = useState(false);
+  const [logsError, setLogsError] = useState('');
+  const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
 
   const [copiedSku, setCopiedSku] = useState<string | null>(null);
 
@@ -101,15 +103,22 @@ export default function CompatPage({ sellers, headers }: Props) {
         cache: 'no-store',
         signal: controller.signal,
       });
-      if (res.ok) {
-        const data: CompatLog[] = await res.json();
-        setLogs(data);
-        setHasMoreLogs(data.length === COMPAT_PAGE_SIZE);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: `Erro ao carregar historico (HTTP ${res.status})` }));
+        setLogsError(err.detail || `Erro ao carregar historico (HTTP ${res.status})`);
         setLogsLoaded(true);
+        return;
       }
+      const data: CompatLog[] = await res.json();
+      setLogs(data);
+      setHasMoreLogs(data.length === COMPAT_PAGE_SIZE);
+      setLogsLoaded(true);
+      setLogsError('');
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') return;
       console.error('Failed to load compat logs:', e);
+      setLogsError(`Falha de rede ao carregar historico: ${String(e)}`);
+      setLogsLoaded(true);
     }
   }, [headers, compatStatusFilter]);
 
@@ -118,13 +127,19 @@ export default function CompatPage({ sellers, headers }: Props) {
     if (compatStatusFilter) params.set('status', compatStatusFilter);
     try {
       const res = await fetch(`${API_BASE}/api/compat/logs?${params}`, { headers: headers(), cache: 'no-store' });
-      if (res.ok) {
-        const data: CompatLog[] = await res.json();
-        setLogs(prev => [...prev, ...data]);
-        setHasMoreLogs(data.length === COMPAT_PAGE_SIZE);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: `Erro ao carregar mais (HTTP ${res.status})` }));
+        toast(err.detail || `Erro ao carregar mais (HTTP ${res.status})`, 'error');
+        return;
       }
-    } catch (e) { console.error('Failed to load more compat logs:', e); }
-  }, [headers, compatStatusFilter, logs.length]);
+      const data: CompatLog[] = await res.json();
+      setLogs(prev => [...prev, ...data]);
+      setHasMoreLogs(data.length === COMPAT_PAGE_SIZE);
+    } catch (e) {
+      console.error('Failed to load more compat logs:', e);
+      toast(`Falha ao carregar mais: ${String(e)}`, 'error');
+    }
+  }, [headers, compatStatusFilter, logs.length, toast]);
 
   useEffect(() => {
     if (!logsLoaded) loadLogs();
@@ -706,11 +721,44 @@ export default function CompatPage({ sellers, headers }: Props) {
               ))}
             </div>
 
-            {logs.length === 0 && logsLoaded ? (
+            {logsError && (
+              <div style={{
+                padding: 'var(--space-2) var(--space-3)',
+                marginBottom: 'var(--space-3)',
+                background: 'rgba(239, 68, 68, 0.06)',
+                borderRadius: 6,
+                fontSize: 'var(--text-xs)',
+                color: 'var(--danger)',
+                fontWeight: 500,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: 'var(--space-2)',
+              }}>
+                <span>{logsError}</span>
+                <button
+                  onClick={() => { setLogsError(''); void loadLogs(); }}
+                  style={{
+                    padding: '2px 8px',
+                    background: 'transparent',
+                    border: '1px solid var(--danger)',
+                    borderRadius: 4,
+                    color: 'var(--danger)',
+                    fontSize: 'var(--text-xs)',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Tentar novamente
+                </button>
+              </div>
+            )}
+
+            {logs.length === 0 && logsLoaded && !logsError ? (
               <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-sm)', textAlign: 'center', padding: 'var(--space-4)' }}>
                 Nenhum registro{compatStatusFilter ? ` com status "${compatStatusFilter}"` : ''}.
               </p>
-            ) : (
+            ) : logs.length === 0 && logsError ? null : (
               <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-sm)' }}>
                   <thead>
@@ -731,25 +779,120 @@ export default function CompatPage({ sellers, headers }: Props) {
                     </tr>
                   </thead>
                   <tbody>
-                    {logs.map(log => (
-                      <tr key={log.id} style={{ borderBottom: '1px solid var(--line)' }}>
-                        <td style={{ ...td, whiteSpace: 'nowrap' }}>
-                          {new Date(log.created_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
-                        </td>
-                        <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}>
-                          {log.source_item_id}
-                        </td>
-                        <td style={{ ...td, fontSize: 'var(--text-xs)' }}>
-                          {log.skus?.join(', ') || '-'}
-                        </td>
-                        <td style={td}><CompatStatusBadge status={log.status} successCount={log.success_count} errorCount={log.error_count} /></td>
-                        <td style={td}>{log.total_targets}</td>
-                        <td style={{ ...td, color: 'var(--success)', fontWeight: 600 }}>{log.success_count}</td>
-                        <td style={{ ...td, color: log.error_count > 0 ? 'var(--danger)' : 'var(--ink-faint)', fontWeight: 600 }}>
-                          {log.error_count}
-                        </td>
-                      </tr>
-                    ))}
+                    {logs.map(log => {
+                      const isExpandable = (log.targets?.length || 0) > 0;
+                      const isExpanded = expandedLogId === log.id;
+                      const errorTargets = (log.targets || []).filter(t => t.status !== 'ok' && (t.error || t.status === 'error'));
+                      return (
+                        <Fragment key={log.id}>
+                          <tr
+                            onClick={() => isExpandable && setExpandedLogId(isExpanded ? null : log.id)}
+                            style={{
+                              borderBottom: '1px solid var(--line)',
+                              cursor: isExpandable ? 'pointer' : 'default',
+                              background: isExpanded ? 'var(--surface)' : undefined,
+                            }}
+                          >
+                            <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                              {isExpandable && (
+                                <span style={{ display: 'inline-block', width: 10, marginRight: 4, color: 'var(--ink-faint)', fontSize: 10 }}>
+                                  {isExpanded ? '▾' : '▸'}
+                                </span>
+                              )}
+                              {new Date(log.created_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
+                            </td>
+                            <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}>
+                              {log.source_item_id}
+                            </td>
+                            <td style={{ ...td, fontSize: 'var(--text-xs)' }}>
+                              {log.skus?.join(', ') || '-'}
+                            </td>
+                            <td style={td}><CompatStatusBadge status={log.status} successCount={log.success_count} errorCount={log.error_count} /></td>
+                            <td style={td}>{log.total_targets}</td>
+                            <td style={{ ...td, color: 'var(--success)', fontWeight: 600 }}>{log.success_count}</td>
+                            <td style={{ ...td, color: log.error_count > 0 ? 'var(--danger)' : 'var(--ink-faint)', fontWeight: 600 }}>
+                              {log.error_count}
+                            </td>
+                          </tr>
+                          {isExpanded && (
+                            <tr style={{ background: 'var(--surface)', borderBottom: '1px solid var(--line)' }}>
+                              <td colSpan={7} style={{ padding: 'var(--space-3) var(--space-4)' }}>
+                                {errorTargets.length > 0 && (
+                                  <div style={{ marginBottom: 'var(--space-3)' }}>
+                                    <p style={{
+                                      fontSize: 'var(--text-xs)',
+                                      fontWeight: 600,
+                                      color: 'var(--danger)',
+                                      textTransform: 'uppercase',
+                                      letterSpacing: '0.05em',
+                                      marginBottom: 'var(--space-2)',
+                                    }}>
+                                      Erros ({errorTargets.length})
+                                    </p>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+                                      {errorTargets.map(t => (
+                                        <div key={`${t.seller_slug}-${t.item_id}`} style={{
+                                          display: 'flex',
+                                          gap: 'var(--space-2)',
+                                          padding: 'var(--space-2) var(--space-3)',
+                                          background: 'rgba(239, 68, 68, 0.06)',
+                                          borderRadius: 6,
+                                          fontSize: 'var(--text-xs)',
+                                          alignItems: 'flex-start',
+                                          flexWrap: 'wrap',
+                                        }}>
+                                          <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink)', fontWeight: 600 }}>
+                                            {t.item_id}
+                                          </span>
+                                          <span style={{ color: 'var(--ink-muted)' }}>{sellerName(t.seller_slug)}</span>
+                                          {t.error && (
+                                            <span style={{ color: 'var(--danger)', flex: 1, minWidth: 200, wordBreak: 'break-word' }}>
+                                              — {t.error}
+                                            </span>
+                                          )}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                {log.targets && log.targets.some(t => t.status === 'ok') && (
+                                  <div>
+                                    <p style={{
+                                      fontSize: 'var(--text-xs)',
+                                      fontWeight: 600,
+                                      color: 'var(--ink-faint)',
+                                      textTransform: 'uppercase',
+                                      letterSpacing: '0.05em',
+                                      marginBottom: 'var(--space-2)',
+                                    }}>
+                                      Sucesso ({log.targets.filter(t => t.status === 'ok').length})
+                                    </p>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+                                      {log.targets.filter(t => t.status === 'ok').map(t => (
+                                        <div key={`${t.seller_slug}-${t.item_id}`} style={{
+                                          display: 'flex',
+                                          gap: 'var(--space-2)',
+                                          fontSize: 'var(--text-xs)',
+                                          padding: '2px 0',
+                                        }}>
+                                          <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink-faint)' }}>{t.item_id}</span>
+                                          <span style={{ color: 'var(--ink-muted)' }}>{sellerName(t.seller_slug)}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                {errorTargets.length === 0 && !(log.targets || []).some(t => t.status === 'ok') && (
+                                  <p style={{ color: 'var(--ink-faint)', fontSize: 'var(--text-xs)' }}>
+                                    Sem detalhes por destino.
+                                  </p>
+                                )}
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
